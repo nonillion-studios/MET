@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Download, Play, Save, Loader2, Image as ImageIcon, Type as TypeIcon, MousePointer2, Brush, Eraser, PenTool, ZoomIn, ZoomOut, Maximize, Palette, Plus, Pipette, Trash2, ChevronUp, ChevronDown, ImagePlus, Key, Sparkles, Scissors, Undo } from 'lucide-react';
-import { extractImagesFromZip, downloadProcessedZip } from './lib/zip';
-import { processMangaPages, RawRegion } from './lib/gemini';
+import { Upload, Download, Play, Save, Loader2, Image as ImageIcon, Type as TypeIcon, MousePointer2, Brush, Eraser, PenTool, ZoomIn, ZoomOut, Maximize, Palette, Plus, Pipette, Trash2, ChevronUp, ChevronDown, ImagePlus, Key, Sparkles, Scissors, Undo, Wand2 } from 'lucide-react';
+import { extractImagesFromZip, downloadProcessedZip, downloadPdf, downloadSingleImage } from './lib/zip';
+import { processMangaPages, generateInpaint, RawRegion } from './lib/gemini';
 import { ProcessedImage, Region, PaintStroke } from './types';
 import { ImageEditor } from './components/ImageEditor';
 import { get, set } from 'idb-keyval';
 
-type Tool = 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx';
+type Tool = 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase';
 
 export default function App() {
   const [images, setImages] = useState<ProcessedImage[]>([]);
@@ -388,6 +388,33 @@ export default function App() {
     }
   };
 
+  const handleExportPdf = async () => {
+    if (images.length === 0) return;
+    setExportProgress('Preparing PDF export...');
+    try {
+      await downloadPdf(images, (msg) => setExportProgress(msg));
+    } catch (err) {
+      console.error(err);
+      alert("Failed to export PDF");
+    } finally {
+      setExportProgress(null);
+    }
+  };
+
+  const handleDownloadCurrentPage = async () => {
+    const imgToDownload = selectedImage || images[0];
+    if (!imgToDownload) return;
+    setExportProgress('Rendering image...');
+    try {
+      await downloadSingleImage(imgToDownload);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to download image");
+    } finally {
+      setExportProgress(null);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-200 overflow-hidden font-sans">
       {exportProgress && (
@@ -509,13 +536,24 @@ export default function App() {
             {showOriginal ? 'Showing Original' : 'View Original'}
           </button>
           
-          <button 
-            onClick={handleExportZip}
-            disabled={images.length === 0}
-            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm transition-colors"
-          >
-            <Download size={16} /> Export ZIP
-          </button>
+          <div className="flex bg-emerald-700/50 rounded-md overflow-hidden border border-emerald-600/30">
+            <button 
+              onClick={handleExportZip}
+              disabled={images.length === 0}
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-emerald-500/20"
+              title="Export as ZIP archive"
+            >
+              <Download size={16} /> ZIP
+            </button>
+            <button 
+              onClick={handleExportPdf}
+              disabled={images.length === 0}
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors"
+              title="Export as paginated PDF"
+            >
+              PDF
+            </button>
+          </div>
         </div>
       </header>
 
@@ -642,6 +680,13 @@ export default function App() {
                     >
                       <Sparkles size={16} />
                     </button>
+                    <button 
+                      onClick={() => setActiveTool('gen_erase')}
+                      className={`p-1.5 rounded-md ${activeTool === 'gen_erase' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                      title="AI Generative Inpaint (Smart Whitening)"
+                    >
+                      <Wand2 size={16} />
+                    </button>
                     <div className="w-px bg-slate-700 mx-1 my-1"></div>
                     <button 
                       onClick={() => undo(selectedImage.id)}
@@ -668,6 +713,26 @@ export default function App() {
                   
                   {selectedImage.status !== 'processing' && (
                     <div className="flex items-center gap-2 ml-4">
+                      <button 
+                        onClick={handleDownloadCurrentPage}
+                        className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                        title="Download this page as PNG"
+                      >
+                        <Download size={14} /> Download Page
+                      </button>
+                      <button 
+                        onClick={() => {
+                          if (confirm("Are you sure you want to remove all texts and paint strokes from this page?")) {
+                            saveHistory(selectedImage.id);
+                            updateImage(selectedImage.id, { regions: [], paintStrokes: [] });
+                            setSelectedRegionId(null);
+                          }
+                        }}
+                        className="flex items-center gap-1.5 bg-red-900/50 hover:bg-red-800 px-3 py-1.5 rounded text-xs font-medium transition-colors text-red-200"
+                        title="Clear all generated texts and paint strokes"
+                      >
+                        <Trash2 size={14} /> Clear All
+                      </button>
                       <button 
                         onClick={() => {
                           saveHistory(selectedImage.id);
@@ -732,6 +797,7 @@ export default function App() {
                     paintStrokes: [...selectedImage.paintStrokes, stroke]
                   });
                 }}
+                onGenerateInpaint={async (base64) => generateInpaint(base64, selectedImage.mimeType, customApiKey)}
               />
             </div>
           ) : (
@@ -992,6 +1058,11 @@ export default function App() {
                     {activeTool === 'smart_sfx' && (
                       <div className="p-3 bg-slate-950 rounded border border-slate-800 text-xs text-slate-400 text-center">
                         Click on the image. It will automatically pick the background color below the cursor and paint with it! Great for whitening SFX.
+                      </div>
+                    )}
+                    {activeTool === 'gen_erase' && (
+                      <div className="p-3 bg-emerald-950/20 rounded border border-emerald-800/30 text-xs text-emerald-400 text-center">
+                        AI Generative Inpaint: Draw over a region. The AI algorithm will automatically analyze the surrounding background and cleanly remove text.
                       </div>
                     )}
 

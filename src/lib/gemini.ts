@@ -22,6 +22,44 @@ export interface RawRegion {
   lineHeight: number;
 }
 
+export async function generateInpaint(base64Image: string, mimeType: string, customApiKey?: string): Promise<string> {
+  const key = customApiKey || process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("API Key is required");
+  }
+  const ai = new GoogleGenAI({ apiKey: key });
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: {
+      parts: [
+        {
+          inlineData: {
+            data: base64Image,
+            mimeType: mimeType,
+          },
+        },
+        {
+          text: 'Remove all text, letters, speech bubbles, and sound effects from this image patch. Seamlessly restore the background underneath without altering the remaining art style or surrounding objects. Output only the cleaned image.',
+        },
+      ],
+    },
+    config: {
+      imageConfig: {
+        aspectRatio: '1:1'
+      }
+    }
+  });
+
+  for (const part of response.candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData) {
+      return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+    }
+  }
+
+  throw new Error("Failed to generate inpaint image.");
+}
+
 export async function processMangaPages(pages: { id: string, base64Image: string, mimeType: string }[], customApiKey?: string): Promise<{ id: string, regions: RawRegion[] }[]> {
   const key = customApiKey || process.env.GEMINI_API_KEY;
   if (!key) {

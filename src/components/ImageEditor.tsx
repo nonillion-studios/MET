@@ -9,13 +9,20 @@ interface ImageEditorProps {
   onSelectRegion: (id: string | null) => void;
   onUpdateRegion: (id: string, updates: Partial<Region>) => void;
   stageRef: React.RefObject<any>;
-  activeTool: 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx';
+  activeTool: 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase';
   brushSize: number;
   brushColor: string;
   zoom: number;
   showOriginal?: boolean;
   onAddStroke: (stroke: PaintStroke) => void;
+  onGenerateInpaint?: (base64: string) => Promise<string>;
 }
+
+const AIInpaintPatch = ({ base64, rect }: { base64: string, rect: {x: number, y: number, w: number, h: number} }) => {
+  const [img] = useImage(base64);
+  if (!img || !rect) return null;
+  return <KonvaImage image={img} x={rect.x} y={rect.y} width={rect.w} height={rect.h} />;
+};
 
 export function ImageEditor({ 
   image, 
@@ -28,7 +35,8 @@ export function ImageEditor({
   brushColor,
   zoom,
   showOriginal,
-  onAddStroke
+  onAddStroke,
+  onGenerateInpaint
 }: ImageEditorProps) {
   const [img] = useImage(image.dataUrl);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,6 +109,7 @@ export function ImageEditor({
     if (activeTool === 'draw' || activeTool === 'fill_poly') initialColor = brushColor;
     else if (activeTool === 'erase') initialColor = '#ffffff';
     else if (activeTool === 'bg_erase') initialColor = '#000000';
+    else if (activeTool === 'gen_erase') initialColor = 'rgba(236, 72, 153, 0.5)'; // Pink translucent for masking
     else if (activeTool === 'smart_sfx') initialColor = getPixelColor(x, y);
 
     if (activeTool === 'fill_poly') {
@@ -146,11 +155,73 @@ export function ImageEditor({
     });
   };
 
-  const handleMouseUp = () => {
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleMouseUp = async () => {
     if (activeTool === 'fill_poly') return; 
     if (isDrawing && currentStroke) {
       setIsDrawing(false);
-      onAddStroke(currentStroke);
+      let finalStroke = { ...currentStroke };
+
+      if (activeTool === 'gen_erase' && img && finalStroke.points.length >= 4 && onGenerateInpaint) {
+        setIsGenerating(true);
+        try {
+          // Calculate bounding box of the stroke
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (let i = 0; i < finalStroke.points.length; i += 2) {
+            minX = Math.min(minX, finalStroke.points[i]);
+            maxX = Math.max(maxX, finalStroke.points[i]);
+            minY = Math.min(minY, finalStroke.points[i+1]);
+            maxY = Math.max(maxY, finalStroke.points[i+1]);
+          }
+          
+          // Pad to get context and make it a square (better for GenAI)
+          const pad = (finalStroke.size / 2) + 20;
+          minX = Math.max(0, minX - pad);
+          maxX = Math.min(img.width - 1, maxX + pad);
+          minY = Math.max(0, minY - pad);
+          maxY = Math.min(img.height - 1, maxY + pad);
+
+          const w = maxX - minX;
+          const h = maxY - minY;
+          const size = Math.max(w, h); // Square dimensions
+          
+          // Center the square
+          const centerX = minX + w / 2;
+          const centerY = minY + h / 2;
+          const sMinX = Math.max(0, centerX - size / 2);
+          const sMinY = Math.max(0, centerY - size / 2);
+          const sMaxX = Math.min(img.width - 1, centerX + size / 2);
+          const sMaxY = Math.min(img.height - 1, centerY + size / 2);
+          
+          const sW = sMaxX - sMinX;
+          const sH = sMaxY - sMinY;
+
+          if (sW > 0 && sH > 0) {
+            const canvas = document.createElement('canvas');
+            canvas.width = sW; canvas.height = sH;
+            const ctx = canvas.getContext('2d');
+            
+            if (ctx) {
+              ctx.drawImage(img, sMinX, sMinY, sW, sH, 0, 0, sW, sH);
+              const dataUrl = canvas.toDataURL('image/jpeg', 1.0);
+              const base64Crop = dataUrl.split(',')[1];
+              
+              const generatedBase64 = await onGenerateInpaint(base64Crop);
+              
+              finalStroke.imageBase64 = generatedBase64;
+              finalStroke.rect = { x: sMinX, y: sMinY, w: sW, h: sH };
+            }
+          }
+        } catch (error) {
+          console.error("Generative inpaint failed", error);
+          alert("Failed to run AI Inpainting. " + (error as Error).message);
+        } finally {
+          setIsGenerating(false);
+        }
+      }
+
+      onAddStroke(finalStroke);
       setCurrentStroke(null);
     }
   };
@@ -171,6 +242,14 @@ export function ImageEditor({
           position: 'relative'
         }}
       >
+        {isGenerating && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm rounded-lg" style={{ width: stageWidth, height: stageHeight, left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}>
+            <div className="flex flex-col items-center gap-3 text-white">
+              <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+              <p className="font-medium text-sm">AI Inpainting in progress...</p>
+            </div>
+          </div>
+        )}
         <div 
           style={{ 
             position: 'absolute', 
@@ -200,17 +279,21 @@ export function ImageEditor({
               )}
 
               {!showOriginal && normalStrokes.map((stroke, i) => (
-                <Line
-                  key={i}
-                  points={stroke.points}
-                  stroke={stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color}
-                  strokeWidth={stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size}
-                  fill={stroke.tool === 'fill_poly' ? stroke.color : undefined}
-                  closed={stroke.tool === 'fill_poly'}
-                  tension={stroke.tool === 'fill_poly' ? 0 : 0.5}
-                  lineCap="round"
-                  lineJoin="round"
-                />
+                stroke.imageBase64 && stroke.rect ? (
+                  <AIInpaintPatch key={i} base64={stroke.imageBase64} rect={stroke.rect} />
+                ) : (
+                  <Line
+                    key={i}
+                    points={stroke.points}
+                    stroke={stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color}
+                    strokeWidth={stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size}
+                    fill={stroke.tool === 'fill_poly' ? stroke.color : undefined}
+                    closed={stroke.tool === 'fill_poly'}
+                    tension={stroke.tool === 'fill_poly' ? 0 : 0.5}
+                    lineCap="round"
+                    lineJoin="round"
+                  />
+                )
               ))}
             </Layer>
 

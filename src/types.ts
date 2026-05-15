@@ -21,10 +21,12 @@ export interface Region {
 }
 
 export interface PaintStroke {
-  tool: "erase" | "draw" | "fill_poly" | "bg_erase" | "smart_sfx";
+  tool: "erase" | "draw" | "fill_poly" | "bg_erase" | "smart_sfx" | "gen_erase";
   points: number[];
   color: string;
   size: number;
+  imageBase64?: string;
+  rect?: {x: number, y: number, w: number, h: number};
 }
 
 export interface ProcessedImage {
