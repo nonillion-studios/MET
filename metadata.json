@@ -1,0 +1,6 @@
+{
+  "name": "MangaAI Translator",
+  "description": "An AI-powered manga translator that reads ZIP files of manga, detects text and SFX, cleans them, and overlays Arabic translations using Gemini 1.5 Pro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
