@@ -33,6 +33,7 @@ export interface ProcessedImage {
   id: string;
   filename: string;
   dataUrl: string;
+  originalDataUrl?: string;
   mimeType: string;
   regions: Region[];
   paintStrokes: PaintStroke[];

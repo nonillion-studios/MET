@@ -46,6 +46,65 @@ export async function extractImagesFromZip(file: File): Promise<ProcessedImage[]
   return images.sort((a, b) => a.filename.localeCompare(b.filename));
 }
 
+async function renderImageToDataUrl(img: ProcessedImage, format: 'jpeg' | 'png' = 'png', quality = 1.0): Promise<string> {
+  if ('fonts' in document) await (document as any).fonts.ready;
+  // @ts-ignore
+  const Konva = window.Konva || await import('konva').then(m => m.default || m);
+  const container = document.createElement('div');
+  const stage = new Konva.Stage({ container, width: img.width, height: img.height });
+  
+  const layer1 = new Konva.Layer();
+  const layer2 = new Konva.Layer();
+  const layer3 = new Konva.Layer();
+  
+  const imageObj = new Image();
+  await new Promise((resolve, reject) => {
+    imageObj.onload = resolve; imageObj.onerror = reject; imageObj.src = img.dataUrl;
+  });
+  layer1.add(new Konva.Image({ image: imageObj, x: 0, y: 0, width: img.width, height: img.height }));
+
+  const normalStrokes = img.paintStrokes.filter(s => s.tool !== 'bg_erase');
+  const bgEraseStrokes = img.paintStrokes.filter(s => s.tool === 'bg_erase');
+
+  for (const stroke of normalStrokes) {
+    if (stroke.imageBase64 && stroke.rect) {
+      const patchImg = new Image();
+      await new Promise((resolve, reject) => { patchImg.onload = resolve; patchImg.onerror = reject; patchImg.src = stroke.imageBase64!.startsWith('data:') ? stroke.imageBase64! : `data:image/jpeg;base64,${stroke.imageBase64}`; });
+      layer1.add(new Konva.Image({ image: patchImg, x: stroke.rect.x, y: stroke.rect.y, width: stroke.rect.w, height: stroke.rect.h }));
+    } else {
+      layer1.add(new Konva.Line({ points: stroke.points, stroke: stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color, strokeWidth: stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size, fill: stroke.tool === 'fill_poly' ? stroke.color : undefined, closed: stroke.tool === 'fill_poly', tension: stroke.tool === 'fill_poly' ? 0 : 0.5, lineCap: 'round', lineJoin: 'round' }));
+    }
+  }
+
+  img.regions.forEach(region => {
+    if (region.bgColor !== 'transparent') {
+      const group = new Konva.Group({ x: region.x + region.width / 2, y: region.y + region.height / 2, rotation: region.angle, offset: { x: region.width / 2, y: region.height / 2 } });
+      group.add(new Konva.Rect({ width: region.width, height: region.height, fill: region.bgColor, cornerRadius: region.type === 'bubble' ? 10 : 0 }));
+      layer2.add(group);
+    }
+  });
+
+  for (const stroke of bgEraseStrokes) {
+    layer2.add(new Konva.Line({ points: stroke.points, stroke: 'black', strokeWidth: stroke.size, tension: 0.5, lineCap: 'round', lineJoin: 'round', globalCompositeOperation: 'destination-out' }));
+  }
+
+  img.regions.forEach(region => {
+    const group = new Konva.Group({ x: region.x, y: region.y, width: region.width, height: region.height, rotation: region.angle });
+    group.add(new Konva.Text({ text: region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : '', width: region.width, height: region.height, fill: region.textColor, stroke: region.strokeColor !== 'transparent' ? region.strokeColor : undefined, strokeWidth: region.strokeColor !== 'transparent' ? region.strokeWidth : 0, fontFamily: region.fontFamily, fontSize: region.fontSize, fontStyle: `${region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`, align: region.textAlign, verticalAlign: 'middle', wrap: 'word', lineHeight: region.lineHeight, fillAfterStrokeEnabled: true }));
+    layer3.add(group);
+  });
+  
+  stage.add(layer1);
+  stage.add(layer2);
+  stage.add(layer3);
+  
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+  const dataUrl = stage.toDataURL({ mimeType: mime, quality, pixelRatio: 1 });
+  stage.destroy();
+  return dataUrl;
+}
+
 export async function downloadProcessedZip(processedImages: ProcessedImage[], setProgress?: (msg: string) => void) {
   const zip = new JSZip();
 
@@ -57,131 +116,13 @@ export async function downloadProcessedZip(processedImages: ProcessedImage[], se
     const ext = img.filename.split('.').pop() || 'png';
     const newFilename = `page-${String(idx + 1).padStart(3, '0')}.${ext}`;
 
-    if (img.status !== 'done' || img.regions.length === 0) {
+    if (img.status !== 'done' && img.regions.length === 0 && img.paintStrokes.length === 0) {
       zip.file(newFilename, img.dataUrl.split(',')[1], { base64: true });
       continue;
     }
 
-    // Wait for fonts to be ready
-    if ('fonts' in document) {
-      await (document as any).fonts.ready;
-    }
-
-    // Use Konva purely to achieve exact 1-to-1 match with ImageEditor component preview
-    // @ts-ignore
-    const Konva = window.Konva || await import('konva').then(m => m.default || m);
-    
-    // Create headless stage
-    const container = document.createElement('div');
-    const stage = new Konva.Stage({ container, width: img.width, height: img.height });
-    
-    // We only use ONE layer, exactly like ImageEditor.tsx, so that globalCompositeOperation="destination-out" 
-    // punches through everything properly (like background image).
-    const mainLayer = new Konva.Layer();
-    
-    const imageObj = new Image();
-    await new Promise((resolve, reject) => {
-      imageObj.onload = resolve;
-      imageObj.onerror = reject;
-      imageObj.src = img.dataUrl;
-    });
-    
-    const konvaImg = new Konva.Image({ image: imageObj, x: 0, y: 0, width: img.width, height: img.height });
-    mainLayer.add(konvaImg);
-    
-    // Region Backgrounds
-    img.regions.forEach(region => {
-      if (region.bgColor !== 'transparent') {
-        const group = new Konva.Group({
-          x: region.x + region.width / 2,
-          y: region.y + region.height / 2,
-          rotation: region.angle,
-          offset: { x: region.width / 2, y: region.height / 2 }
-        });
-        const rect = new Konva.Rect({
-          width: region.width,
-          height: region.height,
-          fill: region.bgColor,
-          cornerRadius: region.type === 'bubble' ? 10 : 0
-        });
-        group.add(rect);
-        mainLayer.add(group);
-      }
-    });
-
-    // Paint Strokes (including bg_erase and gen_erase)
-    for (const stroke of img.paintStrokes) {
-      if (stroke.imageBase64 && stroke.rect) {
-        const patchImg = new Image();
-        await new Promise((resolve, reject) => {
-          patchImg.onload = resolve;
-          patchImg.onerror = reject;
-          patchImg.src = stroke.imageBase64!.startsWith('data:') ? stroke.imageBase64! : `data:image/jpeg;base64,${stroke.imageBase64}`;
-        });
-        const patchNode = new Konva.Image({
-          image: patchImg,
-          x: stroke.rect.x,
-          y: stroke.rect.y,
-          width: stroke.rect.w,
-          height: stroke.rect.h
-        });
-        mainLayer.add(patchNode);
-      } else {
-        const line = new Konva.Line({
-          points: stroke.points,
-          stroke: stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color,
-          strokeWidth: stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size,
-          fill: stroke.tool === 'fill_poly' ? stroke.color : undefined,
-          closed: stroke.tool === 'fill_poly',
-          tension: stroke.tool === 'fill_poly' ? 0 : 0.5,
-          lineCap: 'round',
-          lineJoin: 'round',
-          globalCompositeOperation: stroke.tool === 'bg_erase' ? 'destination-out' : 'source-over'
-        });
-        mainLayer.add(line);
-      }
-    }
-
-    // Texts (these need to go on mainLayer too)
-    img.regions.forEach(region => {
-      const group = new Konva.Group({
-        x: region.x,
-        y: region.y,
-        width: region.width,
-        height: region.height,
-        rotation: region.angle
-      });
-      
-      const text = new Konva.Text({
-        text: region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : '',
-        width: region.width,
-        height: region.height,
-        fill: region.textColor,
-        stroke: region.strokeColor !== 'transparent' ? region.strokeColor : undefined,
-        strokeWidth: region.strokeColor !== 'transparent' ? region.strokeWidth : 0,
-        fontFamily: region.fontFamily,
-        fontSize: region.fontSize,
-        fontStyle: `${region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`,
-        align: region.textAlign,
-        verticalAlign: 'middle',
-        wrap: 'word',
-        lineHeight: region.lineHeight,
-        fillAfterStrokeEnabled: true
-      });
-      group.add(text);
-      mainLayer.add(group);
-    });
-    stage.add(mainLayer);
-    
-    // Wait for a brief moment to ensure fonts are drawn
-    await new Promise(resolve => setTimeout(resolve, 50));
-    
-    // Convert to DataURL and push to zip
-    const dataUrl = stage.toDataURL({ mimeType: img.mimeType || 'image/png', quality: 1.0, pixelRatio: 1 });
+    const dataUrl = await renderImageToDataUrl(img, img.mimeType?.includes('jpeg') ? 'jpeg' : 'png');
     zip.file(newFilename, dataUrl.split(',')[1], { base64: true });
-    
-    // Cleanup
-    stage.destroy();
   }
 
   if (setProgress) setProgress('Zipping files...');
@@ -190,48 +131,7 @@ export async function downloadProcessedZip(processedImages: ProcessedImage[], se
 }
 
 export async function downloadSingleImage(img: ProcessedImage) {
-  if ('fonts' in document) await (document as any).fonts.ready;
-  // @ts-ignore
-  const Konva = window.Konva || await import('konva').then(m => m.default || m);
-  const container = document.createElement('div');
-  const stage = new Konva.Stage({ container, width: img.width, height: img.height });
-  const mainLayer = new Konva.Layer();
-  
-  const imageObj = new Image();
-  await new Promise((resolve, reject) => {
-    imageObj.onload = resolve; imageObj.onerror = reject; imageObj.src = img.dataUrl;
-  });
-  mainLayer.add(new Konva.Image({ image: imageObj, x: 0, y: 0, width: img.width, height: img.height }));
-  
-  img.regions.forEach(region => {
-    if (region.bgColor !== 'transparent') {
-      const group = new Konva.Group({ x: region.x + region.width / 2, y: region.y + region.height / 2, rotation: region.angle, offset: { x: region.width / 2, y: region.height / 2 } });
-      group.add(new Konva.Rect({ width: region.width, height: region.height, fill: region.bgColor, cornerRadius: region.type === 'bubble' ? 10 : 0 }));
-      mainLayer.add(group);
-    }
-  });
-
-  for (const stroke of img.paintStrokes) {
-    if (stroke.imageBase64 && stroke.rect) {
-      const patchImg = new Image();
-      await new Promise((resolve, reject) => { patchImg.onload = resolve; patchImg.onerror = reject; patchImg.src = stroke.imageBase64!.startsWith('data:') ? stroke.imageBase64! : `data:image/jpeg;base64,${stroke.imageBase64}`; });
-      mainLayer.add(new Konva.Image({ image: patchImg, x: stroke.rect.x, y: stroke.rect.y, width: stroke.rect.w, height: stroke.rect.h }));
-    } else {
-      mainLayer.add(new Konva.Line({ points: stroke.points, stroke: stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color, strokeWidth: stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size, fill: stroke.tool === 'fill_poly' ? stroke.color : undefined, closed: stroke.tool === 'fill_poly', tension: stroke.tool === 'fill_poly' ? 0 : 0.5, lineCap: 'round', lineJoin: 'round', globalCompositeOperation: stroke.tool === 'bg_erase' ? 'destination-out' : 'source-over' }));
-    }
-  }
-
-  img.regions.forEach(region => {
-    const group = new Konva.Group({ x: region.x, y: region.y, width: region.width, height: region.height, rotation: region.angle });
-    group.add(new Konva.Text({ text: region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : '', width: region.width, height: region.height, fill: region.textColor, stroke: region.strokeColor !== 'transparent' ? region.strokeColor : undefined, strokeWidth: region.strokeColor !== 'transparent' ? region.strokeWidth : 0, fontFamily: region.fontFamily, fontSize: region.fontSize, fontStyle: `${region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`, align: region.textAlign, verticalAlign: 'middle', wrap: 'word', lineHeight: region.lineHeight, fillAfterStrokeEnabled: true }));
-    mainLayer.add(group);
-  });
-  
-  stage.add(mainLayer);
-  await new Promise(resolve => setTimeout(resolve, 50));
-  const dataUrl = stage.toDataURL({ mimeType: img.mimeType || 'image/png', quality: 1.0, pixelRatio: 1 });
-  stage.destroy();
-
+  const dataUrl = await renderImageToDataUrl(img, img.mimeType?.includes('jpeg') ? 'jpeg' : 'png');
   const a = document.createElement('a');
   a.href = dataUrl;
   a.download = `translated-${img.filename}`;
@@ -248,47 +148,8 @@ export async function downloadPdf(processedImages: ProcessedImage[], setProgress
 
     let finalDataUrl = img.dataUrl;
 
-    if (img.status === 'done' && img.regions.length > 0) {
-      if ('fonts' in document) await (document as any).fonts.ready;
-      // @ts-ignore
-      const Konva = window.Konva || await import('konva').then(m => m.default || m);
-      const container = document.createElement('div');
-      const stage = new Konva.Stage({ container, width: img.width, height: img.height });
-      const mainLayer = new Konva.Layer();
-      
-      const imageObj = new Image();
-      await new Promise((resolve, reject) => {
-        imageObj.onload = resolve; imageObj.onerror = reject; imageObj.src = img.dataUrl;
-      });
-      mainLayer.add(new Konva.Image({ image: imageObj, x: 0, y: 0, width: img.width, height: img.height }));
-      
-      img.regions.forEach(region => {
-        if (region.bgColor !== 'transparent') {
-          const group = new Konva.Group({ x: region.x + region.width / 2, y: region.y + region.height / 2, rotation: region.angle, offset: { x: region.width / 2, y: region.height / 2 } });
-          group.add(new Konva.Rect({ width: region.width, height: region.height, fill: region.bgColor, cornerRadius: region.type === 'bubble' ? 10 : 0 }));
-          mainLayer.add(group);
-        }
-      });
-
-      for (const stroke of img.paintStrokes) {
-        if (stroke.imageBase64 && stroke.rect) {
-          const patchImg = new Image();
-          await new Promise((resolve, reject) => { patchImg.onload = resolve; patchImg.onerror = reject; patchImg.src = stroke.imageBase64!.startsWith('data:') ? stroke.imageBase64! : `data:image/jpeg;base64,${stroke.imageBase64}`; });
-          mainLayer.add(new Konva.Image({ image: patchImg, x: stroke.rect.x, y: stroke.rect.y, width: stroke.rect.w, height: stroke.rect.h }));
-        } else {
-          mainLayer.add(new Konva.Line({ points: stroke.points, stroke: stroke.tool === 'fill_poly' ? (stroke.points.length === 8 ? 'transparent' : stroke.color) : stroke.color, strokeWidth: stroke.tool === 'fill_poly' ? Math.max(1, stroke.size) : stroke.size, fill: stroke.tool === 'fill_poly' ? stroke.color : undefined, closed: stroke.tool === 'fill_poly', tension: stroke.tool === 'fill_poly' ? 0 : 0.5, lineCap: 'round', lineJoin: 'round', globalCompositeOperation: stroke.tool === 'bg_erase' ? 'destination-out' : 'source-over' }));
-        }
-      }
-
-      img.regions.forEach(region => {
-        const group = new Konva.Group({ x: region.x, y: region.y, width: region.width, height: region.height, rotation: region.angle });
-        group.add(new Konva.Text({ text: region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : '', width: region.width, height: region.height, fill: region.textColor, stroke: region.strokeColor !== 'transparent' ? region.strokeColor : undefined, strokeWidth: region.strokeColor !== 'transparent' ? region.strokeWidth : 0, fontFamily: region.fontFamily, fontSize: region.fontSize, fontStyle: `${region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`, align: region.textAlign, verticalAlign: 'middle', wrap: 'word', lineHeight: region.lineHeight, fillAfterStrokeEnabled: true }));
-        mainLayer.add(group);
-      });
-      stage.add(mainLayer);
-      await new Promise(resolve => setTimeout(resolve, 50));
-      finalDataUrl = stage.toDataURL({ mimeType: 'image/jpeg', quality: 0.9, pixelRatio: 1 });
-      stage.destroy();
+    if (img.status === 'done' || img.regions.length > 0 || img.paintStrokes.length > 0) {
+      finalDataUrl = await renderImageToDataUrl(img, 'jpeg', 0.9);
     }
 
     const imgProps = pdf.getImageProperties(finalDataUrl);

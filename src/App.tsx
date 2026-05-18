@@ -103,6 +103,50 @@ export default function App() {
     }
   };
 
+  const cleanZipInputRef = useRef<HTMLInputElement>(null);
+
+  const handleCleanedZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const cleanedImages = await extractImagesFromZip(file);
+      if (cleanedImages.length === 0) return;
+
+      setImages(prev => {
+        const newImages = [...prev];
+        // Match by index or filename
+        for (let i = 0; i < cleanedImages.length; i++) {
+          const cleanInfo = cleanedImages[i];
+          const matchIndex = newImages.findIndex(img => img.filename === cleanInfo.filename);
+          const targetIndex = matchIndex !== -1 ? matchIndex : i; // fallback to index if names don't match
+          
+          if (targetIndex < newImages.length) {
+             const target = newImages[targetIndex];
+             // Save current as original if not already set, then swap dataUrl
+             const originalDataUrl = target.originalDataUrl || target.dataUrl;
+             
+             // Remove backgrounds from regions as the image is already cleaned
+             const newRegions = target.regions.map(r => ({ ...r, bgColor: 'transparent' }));
+             
+             newImages[targetIndex] = {
+               ...target,
+               originalDataUrl,
+               dataUrl: cleanInfo.dataUrl,
+               regions: newRegions
+             };
+          }
+        }
+        return newImages;
+      });
+      alert('Cleaned images applied successfully! Use "View Original" to see the uncleaned version.');
+    } catch (error) {
+      console.error("Error reading cleaned zip", error);
+      alert("Failed to read Cleaned ZIP file.");
+    }
+    if (cleanZipInputRef.current) cleanZipInputRef.current.value = '';
+  };
+
   const updateImage = (imgId: string, updates: Partial<ProcessedImage>) => {
     setImages(prev => prev.map(img => img.id === imgId ? { ...img, ...updates } : img));
   };
@@ -474,6 +518,23 @@ export default function App() {
               title="Import ZIP"
             >
               <Upload size={16} /> Import ZIP
+            </button>
+
+            <div className="w-px bg-slate-700 mx-1 my-1"></div>
+
+            <input 
+              type="file" 
+              accept=".zip" 
+              className="hidden" 
+              ref={cleanZipInputRef}
+              onChange={handleCleanedZipUpload}
+            />
+            <button 
+              onClick={() => cleanZipInputRef.current?.click()}
+              className="flex items-center gap-2 hover:bg-slate-700 px-3 py-1.5 rounded text-sm transition-colors text-slate-300"
+              title="Upload Cleaned ZIP"
+            >
+              <Sparkles size={16} /> Cleaned ZIP
             </button>
 
             <div className="w-px bg-slate-700 mx-1 my-1"></div>
@@ -984,6 +1045,53 @@ export default function App() {
                     />
                     <span className="text-xs w-8 text-right font-mono">{Math.round(selectedRegion.angle)}°</span>
                   </div>
+                </div>
+                
+                <div className="pt-4 border-t border-slate-800 space-y-2 mt-4">
+                   <button 
+                     className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2 rounded transition-colors flex items-center justify-center gap-2"
+                     onClick={() => {
+                       saveHistory(selectedImage.id);
+                       updateImage(selectedImage.id, {
+                         regions: selectedImage.regions.map(r => ({
+                           ...r, 
+                           fontFamily: selectedRegion.fontFamily,
+                           fontSize: selectedRegion.fontSize,
+                           fontWeight: selectedRegion.fontWeight,
+                           fontStyle: selectedRegion.fontStyle,
+                           textColor: selectedRegion.textColor,
+                           strokeColor: selectedRegion.strokeColor,
+                           strokeWidth: selectedRegion.strokeWidth,
+                           textAlign: selectedRegion.textAlign
+                         }))
+                       });
+                     }}
+                   >
+                     <TypeIcon size={14} /> Apply text styles to this page
+                   </button>
+                   <button 
+                     className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2 rounded transition-colors flex items-center justify-center gap-2"
+                     onClick={() => {
+                       if (confirm('Apply these font settings to all text regions across ALL pages?')) {
+                         setImages(prev => prev.map(img => ({
+                           ...img,
+                           regions: img.regions.map(r => ({
+                             ...r, 
+                             fontFamily: selectedRegion.fontFamily,
+                             fontSize: selectedRegion.fontSize,
+                             fontWeight: selectedRegion.fontWeight,
+                             fontStyle: selectedRegion.fontStyle,
+                             textColor: selectedRegion.textColor,
+                             strokeColor: selectedRegion.strokeColor,
+                             strokeWidth: selectedRegion.strokeWidth,
+                             textAlign: selectedRegion.textAlign
+                           }))
+                         })));
+                       }
+                     }}
+                   >
+                     <TypeIcon size={14} /> Apply text styles to ALL pages
+                   </button>
                 </div>
               </div>
             </div>

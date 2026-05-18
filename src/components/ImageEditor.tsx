@@ -38,7 +38,8 @@ export function ImageEditor({
   onAddStroke,
   onGenerateInpaint
 }: ImageEditorProps) {
-  const [img] = useImage(image.dataUrl);
+  const bgToUse = showOriginal && image.originalDataUrl ? image.originalDataUrl : image.dataUrl;
+  const [img] = useImage(bgToUse);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const trRef = useRef<any>(null);
