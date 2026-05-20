@@ -3,6 +3,7 @@ import { Upload, Download, Play, Save, Loader2, Image as ImageIcon, Type as Type
 import { extractImagesFromZip, downloadProcessedZip, downloadPdf, downloadSingleImage } from './lib/zip';
 import { processMangaPages, generateInpaint, RawRegion } from './lib/gemini';
 import { floodFillBubble } from './lib/bubbleDetect';
+import { createTranslationDoc, parseTranslationDoc } from './lib/translationDoc';
 import { ProcessedImage, Region, PaintStroke } from './types';
 import { get, set } from 'idb-keyval';
 
@@ -563,6 +564,38 @@ export default function App() {
     }
   };
 
+  const importTranslationRef = useRef<HTMLInputElement>(null);
+
+  const handleExportTranslation = () => {
+    if (images.length === 0) return;
+    const docText = createTranslationDoc(images);
+    const blob = new Blob([docText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Translation_Doc.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportTranslation = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        const newImages = parseTranslationDoc(text, images);
+        setImages(newImages);
+        alert("Translation imported successfully!");
+      } catch (err) {
+        console.error(err);
+        alert("Failed to parse translation file. Ensure the file has not been corrupted and metadata is intact.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleDownloadCurrentPage = async () => {
     const imgToDownload = selectedImage || images[0];
     if (!imgToDownload) return;
@@ -735,11 +768,34 @@ export default function App() {
             <button 
               onClick={handleExportPdf}
               disabled={images.length === 0}
-              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors"
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-emerald-500/20"
               title="Export as paginated PDF"
             >
               PDF
             </button>
+            <button 
+              onClick={handleExportTranslation}
+              disabled={images.length === 0}
+              className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-slate-600"
+              title="Export text document for external translation"
+            >
+              Export Docs
+            </button>
+            <button 
+              onClick={() => importTranslationRef.current?.click()}
+              disabled={images.length === 0}
+              className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors"
+              title="Import translated text document"
+            >
+              Import Docs
+            </button>
+            <input 
+              type="file" 
+              ref={importTranslationRef} 
+              onChange={handleImportTranslation} 
+              accept=".txt" 
+              className="hidden" 
+            />
           </div>
         </div>
       </header>
