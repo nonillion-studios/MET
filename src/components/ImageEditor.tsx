@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
+import Konva from 'konva';
 import { Stage, Layer, Image as KonvaImage, Rect, Text, Group, Transformer, Line } from 'react-konva';
 import useImage from 'use-image';
 import { ProcessedImage, Region, PaintStroke } from '../types';
+import { calculateAutoFitFontSize } from '../utils/textUtils';
+import { Sparkles, Plus } from 'lucide-react';
 
 interface ImageEditorProps {
   image: ProcessedImage;
@@ -9,7 +12,7 @@ interface ImageEditorProps {
   onSelectRegion: (id: string | null) => void;
   onUpdateRegion: (id: string, updates: Partial<Region>) => void;
   stageRef: React.RefObject<any>;
-  activeTool: 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase';
+  activeTool: 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase' | 'crop';
   brushSize: number;
   brushColor: string;
   zoom: number;
@@ -17,6 +20,11 @@ interface ImageEditorProps {
   showText?: boolean;
   onAddStroke: (stroke: PaintStroke) => void;
   onGenerateInpaint?: (base64: string) => Promise<string>;
+  bubblePreviews?: any[];
+  showBubblePreviews?: boolean;
+  manhwaMode?: boolean;
+  onProcessCropSection?: (rect: { x: number, y: number, w: number, h: number }) => void;
+  onQueueCropSection?: (rect: { x: number, y: number, w: number, h: number }) => void;
 }
 
 const AIInpaintPatch = ({ base64, rect }: { base64: string, rect: {x: number, y: number, w: number, h: number} }) => {
@@ -26,70 +34,36 @@ const AIInpaintPatch = ({ base64, rect }: { base64: string, rect: {x: number, y:
 };
 
 const AutoFitText = ({ region }: { region: Region }) => {
-  const textRef = useRef<any>(null);
-
-  useEffect(() => {
-    const node = textRef.current;
-    if (!node) return;
-
-    if (!region.autoFitText) {
-      node.fontSize(region.fontSize);
-      return;
-    }
-
-    // Binary search for best font size
-    let minFontSize = 8;
-    let maxFontSize = 100;
-    let bestFontSize = region.fontSize;
-
-    // Temporarily clear fixed height to let Konva measure the natural text height
-    node.height(null);
-    node.wrap('none'); // temporarily turn off wrap to accurately measure single line width
-    
-    // Find the longest word to ensure it fits horizontally
-    const words = (region.translatedText || '').split(/\s+/);
-    const longestWord = words.reduce((a, b) => a.length > b.length ? a : b, '');
-    
-    const styleStr = `${region.fontStyle === 'normal' ? '' : region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`.trim() || 'normal';
-
-    // We create a temporary node to measure longest word
-    const measureNode = new Konva.Text({
-      text: longestWord,
-      fontFamily: region.fontFamily,
-      fontStyle: styleStr,
-      letterSpacing: region.letterSpacing || 0,
-    });
-
-    while (minFontSize <= maxFontSize) {
-      const mid = Math.floor((minFontSize + maxFontSize) / 2);
-      node.fontSize(mid);
-      node.wrap('word'); // restore word wrap to measure height
-      
-      const textHeight = node.height();
-      
-      measureNode.fontSize(mid);
-      const longestWordWidth = measureNode.width();
-      
-      // We must fit vertically AND the longest word must fit horizontally
-      if (textHeight > region.height || longestWordWidth > region.width) {
-        maxFontSize = mid - 1;
-      } else {
-        bestFontSize = mid;
-        minFontSize = mid + 1;
-      }
-    }
-    
-    measureNode.destroy();
-    
-    node.fontSize(bestFontSize);
-    node.height(region.height); // restore fixed height for vertical centering
-  }, [region.translatedText, region.width, region.height, region.fontSize, region.fontFamily, region.autoFitText, region.lineHeight, region.fontWeight, region.fontStyle]);
-
   const fontStyleStr = `${region.fontStyle === 'normal' ? '' : region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`.trim() || 'normal';
+
+  const fontSize = useMemo(() => {
+    if (!region.autoFitText) {
+      return region.fontSize;
+    }
+    return calculateAutoFitFontSize(
+      region.translatedText || '',
+      region.width,
+      region.height,
+      region.fontFamily,
+      fontStyleStr,
+      region.lineHeight || 1.2,
+      region.letterSpacing || 0,
+      region.fontSize
+    );
+  }, [
+    region.translatedText,
+    region.width,
+    region.height,
+    region.fontSize,
+    region.fontFamily,
+    region.autoFitText,
+    region.lineHeight,
+    fontStyleStr,
+    region.letterSpacing
+  ]);
 
   return (
     <Text
-      ref={textRef}
       text={region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : ''}
       width={region.width}
       height={region.height}
@@ -97,16 +71,17 @@ const AutoFitText = ({ region }: { region: Region }) => {
       stroke={region.strokeColor !== 'transparent' ? region.strokeColor : undefined}
       strokeWidth={region.strokeColor !== 'transparent' ? region.strokeWidth : 0}
       fontFamily={region.fontFamily}
-      fontSize={region.fontSize}
+      fontSize={fontSize}
       fontStyle={fontStyleStr}
       align={region.textAlign}
       verticalAlign="middle"
+      lineHeight={region.lineHeight || 1.2}
+      letterSpacing={region.letterSpacing || 0}
       wrap="word"
-      lineHeight={region.lineHeight}
+      listening={false}
       fillAfterStrokeEnabled={true}
       shadowColor={region.shadowColor !== 'transparent' && !!region.shadowColor ? region.shadowColor : undefined}
       shadowBlur={region.shadowBlur || 0}
-      letterSpacing={region.letterSpacing || 0}
     />
   );
 };
@@ -124,7 +99,12 @@ export function ImageEditor({
   showOriginal,
   showText = true,
   onAddStroke,
-  onGenerateInpaint
+  onGenerateInpaint,
+  bubblePreviews = [],
+  showBubblePreviews = false,
+  manhwaMode = false,
+  onProcessCropSection,
+  onQueueCropSection
 }: ImageEditorProps) {
   const bgToUse = showOriginal && image.originalDataUrl ? image.originalDataUrl : image.dataUrl;
   const [img] = useImage(bgToUse);
@@ -135,6 +115,10 @@ export function ImageEditor({
   
   const [isDrawing, setIsDrawing] = useState(false);
   const [currentStroke, setCurrentStroke] = useState<PaintStroke | null>(null);
+
+  // Manhwa Mode Crop states
+  const [cropRect, setCropRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  const [isDrawingCrop, setIsDrawingCrop] = useState(false);
 
   useEffect(() => {
     if (containerRef.current) {
@@ -162,7 +146,9 @@ export function ImageEditor({
     }
   }, [selectedRegionId, activeTool]);
 
-  const baseScale = img ? Math.min((size.width - 40) / image.width, (size.height - 40) / image.height) : 1;
+  const baseScale = img 
+    ? (manhwaMode ? (size.width - 16) / image.width : Math.min((size.width - 40) / image.width, (size.height - 40) / image.height))
+    : 1;
   const scale = baseScale * zoom;
 
   const stageWidth = img ? image.width * scale : size.width;
@@ -193,6 +179,12 @@ export function ImageEditor({
     
     const x = pos.x / scale;
     const y = pos.y / scale;
+
+    if (activeTool === 'crop') {
+      setCropRect({ x, y, w: 0, h: 0 });
+      setIsDrawingCrop(true);
+      return;
+    }
 
     let initialColor = brushColor;
     if (activeTool === 'draw' || activeTool === 'fill_poly') initialColor = brushColor;
@@ -228,15 +220,26 @@ export function ImageEditor({
   };
 
   const handleMouseMove = (e: any) => {
-    if (!isDrawing || !currentStroke) return;
-    if (activeTool === 'fill_poly') return; 
-
     const stage = e.target.getStage();
     const pos = stage.getPointerPosition();
     if (!pos) return;
 
     const x = pos.x / scale;
     const y = pos.y / scale;
+
+    if (activeTool === 'crop') {
+      if (isDrawingCrop && cropRect) {
+        setCropRect(prev => prev ? {
+          ...prev,
+          w: x - prev.x,
+          h: y - prev.y
+        } : null);
+      }
+      return;
+    }
+
+    if (!isDrawing || !currentStroke) return;
+    if (activeTool === 'fill_poly') return; 
 
     setCurrentStroke({
       ...currentStroke,
@@ -247,6 +250,24 @@ export function ImageEditor({
   const [isGenerating, setIsGenerating] = useState(false);
 
   const handleMouseUp = async () => {
+    if (activeTool === 'crop') {
+      if (isDrawingCrop && cropRect) {
+        setIsDrawingCrop(false);
+        const normalized = {
+          x: cropRect.w < 0 ? cropRect.x + cropRect.w : cropRect.x,
+          y: cropRect.h < 0 ? cropRect.y + cropRect.h : cropRect.y,
+          w: Math.abs(cropRect.w),
+          h: Math.abs(cropRect.h)
+        };
+        if (normalized.w > 10 && normalized.h > 10) {
+          setCropRect(normalized);
+        } else {
+          setCropRect(null);
+        }
+      }
+      return;
+    }
+
     if (activeTool === 'fill_poly') return; 
     if (isDrawing && currentStroke) {
       setIsDrawing(false);
@@ -399,8 +420,27 @@ export function ImageEditor({
             {/* Layer 2: Region Backgrounds & bg_erase strokes (with destination-out hole punching) */}
             {!showOriginal && (
               <Layer>
-                {image.regions.map((region) => (
-                  region.bgColor !== 'transparent' && (
+                {image.regions.map((region) => {
+                  if (region.bgColor === 'transparent') return null;
+
+                  const contour = (region as any).bubbleContour;
+                  if (region.type === 'bubble' && contour && contour.length > 0) {
+                    return (
+                      <Line
+                        key={region.id}
+                        points={contour}
+                        closed={true}
+                        fill={region.bgColor}
+                        stroke={region.bgColor}
+                        strokeWidth={1.5}
+                        lineJoin="round"
+                        lineCap="round"
+                        opacity={region.opacity ?? 1}
+                      />
+                    );
+                  }
+
+                  return (
                     <Group
                       key={region.id}
                       x={region.x + region.width / 2}
@@ -416,8 +456,8 @@ export function ImageEditor({
                         cornerRadius={region.type === 'bubble' ? 10 : 0}
                       />
                     </Group>
-                  )
-                ))}
+                  );
+                })}
                 
                 {/* Apply destination-out to punching holes exactly into the solid backgrounds above */}
                 {bgEraseStrokes.map((stroke, i) => (
@@ -491,6 +531,63 @@ export function ImageEditor({
                   </Group>
                 ))}
                 
+                {showBubblePreviews && bubblePreviews.map((preview, idx) => {
+                  const labelX = preview.safeTextBounds.x;
+                  const labelY = Math.max(10, preview.safeTextBounds.y - 18);
+                  
+                  return (
+                    <Group key={`preview-grp-${idx}`}>
+                      {/* Fully colored polygon utilizing the flood filled contour line points */}
+                      {preview.contour && preview.contour.length > 0 && (
+                        <Line
+                          points={preview.contour}
+                          closed={true}
+                          fill="rgba(59, 130, 246, 0.38)"
+                          stroke="#2563eb"
+                          strokeWidth={2.5}
+                          lineJoin="round"
+                          lineCap="round"
+                          opacity={0.95}
+                        />
+                      )}
+                      
+                      {/* Safe Inscribed boundaries (for centering text intelligently) */}
+                      <Rect
+                        x={preview.safeTextBounds.x}
+                        y={preview.safeTextBounds.y}
+                        width={preview.safeTextBounds.width}
+                        height={preview.safeTextBounds.height}
+                        stroke="#10b981"
+                        strokeWidth={1.5}
+                        dash={[3, 3]}
+                        opacity={0.85}
+                      />
+                      
+                      {/* Interactive Label badge centered inside the detected bubble shape */}
+                      <Rect
+                        x={labelX}
+                        y={labelY}
+                        width={82}
+                        height={16}
+                        fill="#2563eb"
+                        cornerRadius={3}
+                        shadowBlur={2}
+                        shadowColor="black"
+                        shadowOpacity={0.2}
+                      />
+                      <Text
+                        x={labelX + 6}
+                        y={labelY + 2}
+                        text="الحد الذكي للفقاعة"
+                        fontFamily="Cairo"
+                        fontSize={8.5}
+                        fontWeight="bold"
+                        fill="#ffffff"
+                      />
+                    </Group>
+                  );
+                })}
+                
                 {selectedRegionId && activeTool === 'select' && (
                   <Transformer
                     ref={trRef}
@@ -502,7 +599,79 @@ export function ImageEditor({
                 )}
               </Layer>
             )}
+
+            {/* Layer 4: Crop Selection Overlay */}
+            {activeTool === 'crop' && cropRect && (
+              <Layer>
+                <Rect
+                  x={cropRect.w < 0 ? cropRect.x + cropRect.w : cropRect.x}
+                  y={cropRect.h < 0 ? cropRect.y + cropRect.h : cropRect.y}
+                  width={Math.abs(cropRect.w)}
+                  height={Math.abs(cropRect.h)}
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  dash={[4, 4]}
+                  fill="rgba(59, 130, 246, 0.15)"
+                />
+              </Layer>
+            )}
           </Stage>
+
+          {/* Floating HTML div for AI Crop actions */}
+          {activeTool === 'crop' && cropRect && !isDrawingCrop && (
+            <div 
+              style={{ 
+                position: 'absolute', 
+                left: '0px', 
+                top: '0px', 
+                width: stageWidth, 
+                height: stageHeight,
+                pointerEvents: 'none'
+              }}
+            >
+              <div 
+                style={{ 
+                  position: 'absolute',
+                  left: `${(cropRect.x + cropRect.w/2) * scale}px`,
+                  top: `${(cropRect.y + (cropRect.h < 0 ? 0 : cropRect.h)) * scale + 15}px`,
+                  transform: 'translateX(-50%)',
+                  pointerEvents: 'auto'
+                }}
+                className="flex items-center gap-2 bg-[#14141d]/95 backdrop-blur-md p-2 border border-slate-700/60 rounded-xl shadow-2xl z-[90] animate-fade-in whitespace-nowrap"
+              >
+                <button
+                  onClick={() => {
+                    if (onQueueCropSection) {
+                      onQueueCropSection(cropRect);
+                    }
+                    setCropRect(null);
+                  }}
+                  className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded font-bold transition-all active:scale-95 shadow-md cursor-pointer"
+                >
+                  <Plus size={12} className="text-emerald-200" /> إضافة لطابور التجميع (Add to Batch Queue)
+                </button>
+                <div className="w-px bg-slate-800 h-5"></div>
+                <button
+                  onClick={() => {
+                    if (onProcessCropSection) {
+                      onProcessCropSection(cropRect);
+                    }
+                    setCropRect(null);
+                  }}
+                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded font-bold transition-all active:scale-95 shadow-md cursor-pointer"
+                >
+                  <Sparkles size={12} className="text-indigo-200 animate-pulse" /> ترجمة فورية (Direct Translate)
+                </button>
+                <div className="w-px bg-slate-800 h-5"></div>
+                <button
+                  onClick={() => setCropRect(null)}
+                  className="text-slate-400 hover:text-white text-xs px-2.5 py-1.5 rounded transition-all font-medium cursor-pointer"
+                >
+                  إلغاء (Cancel)
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

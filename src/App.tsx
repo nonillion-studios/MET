@@ -2,14 +2,16 @@ import React, { useState, useRef, useEffect, useCallback, Suspense } from 'react
 import { Upload, Download, Play, Save, Loader2, Image as ImageIcon, Type as TypeIcon, MousePointer2, Brush, Eraser, PenTool, ZoomIn, ZoomOut, Maximize, Palette, Plus, Pipette, Trash2, ChevronUp, ChevronDown, ImagePlus, Key, Sparkles, Scissors, Undo, Wand2, Settings } from 'lucide-react';
 import { extractImagesFromZip, downloadProcessedZip, downloadPdf, downloadSingleImage } from './lib/zip';
 import { processMangaPages, generateInpaint, RawRegion } from './lib/gemini';
-import { floodFillBubble } from './lib/bubbleDetect';
+import { floodFillBubble, floodFillBubbleDetailed } from './lib/bubbleDetect';
 import { createTranslationDoc, parseTranslationDoc } from './lib/translationDoc';
-import { ProcessedImage, Region, PaintStroke } from './types';
+import { ProcessedImage, Region, PaintStroke, CropSelection } from './types';
 import { get, set } from 'idb-keyval';
+import Swal from 'sweetalert2';
+import 'sweetalert2/dist/sweetalert2.min.css';
 
 const ImageEditor = React.lazy(() => import('./components/ImageEditor').then(m => ({ default: m.ImageEditor })));
 
-type Tool = 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase';
+type Tool = 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase' | 'crop';
 
 export default function App() {
   const [images, setImages] = useState<ProcessedImage[]>([]);
@@ -18,6 +20,9 @@ export default function App() {
   const [isProcessingAll, setIsProcessingAll] = useState(false);
   const [exportProgress, setExportProgress] = useState<string | null>(null);
   const [selectedForProcess, setSelectedForProcess] = useState<Set<string>>(new Set());
+  const [bubblePreviews, setBubblePreviews] = useState<{ [imgId: string]: any[] }>({});
+  const [showBubblePreviews, setShowBubblePreviews] = useState(false);
+  const [isGeneratingPreviews, setIsGeneratingPreviews] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
 
@@ -47,6 +52,14 @@ export default function App() {
   const [translateSfx, setTranslateSfx] = useState(true);
   const [zipMatchMode, setZipMatchMode] = useState<'filename' | 'index'>('filename');
 
+  const [autoFitAndCenter, setAutoFitAndCenter] = useState<boolean>(() => {
+    return localStorage.getItem('manga_auto_fit_and_center') !== 'false';
+  });
+  const [compressBeforeProcessing, setCompressBeforeProcessing] = useState<boolean>(() => {
+    return localStorage.getItem('manga_compress_before_processing') !== 'false';
+  });
+  const [cropsQueue, setCropsQueue] = useState<CropSelection[]>([]);
+
   useEffect(() => {
     const savedKey = localStorage.getItem('manga_gemini_key');
     if (savedKey) setCustomApiKey(savedKey);
@@ -58,6 +71,11 @@ export default function App() {
     if (savedTransSfx !== null) setTranslateSfx(savedTransSfx === 'true');
     const savedMatchMode = localStorage.getItem('manga_zip_match_mode');
     if (savedMatchMode) setZipMatchMode(savedMatchMode as any);
+    
+    const savedAutoFit = localStorage.getItem('manga_auto_fit_and_center');
+    if (savedAutoFit !== null) setAutoFitAndCenter(savedAutoFit === 'true');
+    const savedCompress = localStorage.getItem('manga_compress_before_processing');
+    if (savedCompress !== null) setCompressBeforeProcessing(savedCompress === 'true');
     
     // Preload Arabic fonts
     const fontsToLoad = [
@@ -71,7 +89,7 @@ export default function App() {
     }
   }, []);
 
-  const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleApiKeyChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     const val = e.target.value;
     setCustomApiKey(val);
     localStorage.setItem('manga_gemini_key', val);
@@ -98,6 +116,61 @@ export default function App() {
     localStorage.setItem('manga_zip_match_mode', val);
   };
   
+  const handleSetAutoFitAndCenter = (val: boolean) => {
+    setAutoFitAndCenter(val);
+    localStorage.setItem('manga_auto_fit_and_center', String(val));
+  };
+
+  const handleSetCompressBeforeProcessing = (val: boolean) => {
+    setCompressBeforeProcessing(val);
+    localStorage.setItem('manga_compress_before_processing', String(val));
+  };
+
+  const compressImageBase64 = async (base64: string, maxDim: number = 1600, quality: number = 0.85): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.src = base64;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width <= maxDim && height <= maxDim) {
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+            return;
+          }
+        }
+        if (width > height) {
+          if (width > maxDim) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          }
+        } else {
+          if (height > maxDim) {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        } else {
+          resolve(base64);
+        }
+      };
+      img.onerror = () => resolve(base64);
+    });
+  };
+  
   // Editor State
   const [activeTool, setActiveTool] = useState<Tool>('select');
   const [brushSize, setBrushSize] = useState(20);
@@ -105,6 +178,11 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showText, setShowText] = useState(true);
+
+  const [manhwaMode, setManhwaMode] = useState<boolean>(() => {
+    return localStorage.getItem('manhwa_mode') === 'true';
+  });
+  const [isProcessingCrop, setIsProcessingCrop] = useState(false);
 
   const selectedImage = images.find(img => img.id === selectedImageId);
   const selectedRegion = selectedImage?.regions.find(r => r.id === selectedRegionId);
@@ -169,15 +247,46 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    Swal.fire({
+      title: 'جاري استيراد صفحات المانجا...',
+      text: 'يرجى الانتظار بينما نقوم بفك ضغط الأرشيف وتحضير الصور.',
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      },
+      background: '#0f172a',
+      color: '#f8fafc'
+    });
+
     try {
       const extractedImages = await extractImagesFromZip(file);
       setImages(extractedImages);
       if (extractedImages.length > 0) {
         setSelectedImageId(extractedImages[0].id);
       }
+      Swal.close();
+      
+      Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: 'تم استيراد الأرشيف بنجاح!',
+        text: `تم استيراد عدد ${extractedImages.length} صور إلى الأستوديو.`,
+        showConfirmButton: false,
+        timer: 2000,
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
     } catch (error) {
       console.error("Error reading zip", error);
-      alert("Failed to read ZIP file.");
+      Swal.fire({
+        icon: 'error',
+        title: 'فشل استيراد الأرشيف',
+        text: 'الملف المروّس قد يكون غير صالح أو تالف.',
+        confirmButtonColor: '#ef4444',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
     }
   };
 
@@ -187,9 +296,30 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    Swal.fire({
+      title: 'جاري دمج كليبات التبييض (Manga Cleaning)...',
+      text: 'نقوم بمطابقة ملفات كليبات التبييض الفصول الحالية...',
+      allowOutsideClick: false,
+      didOpen: () => {
+        Swal.showLoading();
+      },
+      background: '#0f172a',
+      color: '#f8fafc'
+    });
+
     try {
       const cleanedImages = await extractImagesFromZip(file);
-      if (cleanedImages.length === 0) return;
+      if (cleanedImages.length === 0) {
+        Swal.fire({
+          icon: 'warning',
+          title: 'الأرشيف فارغ',
+          text: 'لم يتم العثور على صور للتبييض داخل الملف.',
+          confirmButtonColor: '#eab308',
+          background: '#0f172a',
+          color: '#f8fafc'
+        });
+        return;
+      }
 
       setImages(prev => {
         const newImages = [...prev];
@@ -225,10 +355,25 @@ export default function App() {
         }
         return newImages;
       });
-      alert('Cleaned images applied successfully! Use "View Original" to see the uncleaned version.');
+      
+      Swal.fire({
+        icon: 'success',
+        title: 'تم دمج كليبات الفصول النظيفة!',
+        text: 'تم تطبيق تبييض الفصول بنجاح. بمقدورك استخدام "View Original" لرؤية الفارق في أي لحظة.',
+        confirmButtonColor: '#4f46e5',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
     } catch (error) {
       console.error("Error reading cleaned zip", error);
-      alert("Failed to read Cleaned ZIP file.");
+      Swal.fire({
+        icon: 'error',
+        title: 'فشل دمج الأرشيف',
+        text: 'حدث خطأ أثناء فك الأرشيف أو قراءة المحتويات: ' + (error as Error).message,
+        confirmButtonColor: '#ef4444',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
     }
     if (cleanZipInputRef.current) cleanZipInputRef.current.value = '';
   };
@@ -281,10 +426,15 @@ export default function App() {
   };
 
   const handleSmartBubbleFill = async (imgId: string, region: Region) => {
+    if (region.type === 'sfx') {
+      alert("خوارزمية التعرف الذكي على الفقاعات مخصصة للفقاعات فقط وتتجاهل المؤثرات الصوتية (SFX).");
+      return;
+    }
     const img = images.find(i => i.id === imgId);
     if (!img) return;
 
-    const imgSrc = img.originalDataUrl || img.dataUrl;
+    // Use the whitened/inpainted image dataUrl strictly so text strokes don't block flood fill
+    const imgSrc = img.dataUrl;
     const imageObj = new Image();
     imageObj.src = imgSrc;
     await new Promise(resolve => imageObj.onload = resolve);
@@ -298,17 +448,20 @@ export default function App() {
     ctx.drawImage(imageObj, 0, 0);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    // Center of the current region text box
     const startX = Math.floor(region.x + region.width / 2);
     const startY = Math.floor(region.y + region.height / 2);
     
-    const newBounds = floodFillBubble(imageData, startX, startY);
+    const result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height);
     
-    if (newBounds) {
+    if (result) {
       saveHistory(img.id);
-      updateRegion(region.id, newBounds);
+      updateRegion(region.id, {
+        ...result.safeTextBounds,
+        bubbleContour: result.contour,
+        textAlign: 'center'
+      });
     } else {
-      alert("Could not detect bubble boundaries automatically.");
+      alert("تعذر التعرف التلقائي على حدود الفقاعة.");
     }
   };
 
@@ -317,11 +470,428 @@ export default function App() {
     updateRegion(regionId, { textAlign: 'center' }); // usually already handled, but we can also snap to center of parent bubble if preferred
   };
 
+  const traceRegionsWithBubbleDetection = async (imgDataUrl: string, regions: Region[]): Promise<Region[]> => {
+    try {
+      const imageObj = new Image();
+      imageObj.src = imgDataUrl;
+      await new Promise((resolve) => {
+        imageObj.onload = resolve;
+        imageObj.onerror = resolve;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = imageObj.width;
+      canvas.height = imageObj.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return regions;
+
+      ctx.drawImage(imageObj, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      return regions.map(region => {
+        if (region.type === 'bubble') {
+          const startX = Math.floor(region.x + region.width / 2);
+          const startY = Math.floor(region.y + region.height / 2);
+          const result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height);
+          if (result) {
+            return {
+              ...region,
+              ...result.safeTextBounds,
+              bubbleContour: result.contour,
+              textAlign: 'center'
+            };
+          }
+        }
+        return region;
+      });
+    } catch (e) {
+      console.error("Error auto-tracing bubbles:", e);
+      return regions;
+    }
+  };
+
+  const handleProcessCropSection = async (rect: { x: number, y: number, w: number, h: number }) => {
+    const img = images.find(i => i.id === selectedImageId);
+    if (!img) return;
+
+    setIsProcessingCrop(true);
+    try {
+      const imgSrc = img.originalDataUrl || img.dataUrl;
+      const imageObj = new Image();
+      imageObj.src = imgSrc;
+      await new Promise((resolve, reject) => {
+        imageObj.onload = resolve;
+        imageObj.onerror = reject;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = rect.w;
+      canvas.height = rect.h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error("Unable to create canvas 2D context");
+      }
+
+      // Draw only the cropped section
+      ctx.drawImage(imageObj, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+      const croppedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+      const key = customApiKey || '';
+      
+      const results = await processMangaPages(
+        [{ id: 'crop-temp', base64Image: croppedBase64DataUrl, mimeType: 'image/jpeg' }],
+        key,
+        customInstructions,
+        translateJapanese,
+        translateSfx
+      );
+
+      const rawRegions = results[0]?.regions || [];
+      if (rawRegions.length === 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'لم يتم العثور على نصوص',
+          text: 'لم يعثر الذكاء الاصطناعي على نصوص أو فقاعات في هذا الجزء المخصص.',
+          background: '#0f172a',
+          color: '#f8fafc',
+          confirmButtonColor: '#4f46e5'
+        });
+        return;
+      }
+
+      // Project regions back to the master image coordinate system
+      let newRegions: Region[] = rawRegions.map((raw, idx) => {
+        const cx = (raw.xmin / 1000) * rect.w;
+        const cy = (raw.ymin / 1000) * rect.h;
+        const cw = ((raw.xmax - raw.xmin) / 1000) * rect.w;
+        const ch = ((raw.ymax - raw.ymin) / 1000) * rect.h;
+
+        const rx = rect.x + cx;
+        const ry = rect.y + cy;
+
+        return {
+          id: `region_${Date.now()}_crop_${idx}`,
+          type: raw.type || 'bubble',
+          originalText: raw.originalText || '',
+          translatedText: raw.translatedText || '',
+          x: rx,
+          y: ry,
+          width: cw,
+          height: ch,
+          angle: raw.angle || 0,
+          textColor: raw.textColor || '#000000',
+          strokeColor: raw.strokeColor || 'transparent',
+          strokeWidth: raw.strokeWidth ?? 0,
+          bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
+          fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Cairo' : 'Aref Ruqaa'),
+          fontSize: raw.fontSize || Math.max(14, Math.floor(ch / 4.2)),
+          fontWeight: raw.fontWeight || 'normal',
+          fontStyle: raw.fontStyle || 'normal',
+          textAlign: raw.textAlign || 'center',
+          lineHeight: 1.25,
+          autoFitText: true
+        };
+      });
+
+      // Automatically trace contours and center alignment of newly created bubble regions if enabled!
+      if (autoFitAndCenter) {
+        newRegions = await traceRegionsWithBubbleDetection(imgSrc, newRegions);
+      }
+
+      saveHistory(img.id);
+      updateImage(img.id, {
+        regions: [...img.regions, ...newRegions]
+      });
+
+      if (newRegions.length > 0) {
+        setSelectedRegionId(newRegions[0].id);
+      }
+
+      Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: 'تمت الترجمة بنجاح!',
+        showConfirmButton: false,
+        timer: 1500,
+        timerProgressBar: true,
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+
+    } catch (err) {
+      console.error("AI Cropped Translate error:", err);
+      Swal.fire({
+        icon: 'error',
+        title: 'فشلت الترجمة',
+        text: 'حدث خطأ أثناء ترجمة الجزء المقتطع: ' + (err as Error).message,
+        confirmButtonColor: '#ef4444',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+    } finally {
+      setIsProcessingCrop(false);
+    }
+  };
+
+  const handleQueueCropSection = async (rect: { x: number, y: number, w: number, h: number }) => {
+    const img = images.find(i => i.id === selectedImageId);
+    if (!img) return;
+
+    try {
+      const imgSrc = img.originalDataUrl || img.dataUrl;
+      const imageObj = new Image();
+      imageObj.src = imgSrc;
+      await new Promise((resolve, reject) => {
+        imageObj.onload = resolve;
+        imageObj.onerror = reject;
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = rect.w;
+      canvas.height = rect.h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.drawImage(imageObj, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+      const croppedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.90);
+
+      const newCrop: CropSelection = {
+        id: `crop_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        sourceImageId: img.id,
+        imageName: img.filename,
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        cropUrl: croppedBase64DataUrl
+      };
+
+      setCropsQueue(prev => [...prev, newCrop]);
+
+      Swal.fire({
+        toast: true,
+        position: 'top-end',
+        icon: 'success',
+        title: 'تمت الإضافة لطابور التجميع',
+        text: `تم حفظ قطاع بحدود [${Math.round(rect.w)}x${Math.round(rect.h)}] بنجاح.`,
+        showConfirmButton: false,
+        timer: 2000,
+        timerProgressBar: true,
+        background: '#052e16',
+        color: '#f8fafc',
+        customClass: {
+          popup: 'backdrop-blur-md bg-emerald-950/90 border border-emerald-800/80 rounded-xl shadow-2xl'
+        }
+      });
+
+    } catch (e) {
+      console.error("Error cropping section for queue:", e);
+      Swal.fire({
+        icon: 'error',
+        title: 'فشل حفظ القطاع',
+        text: 'حدث خطأ أثناء اقتطاع وحفظ الصورة: ' + (e as Error).message,
+        confirmButtonColor: '#ef4444',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+    }
+  };
+
+  const handleTranslateCropQueue = async () => {
+    if (cropsQueue.length === 0) {
+      Swal.fire({
+        icon: 'warning',
+        title: 'طابور الاقتصاص فارغ',
+        text: 'يرجى قص جزء واحد على الأقل وإضافته للطابور أولاً باستخدام أداة الاقتصاص.',
+        confirmButtonColor: '#4f46e5',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+      return;
+    }
+
+    setIsProcessingCrop(true);
+    try {
+      const loadedImages: { selection: CropSelection; imgElement: HTMLImageElement }[] = [];
+      for (const item of cropsQueue) {
+        const imgObj = new Image();
+        imgObj.src = item.cropUrl;
+        await new Promise((resolve) => {
+          imgObj.onload = resolve;
+          imgObj.onerror = resolve;
+        });
+        loadedImages.push({ selection: item, imgElement: imgObj });
+      }
+
+      const spacing = 30; 
+      const canvasWidth = Math.max(...cropsQueue.map(c => c.w), 800); 
+      let totalStitchedHeight = 0;
+      
+      const renderSpecs = loadedImages.map((lm, idx) => {
+        const item = lm.selection;
+        const scale = canvasWidth / item.w;
+        const renderedH = item.h * scale;
+        const yOffset = totalStitchedHeight;
+        totalStitchedHeight += renderedH + (idx < loadedImages.length - 1 ? spacing : 0);
+        return {
+          ...item,
+          imgElement: lm.imgElement,
+          scale,
+          renderedW: canvasWidth,
+          renderedH,
+          yOffset
+        };
+      });
+
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasWidth;
+      canvas.height = totalStitchedHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error("Unable to create stitched canvas");
+      }
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvasWidth, totalStitchedHeight);
+
+      renderSpecs.forEach((spec) => {
+        ctx.drawImage(spec.imgElement, 0, spec.yOffset, spec.renderedW, spec.renderedH);
+        ctx.strokeStyle = '#4f46e5';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, spec.yOffset, spec.renderedW, spec.renderedH);
+      });
+
+      const stitchedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.88);
+      const key = customApiKey || '';
+
+      const results = await processMangaPages(
+        [{ id: 'stitched-crop', base64Image: stitchedBase64DataUrl, mimeType: 'image/jpeg' }],
+        key,
+        customInstructions,
+        translateJapanese,
+        translateSfx
+      );
+
+      const rawRegions = results[0]?.regions || [];
+      if (rawRegions.length === 0) {
+        Swal.fire({
+          icon: 'info',
+          title: 'لا توجد نتائج',
+          text: 'لم يعثر الذكاء الاصطناعي على نصوص في الأجزاء المقتطعة.',
+          confirmButtonColor: '#4f46e5',
+          background: '#0f172a',
+          color: '#f8fafc'
+        });
+        return;
+      }
+
+      const updatesGroupedByImage: { [imageId: string]: Region[] } = {};
+
+      for (let idx = 0; idx < rawRegions.length; idx++) {
+        const raw = rawRegions[idx];
+
+        const stitchedX = (raw.xmin / 1000) * canvasWidth;
+        const stitchedY = (raw.ymin / 1000) * totalStitchedHeight;
+        const stitchedW = ((raw.xmax - raw.xmin) / 1000) * canvasWidth;
+        const stitchedH = ((raw.ymax - raw.ymin) / 1000) * totalStitchedHeight;
+
+        const centerY = stitchedY + stitchedH / 2;
+        const matchedSpec = renderSpecs.find(spec => centerY >= spec.yOffset && centerY <= (spec.yOffset + spec.renderedH + spacing));
+        if (!matchedSpec) continue; 
+
+        const relYStitched = stitchedY - matchedSpec.yOffset;
+        const relXStitched = stitchedX; 
+
+        const relXOriginalSub = relXStitched / matchedSpec.scale;
+        const relYOriginalSub = relYStitched / matchedSpec.scale;
+        const relWOriginalSub = stitchedW / matchedSpec.scale;
+        const relHOriginalSub = stitchedH / matchedSpec.scale;
+
+        const origX = matchedSpec.x + relXOriginalSub;
+        const origY = matchedSpec.y + relYOriginalSub;
+        const origW = relWOriginalSub;
+        const origH = relHOriginalSub;
+
+        const rId = `region_${Date.now()}_queued_crop_${idx}`;
+        const region: Region = {
+          id: rId,
+          type: raw.type || 'bubble',
+          originalText: raw.originalText || '',
+          translatedText: raw.translatedText || '',
+          x: origX,
+          y: origY,
+          width: origW,
+          height: origH,
+          angle: raw.angle || 0,
+          textColor: raw.textColor || '#000000',
+          strokeColor: raw.strokeColor || 'transparent',
+          strokeWidth: raw.strokeWidth ?? 0,
+          bgColor: 'transparent', 
+          fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Cairo' : 'Aref Ruqaa'),
+          fontSize: raw.fontSize || Math.max(14, Math.floor(origH / 4.2)),
+          fontWeight: raw.fontWeight || 'normal',
+          fontStyle: raw.fontStyle || 'normal',
+          textAlign: raw.textAlign || 'center',
+          lineHeight: 1.25,
+          autoFitText: true
+        };
+
+        if (!updatesGroupedByImage[matchedSpec.sourceImageId]) {
+          updatesGroupedByImage[matchedSpec.sourceImageId] = [];
+        }
+        updatesGroupedByImage[matchedSpec.sourceImageId].push(region);
+      }
+
+      let totalAddedCount = 0;
+      for (const [imgId, newRegs] of Object.entries(updatesGroupedByImage)) {
+        const matchingImg = images.find(i => i.id === imgId);
+        if (!matchingImg) continue;
+
+        let finalRegsForImg = newRegs;
+        if (autoFitAndCenter) {
+          finalRegsForImg = await traceRegionsWithBubbleDetection(matchingImg.originalDataUrl || matchingImg.dataUrl, newRegs);
+        }
+
+        saveHistory(imgId);
+        updateImage(imgId, {
+          regions: [...matchingImg.regions, ...finalRegsForImg]
+        });
+        totalAddedCount += finalRegsForImg.length;
+      }
+
+      setCropsQueue([]);
+
+      Swal.fire({
+        icon: 'success',
+        title: 'تمت الترجمة بنجاح!',
+        text: `تمت ترجمة ومعالجة جميع القطاعات المحددة (${totalAddedCount} فقرة مضافة في مَكانها الأصلي للصور).`,
+        confirmButtonColor: '#4f46e5',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+
+    } catch (err) {
+      console.error("Batch Queue translate error:", err);
+      Swal.fire({
+        icon: 'error',
+        title: 'فشلت معالجة الطابور',
+        text: 'حدث خطأ أثناء الاتصال بالذكاء الاصطناعي وترجمة القطاعات: ' + (err as Error).message,
+        confirmButtonColor: '#ef4444',
+        background: '#0f172a',
+        color: '#f8fafc'
+      });
+    } finally {
+      setIsProcessingCrop(false);
+    }
+  };
+
   const handleSmartBubbleFillAll = async (imgId: string) => {
     const img = images.find(i => i.id === imgId);
     if (!img) return;
 
-    const imgSrc = img.originalDataUrl || img.dataUrl;
+    // Use the whitened/inpainted image dataUrl strictly
+    const imgSrc = img.dataUrl;
     const imageObj = new Image();
     imageObj.src = imgSrc;
     await new Promise(resolve => imageObj.onload = resolve);
@@ -340,12 +910,17 @@ export default function App() {
 
     for (let i = 0; i < newRegions.length; i++) {
        const region = newRegions[i];
-       if (region.type === 'bubble') {
+       if (region.type === 'bubble') { // ignores SFX completely
          const startX = Math.floor(region.x + region.width / 2);
          const startY = Math.floor(region.y + region.height / 2);
-         const newBounds = floodFillBubble(imageData, startX, startY);
-         if (newBounds) {
-           newRegions[i] = { ...region, ...newBounds };
+         const result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height);
+         if (result) {
+           newRegions[i] = { 
+             ...region, 
+             ...result.safeTextBounds,
+             bubbleContour: result.contour,
+             textAlign: 'center'
+           };
            changed = true;
          }
        }
@@ -355,23 +930,195 @@ export default function App() {
       saveHistory(img.id);
       updateImage(img.id, { regions: newRegions });
     } else {
-      alert("No bubbles could be optimized automatically.");
+      alert("لم يتم العثور على فقاعات لتحسينها تلقائياً.");
     }
+  };
+
+  const generateBubblePreviews = async (imgId: string) => {
+    const img = images.find(i => i.id === imgId);
+    if (!img) return;
+
+    setIsGeneratingPreviews(true);
+    try {
+      // Use the whitened/inpainted image dataUrl strictly
+      const imgSrc = img.dataUrl;
+      const imageObj = new Image();
+      imageObj.src = imgSrc;
+      await new Promise(resolve => imageObj.onload = resolve);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = imageObj.width;
+      canvas.height = imageObj.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      ctx.drawImage(imageObj, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      
+      const previews: any[] = [];
+
+      for (const region of img.regions) {
+        if (region.type === 'bubble') { // ignore SFX regions
+          const startX = Math.floor(region.x + region.width / 2);
+          const startY = Math.floor(region.y + region.height / 2);
+          const result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height);
+          if (result) {
+            previews.push({
+              regionId: region.id,
+              contour: result.contour, // exact fluid polygon outline points
+              safeTextBounds: result.safeTextBounds
+            });
+          }
+        }
+      }
+      
+      setBubblePreviews(prev => ({ ...prev, [imgId]: previews }));
+      setShowBubblePreviews(true);
+    } catch (e) {
+      console.error(e);
+      alert("تعذر تشغيل المعاينة التلقائية للفقاعات.");
+    } finally {
+      setIsGeneratingPreviews(false);
+    }
+  };
+
+  const applyBubblePreviews = (imgId: string) => {
+    const list = bubblePreviews[imgId];
+    if (!list || list.length === 0) return;
+    
+    saveHistory(imgId);
+    setImages(prev => prev.map(img => {
+      if (img.id !== imgId) return img;
+      return {
+        ...img,
+        regions: img.regions.map(region => {
+          const preview = list.find(p => p.regionId === region.id);
+          if (preview) {
+            return {
+              ...region,
+              ...preview.safeTextBounds,
+              bubbleContour: preview.contour,
+              textAlign: 'center'
+            };
+          }
+          return region;
+        })
+      };
+    }));
+    
+    setShowBubblePreviews(false);
   };
 
   const toggleSelectForProcess = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const newSet = new Set(selectedForProcess);
+    const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
+    const maxSelect = 5 * Math.max(1, keysList.length);
     if (newSet.has(id)) {
       newSet.delete(id);
     } else {
-      if (newSet.size >= 5) {
-        alert("You can select up to 5 images per request.");
+      if (newSet.size >= maxSelect) {
+        alert(`You can select up to ${maxSelect} images based on your API key list (5 per key).`);
         return;
       }
       newSet.add(id);
     }
     setSelectedForProcess(newSet);
+  };
+
+  const runParallelMangaTranslation = async (batch: ProcessedImage[]) => {
+    const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
+    const keysToUse = keysList.length > 0 ? keysList : [''];
+    
+    // Chunk batch into groups of 5
+    const chunks: ProcessedImage[][] = [];
+    for (let i = 0; i < batch.length; i += 5) {
+      chunks.push(batch.slice(i, i + 5));
+    }
+    
+    const maxConcurrent = keysToUse.length;
+    
+    // Process matching the number of keys concurrently
+    for (let i = 0; i < chunks.length; i += maxConcurrent) {
+      const currentChunks = chunks.slice(i, i + maxConcurrent);
+      
+      await Promise.all(currentChunks.map(async (chunk, index) => {
+        const key = keysToUse[index % keysToUse.length];
+        
+        // Mark all in chunk as processing
+        chunk.forEach(img => updateImage(img.id, { status: 'processing', error: undefined }));
+        
+        try {
+          const processedPages = await Promise.all(chunk.map(async img => {
+            const srcBase64 = img.originalDataUrl || img.dataUrl;
+            let imgBase64 = srcBase64;
+            let mimeType = img.mimeType;
+            if (compressBeforeProcessing) {
+              try {
+                imgBase64 = await compressImageBase64(srcBase64, 1600, 0.82);
+                mimeType = 'image/jpeg';
+              } catch (e) {
+                console.error("Compression failed for img:", img.id, e);
+              }
+            }
+            return { id: img.id, base64Image: imgBase64, mimeType };
+          }));
+
+          const chunkResults = await processMangaPages(
+            processedPages, 
+            key,
+            customInstructions,
+            translateJapanese,
+            translateSfx
+          );
+          
+          await Promise.all(chunkResults.map(async result => {
+            const img = chunk.find(b => b.id === result.id);
+            if (!img) return;
+            
+            const newRegions: Region[] = result.regions.map(raw => {
+              const x = (raw.xmin / 1000) * img.width;
+              const y = (raw.ymin / 1000) * img.height;
+              const width = ((raw.xmax - raw.xmin) / 1000) * img.width;
+              const height = ((raw.ymax - raw.ymin) / 1000) * img.height;
+              
+              return {
+                id: Math.random().toString(36).substr(2, 9),
+                type: raw.type,
+                originalText: raw.originalText,
+                translatedText: raw.translatedText,
+                x, y, width, height,
+                angle: raw.angle || 0,
+                textColor: raw.textColor || '#000000',
+                strokeColor: raw.strokeColor || 'transparent',
+                strokeWidth: raw.strokeWidth ?? 0,
+                bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
+                fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Marhey' : 'Aref Ruqaa'),
+                fontSize: raw.fontSize || Math.max(16, Math.floor(height / 4)),
+                fontWeight: raw.fontWeight || 'normal',
+                fontStyle: raw.fontStyle || 'normal',
+                textAlign: raw.textAlign || 'center',
+                lineHeight: raw.lineHeight || 1.2,
+                letterSpacing: 0,
+                opacity: 1,
+                shadowBlur: 0,
+                shadowColor: 'transparent',
+                autoFitText: true
+              };
+            });
+            
+            let finalRegions = newRegions;
+            if (autoFitAndCenter) {
+              finalRegions = await traceRegionsWithBubbleDetection(img.originalDataUrl || img.dataUrl, newRegions);
+            }
+            
+            updateImage(img.id, { status: 'done', regions: finalRegions });
+          }));
+        } catch (err: any) {
+          chunk.forEach(img => updateImage(img.id, { status: 'error', error: err.message }));
+        }
+      }));
+    }
   };
 
   const processSelectedImages = async () => {
@@ -382,112 +1129,14 @@ export default function App() {
        return;
     }
     
-    batch.forEach(img => updateImage(img.id, { status: 'processing', error: undefined }));
-    
-    try {
-      const batchResults = await processMangaPages(
-        batch.map(img => ({ id: img.id, base64Image: img.originalDataUrl || img.dataUrl, mimeType: img.mimeType })), 
-        customApiKey,
-        customInstructions,
-        translateJapanese,
-        translateSfx
-      );
-      
-      batchResults.forEach(result => {
-         const img = batch.find(b => b.id === result.id);
-         if (!img) return;
-         
-         const newRegions: Region[] = result.regions.map(raw => {
-           const x = (raw.xmin / 1000) * img.width;
-           const y = (raw.ymin / 1000) * img.height;
-           const width = ((raw.xmax - raw.xmin) / 1000) * img.width;
-           const height = ((raw.ymax - raw.ymin) / 1000) * img.height;
-           
-           return {
-             id: Math.random().toString(36).substr(2, 9),
-             type: raw.type,
-             originalText: raw.originalText,
-             translatedText: raw.translatedText,
-             x, y, width, height,
-             angle: raw.angle || 0,
-             textColor: raw.textColor || '#000000',
-             strokeColor: raw.strokeColor || 'transparent',
-             strokeWidth: raw.strokeWidth ?? 0,
-             bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
-             fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Marhey' : 'Aref Ruqaa'),
-             fontSize: raw.fontSize || Math.max(16, Math.floor(height / 4)),
-             fontWeight: raw.fontWeight || 'normal',
-             fontStyle: raw.fontStyle || 'normal',
-             textAlign: raw.textAlign || 'center',
-             lineHeight: raw.lineHeight || 1.2,
-             autoFitText: true
-           };
-         });
-         
-         updateImage(img.id, { status: 'done', regions: newRegions });
-      });
-      setSelectedForProcess(new Set());
-    } catch (err: any) {
-       batch.forEach(img => updateImage(img.id, { status: 'error', error: err.message }));
-    }
+    await runParallelMangaTranslation(batch);
+    setSelectedForProcess(new Set());
   };
 
   const processAllImages = async () => {
     setIsProcessingAll(true);
     const uncompleted = images.filter(img => img.status !== 'done');
-    
-    // Process in batches of 5
-    for (let i = 0; i < uncompleted.length; i += 5) {
-      const batch = uncompleted.slice(i, i + 5);
-      batch.forEach(img => updateImage(img.id, { status: 'processing', error: undefined }));
-      
-      try {
-        const batchResults = await processMangaPages(
-          batch.map(img => ({ id: img.id, base64Image: img.originalDataUrl || img.dataUrl, mimeType: img.mimeType })), 
-          customApiKey,
-          customInstructions,
-          translateJapanese,
-          translateSfx
-        );
-        
-        batchResults.forEach(result => {
-           const img = batch.find(b => b.id === result.id);
-           if (!img) return;
-           
-           const newRegions: Region[] = result.regions.map(raw => {
-             const x = (raw.xmin / 1000) * img.width;
-             const y = (raw.ymin / 1000) * img.height;
-             const width = ((raw.xmax - raw.xmin) / 1000) * img.width;
-             const height = ((raw.ymax - raw.ymin) / 1000) * img.height;
-             
-             return {
-               id: Math.random().toString(36).substr(2, 9),
-               type: raw.type,
-               originalText: raw.originalText,
-               translatedText: raw.translatedText,
-               x, y, width, height,
-               angle: raw.angle || 0,
-               textColor: raw.textColor || '#000000',
-               strokeColor: raw.strokeColor || 'transparent',
-               strokeWidth: raw.strokeWidth ?? 0,
-               bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
-               fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Marhey' : 'Aref Ruqaa'),
-               fontSize: raw.fontSize || Math.max(16, Math.floor(height / 4)),
-               fontWeight: raw.fontWeight || 'normal',
-               fontStyle: raw.fontStyle || 'normal',
-               textAlign: raw.textAlign || 'center',
-               lineHeight: raw.lineHeight || 1.2,
-               autoFitText: true
-             };
-           });
-           
-           updateImage(img.id, { status: 'done', regions: newRegions });
-        });
-      } catch (err: any) {
-         batch.forEach(img => updateImage(img.id, { status: 'error', error: err.message }));
-      }
-    }
-    
+    await runParallelMangaTranslation(uncompleted);
     setIsProcessingAll(false);
   };
   
@@ -496,7 +1145,23 @@ export default function App() {
     updateImage(img.id, { status: 'processing', error: undefined });
     
     try {
-      const results = await processMangaPages([{ id: img.id, base64Image: img.originalDataUrl || img.dataUrl, mimeType: img.mimeType }], customApiKey, customInstructions, translateJapanese, translateSfx);
+      const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
+      const key = keysList[0] || '';
+      
+      const srcBase64 = img.originalDataUrl || img.dataUrl;
+      let imgBase64 = srcBase64;
+      let mimeType = img.mimeType;
+      
+      if (compressBeforeProcessing) {
+        try {
+          imgBase64 = await compressImageBase64(srcBase64, 1600, 0.82);
+          mimeType = 'image/jpeg';
+        } catch (e) {
+          console.error("Compression failed for single image:", e);
+        }
+      }
+
+      const results = await processMangaPages([{ id: img.id, base64Image: imgBase64, mimeType: mimeType }], key, customInstructions, translateJapanese, translateSfx);
       const rawRegions = results[0]?.regions || [];
       
       const newRegions: Region[] = rawRegions.map(raw => {
@@ -526,11 +1191,20 @@ export default function App() {
           fontStyle: raw.fontStyle || 'normal',
           textAlign: raw.textAlign || 'center',
           lineHeight: raw.lineHeight || 1.2,
+          letterSpacing: 0,
+          opacity: 1,
+          shadowBlur: 0,
+          shadowColor: 'transparent',
           autoFitText: true
         };
       });
 
-      updateImage(img.id, { status: 'done', regions: newRegions });
+      let finalRegions = newRegions;
+      if (autoFitAndCenter) {
+        finalRegions = await traceRegionsWithBubbleDetection(srcBase64, newRegions);
+      }
+
+      updateImage(img.id, { status: 'done', regions: finalRegions });
     } catch (error: any) {
       updateImage(img.id, { status: 'error', error: error.message });
     }
@@ -710,17 +1384,28 @@ export default function App() {
             
             <div className="p-4 overflow-y-auto flex flex-col gap-6">
               <div className="space-y-2">
-                <label className="flex flex-col text-sm font-medium text-slate-300">
-                  Gemini API Key
-                  <input 
-                    type="password" 
-                    value={customApiKey}
-                    onChange={handleApiKeyChange}
-                    placeholder="Enter your API Key..."
-                    className="w-full bg-black border border-[#444] rounded-md p-2 mt-1 text-sm outline-none focus:border-indigo-500 font-normal"
-                  />
-                </label>
-                <p className="text-[10px] text-slate-500">Required for using gemini-2.5-flash. Key is saved locally in your browser.</p>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-slate-300">
+                    مفاتيح Gemini API (مفتاح في كل سطر أو مفصولة بفاصلة)
+                    <span className="block text-[11px] text-slate-400 font-normal mt-0.5">Gemini API Keys (One per line or comma-separated)</span>
+                  </span>
+                  {customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean).length > 0 && (
+                    <span className="text-[11px] bg-indigo-950/50 border border-indigo-800 text-indigo-400 px-2 py-0.5 rounded-full font-mono">
+                      {customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean).length} Keys
+                    </span>
+                  )}
+                </div>
+                <textarea 
+                  value={customApiKey}
+                  onChange={handleApiKeyChange}
+                  placeholder="Enter your Gemini API key(s)..."
+                  className="w-full h-24 bg-black border border-[#444] rounded-md p-2 text-xs outline-none focus:border-indigo-500 font-mono text-slate-200 resize-none"
+                />
+                <div className="space-y-1 text-[10px] text-slate-500 leading-relaxed">
+                  <p>✔ يمكنك إدخال عدة مفاتيح لتشغيل صفحات المانجا بالتوازي (مفتاح واحد لكل 5 صفحات كحد أقصى لتخطي حدود معدل الطلبات).</p>
+                  <p>✔ You can enter multiple keys to process manga pages in parallel (up to 5 pages per key to bypass rate limits).</p>
+                  <p>✔ عند تشغيل التطبيق خارجياً، <strong>يلزمك إدخال مفتاح خاص بك</strong> هنا، حيث أن المفتاح المدمج يعمل فقط في بيئة AI Studio.</p>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -770,6 +1455,32 @@ export default function App() {
                     className="w-4 h-4 rounded border-[#444] bg-black text-indigo-600 focus:ring-indigo-500 focus:ring-offset-black"
                   />
                   <span className="text-sm font-medium text-slate-300">Analyze and translate SFX</span>
+                </label>
+
+                <label className="flex items-center gap-3 cursor-pointer border-t border-slate-800/60 pt-3">
+                  <input 
+                    type="checkbox" 
+                    checked={autoFitAndCenter} 
+                    onChange={(e) => handleSetAutoFitAndCenter(e.target.checked)}
+                    className="w-4 h-4 rounded border-[#444] bg-black text-indigo-600 focus:ring-indigo-500 focus:ring-offset-black"
+                  />
+                  <span className="text-sm font-medium text-slate-300 flex flex-col">
+                    <span>توسيط النص وتلقيم الملء التلقائي للفقاعة</span>
+                    <span className="text-[10px] text-slate-500 font-normal">Auto flood fill detailed & text centering alignment</span>
+                  </span>
+                </label>
+
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={compressBeforeProcessing} 
+                    onChange={(e) => handleSetCompressBeforeProcessing(e.target.checked)}
+                    className="w-4 h-4 rounded border-[#444] bg-black text-indigo-600 focus:ring-indigo-500 focus:ring-offset-black"
+                  />
+                  <span className="text-sm font-medium text-slate-300 flex flex-col">
+                    <span>ضغط وتصغير حجم الصورة لتسريع المعالجة</span>
+                    <span className="text-[10px] text-slate-500 font-normal">Compress images to speed up Gemini AI processing (Speed Boost)</span>
+                  </span>
                 </label>
               </div>
             </div>
@@ -1057,13 +1768,20 @@ export default function App() {
                       title="Smart Auto-Color (SFX Whitening)"
                     >
                       <Sparkles size={16} />
-                    </button>
-                    <button 
+                     </button>
+                     <button 
                       onClick={() => setActiveTool('gen_erase')}
                       className={`p-1.5 rounded-md ${activeTool === 'gen_erase' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
                       title="AI Generative Inpaint (Smart Whitening)"
                     >
                       <Wand2 size={16} />
+                    </button>
+                    <button 
+                      onClick={() => setActiveTool('crop')}
+                      className={`p-1.5 rounded-md ${activeTool === 'crop' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200 hover:text-indigo-300'}`}
+                      title="اقتصاص جزء للترجمة (AI Crop & Translate Panel)"
+                    >
+                      <Scissors size={16} className="-rotate-90 text-indigo-400" />
                     </button>
                     <div className="w-px bg-slate-700 mx-1 my-1"></div>
                     <button 
@@ -1088,9 +1806,56 @@ export default function App() {
                       <ZoomIn size={16} />
                     </button>
                   </div>
+
+                  {/* Manhwa Mode Toggle */}
+                  <button
+                    onClick={() => {
+                      const next = !manhwaMode;
+                      setManhwaMode(next);
+                      localStorage.setItem('manhwa_mode', String(next));
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border transition-all ${manhwaMode ? 'bg-indigo-950/60 border-indigo-700 text-indigo-300 shadow-lg shadow-indigo-950/40 font-bold' : 'bg-[#111] border-[#333] text-slate-400 hover:text-slate-200 hover:bg-[#1f1f1f]'}`}
+                    title="ملاءمة عرض الصفحة لتناسب المانهوا الطويلة وتهيئة التمرير العمودي وميزة الاقتصاص للذكاء الاصطناعي"
+                  >
+                    <span className="relative flex h-2 w-2">
+                      {manhwaMode && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>}
+                      <span className={`relative inline flex rounded-full h-2 w-2 ${manhwaMode ? 'bg-indigo-400' : 'bg-slate-500'}`}></span>
+                    </span>
+                    وضع المانهوا (Manhwa Mode)
+                  </button>
                   
                   {selectedImage.status !== 'processing' && (
-                    <div className="flex items-center gap-2 ml-4">
+                    <div className="flex items-center gap-2 ml-4 animate-fade-in">
+                      {isGeneratingPreviews ? (
+                        <div className="flex items-center gap-1.5 bg-blue-950/40 border border-blue-800 text-blue-400 px-3 py-1.5 rounded text-xs font-medium">
+                          <Loader2 size={12} className="animate-spin" /> جاري تحديد الفقاعات...
+                        </div>
+                      ) : showBubblePreviews ? (
+                        <div className="flex items-center gap-1.5 bg-blue-950/30 border border-blue-900 px-2 py-1 rounded">
+                          <button
+                            onClick={() => applyBubblePreviews(selectedImage.id)}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1 rounded font-medium transition-colors"
+                            title="Apply the safe centered alignment to all detected bubbles"
+                          >
+                            تطبيق الوسطنة (Apply)
+                          </button>
+                          <button
+                            onClick={() => setShowBubblePreviews(false)}
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-3 py-1 rounded font-medium transition-colors"
+                          >
+                            إلغاء (Cancel)
+                          </button>
+                        </div>
+                      ) : (
+                        <button 
+                          onClick={() => generateBubblePreviews(selectedImage.id)}
+                          className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-medium transition-colors"
+                          title="تحديد ومعاينة الفقاعات بالخوارزمية الذكية باللون الأزرق قبل تطبيق الوسطنة"
+                        >
+                          <Wand2 size={14} /> تحديد قبل تطبيق (Preview Bounds)
+                        </button>
+                      )}
+                      
                       <button 
                         onClick={() => handleSmartBubbleFillAll(selectedImage.id)}
                         className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded text-xs font-medium transition-colors text-white"
@@ -1170,6 +1935,15 @@ export default function App() {
                   )}
                 </div>
               </div>
+              {isProcessingCrop && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+                  <div className="bg-black border border-[#444] rounded-xl p-8 flex flex-col items-center gap-4 max-w-sm w-full shadow-2xl animate-fade-in text-center">
+                    <Loader2 size={42} className="animate-spin text-indigo-500" />
+                    <h3 className="text-sm font-bold text-white tracking-tight">جاري ترجمة ومعالجة المانهوا بالذكاء الاصطناعي...</h3>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">يقوم Gemini الآن بتحليل وتبييض ومحاذاة القطاع المقتطع تلقائياً ومطابقته على الصورة الكاملة بدقة فائقة.</p>
+                  </div>
+                </div>
+              )}
               <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-slate-500"><Loader2 className="animate-spin mr-2"/> Loading Editor...</div>}>
                 <ImageEditor
                   image={selectedImage}
@@ -1190,8 +1964,59 @@ export default function App() {
                     });
                   }}
                   onGenerateInpaint={async (base64) => generateInpaint(base64, selectedImage.mimeType, customApiKey)}
+                  bubblePreviews={bubblePreviews[selectedImage.id] || []}
+                  showBubblePreviews={showBubblePreviews && !showOriginal}
+                  manhwaMode={manhwaMode}
+                  onProcessCropSection={handleProcessCropSection}
+                  onQueueCropSection={handleQueueCropSection}
                 />
               </Suspense>
+
+              {cropsQueue.length > 0 && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-2xl bg-slate-900/80 backdrop-blur-xl border border-indigo-500/30 rounded-2xl shadow-2xl p-3.5 z-40 flex items-center justify-between gap-4 animate-fade-in">
+                  <div className="flex flex-col gap-1 max-w-[45%]">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5 leading-none">
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      طابور الاقتصاص المجمع للـ AI (العدد: {cropsQueue.length})
+                    </span>
+                    <span className="text-[10px] text-slate-400 leading-tight">
+                      سيتم دمج القطع كصورة واحدة دفعة واحدة وترجمتها لإصدارها الأصلي بالاحداثيات الصحيحة.
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center gap-2 overflow-x-auto max-w-[35%] py-1 border-x border-slate-800/80 px-3 scrollbar-none">
+                    {cropsQueue.map((crop) => (
+                      <div key={crop.id} className="relative group shrink-0 w-11 h-11 rounded bg-black/50 border border-slate-700/60 overflow-hidden shadow-md">
+                        <img src={crop.cropUrl} className="w-full h-full object-cover" />
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCropsQueue(prev => prev.filter(c => c.id !== crop.id));
+                          }}
+                          className="absolute top-0 right-0 bg-red-600 hover:bg-red-500 text-white p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center w-4.5 h-4.5 text-[9px] font-bold"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setCropsQueue([])}
+                      className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1.5 rounded transition-all cursor-pointer font-medium"
+                    >
+                      إفراغ (Clear)
+                    </button>
+                    <button
+                      onClick={handleTranslateCropQueue}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-lg transition-all active:scale-95 cursor-pointer"
+                    >
+                      <Sparkles size={12} className="text-white shrink-0 animate-pulse" /> ترجمة مجمعة
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-slate-500 flex flex-col items-center gap-4">
@@ -1265,7 +2090,7 @@ export default function App() {
                     <input
                       type="number"
                       value={Math.round(selectedRegion.fontSize)}
-                      onChange={(e) => updateRegion(selectedRegion.id, { fontSize: Number(e.target.value) })}
+                      onChange={(e) => updateRegion(selectedRegion.id, { fontSize: Number(e.target.value), autoFitText: false })}
                       className="w-full bg-black border border-[#444] rounded-md p-2 text-sm outline-none"
                     />
                   </div>
@@ -1452,6 +2277,60 @@ export default function App() {
                       max="20"
                       value={selectedRegion.shadowBlur || 0}
                       onChange={(e) => updateRegion(selectedRegion.id, { shadowBlur: Number(e.target.value) })}
+                      className="w-full accent-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                {/* Dimensions and Coordinates manual inputs in Arabic/English */}
+                <div className="space-y-2 border-t border-[#333] pt-4 mt-2">
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">الإحداثيات والأبعاد (Dimensions)</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500">X (موضع أفقي)</label>
+                      <input 
+                        type="number"
+                        value={Math.round(selectedRegion.x)}
+                        onChange={(e) => updateRegion(selectedRegion.id, { x: Number(e.target.value) })}
+                        className="w-full bg-black border border-[#444] rounded-md p-1.5 text-xs text-white outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500">Y (موضع رأسي)</label>
+                      <input 
+                        type="number"
+                        value={Math.round(selectedRegion.y)}
+                        onChange={(e) => updateRegion(selectedRegion.id, { y: Number(e.target.value) })}
+                        className="w-full bg-black border border-[#444] rounded-md p-1.5 text-xs text-white outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500">Width (العرض)</label>
+                      <input 
+                        type="number"
+                        value={Math.round(selectedRegion.width)}
+                        onChange={(e) => updateRegion(selectedRegion.id, { width: Number(e.target.value) })}
+                        className="w-full bg-black border border-[#444] rounded-md p-1.5 text-xs text-white outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] text-slate-500">Height (الارتفاع)</label>
+                      <input 
+                        type="number"
+                        value={Math.round(selectedRegion.height)}
+                        onChange={(e) => updateRegion(selectedRegion.id, { height: Number(e.target.value) })}
+                        className="w-full bg-black border border-[#444] rounded-md p-1.5 text-xs text-white outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1 mt-2">
+                    <label className="text-[10px] text-slate-500">Angle (الزاوية: {selectedRegion.angle || 0}°)</label>
+                    <input 
+                      type="range"
+                      min="-180"
+                      max="180"
+                      value={selectedRegion.angle || 0}
+                      onChange={(e) => updateRegion(selectedRegion.id, { angle: Number(e.target.value) })}
                       className="w-full accent-indigo-500"
                     />
                   </div>

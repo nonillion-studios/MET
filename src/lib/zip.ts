@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { jsPDF } from 'jspdf';
 import { saveAs } from 'file-saver';
 import { ProcessedImage } from '../types';
+import { calculateAutoFitFontSize } from '../utils/textUtils';
 
 export async function extractImagesFromZip(file: File): Promise<ProcessedImage[]> {
   const zip = await JSZip.loadAsync(file);
@@ -84,9 +85,23 @@ async function renderImageToDataUrl(img: ProcessedImage, format: 'jpeg' | 'png' 
 
   img.regions.forEach(region => {
     if (region.bgColor !== 'transparent') {
-      const group = new Konva.Group({ x: region.x + region.width / 2, y: region.y + region.height / 2, rotation: region.angle, offset: { x: region.width / 2, y: region.height / 2 } });
-      group.add(new Konva.Rect({ width: region.width, height: region.height, fill: region.bgColor, cornerRadius: region.type === 'bubble' ? 10 : 0 }));
-      layer2.add(group);
+      const contour = (region as any).bubbleContour;
+      if (region.type === 'bubble' && contour && contour.length > 0) {
+        layer2.add(new Konva.Line({
+          points: contour,
+          closed: true,
+          fill: region.bgColor,
+          stroke: region.bgColor,
+          strokeWidth: 1.5,
+          lineJoin: 'round',
+          lineCap: 'round',
+          opacity: region.opacity ?? 1
+        }));
+      } else {
+        const group = new Konva.Group({ x: region.x + region.width / 2, y: region.y + region.height / 2, rotation: region.angle, offset: { x: region.width / 2, y: region.height / 2 } });
+        group.add(new Konva.Rect({ width: region.width, height: region.height, fill: region.bgColor, cornerRadius: region.type === 'bubble' ? 10 : 0 }));
+        layer2.add(group);
+      }
     }
   });
 
@@ -96,6 +111,21 @@ async function renderImageToDataUrl(img: ProcessedImage, format: 'jpeg' | 'png' 
 
   img.regions.forEach(region => {
     const fontStyleStr = `${region.fontStyle === 'normal' ? '' : region.fontStyle} ${region.fontWeight === 'normal' ? '' : region.fontWeight}`.trim() || 'normal';
+    
+    let renderFontSize = region.fontSize;
+    if (region.autoFitText) {
+      renderFontSize = calculateAutoFitFontSize(
+        region.translatedText || '',
+        region.width,
+        region.height,
+        region.fontFamily,
+        fontStyleStr,
+        region.lineHeight || 1.2,
+        region.letterSpacing || 0,
+        region.fontSize
+      );
+    }
+
     const group = new Konva.Group({ x: region.x, y: region.y, width: region.width, height: region.height, rotation: region.angle, opacity: region.opacity ?? 1 });
     group.add(new Konva.Text({ 
       text: region.translatedText ? region.translatedText.split('\n').map(line => '\u202B' + line + '\u200F').join('\n') : '', 
@@ -105,7 +135,7 @@ async function renderImageToDataUrl(img: ProcessedImage, format: 'jpeg' | 'png' 
       stroke: region.strokeColor !== 'transparent' ? region.strokeColor : undefined, 
       strokeWidth: region.strokeColor !== 'transparent' ? region.strokeWidth : 0, 
       fontFamily: region.fontFamily, 
-      fontSize: region.fontSize, 
+      fontSize: renderFontSize, 
       fontStyle: fontStyleStr, 
       align: region.textAlign, 
       verticalAlign: 'middle', 

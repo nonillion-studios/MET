@@ -23,6 +23,7 @@ export interface Region {
   autoFitText?: boolean;
   shadowColor?: string;
   shadowBlur?: number;
+  bubbleContour?: number[];
 }
 
 export interface PaintStroke {
@@ -47,4 +48,15 @@ export interface ProcessedImage {
   width: number;
   height: number;
   error?: string;
+}
+
+export interface CropSelection {
+  id: string;
+  sourceImageId: string;
+  imageName: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cropUrl: string;
 }
