@@ -18,6 +18,8 @@ export interface Region {
   fontStyle: string;
   textAlign: string;
   lineHeight: number;
+  letterSpacing?: number;
+  opacity?: number;
   autoFitText?: boolean;
   shadowColor?: string;
   shadowBlur?: number;

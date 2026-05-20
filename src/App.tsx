@@ -1186,18 +1186,21 @@ export default function App() {
                         className="w-8 h-8 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
                         disabled={selectedRegion.strokeColor === 'transparent'}
                       />
-                      <input
-                        type="number"
-                        min="0"
-                        max="20"
-                        value={selectedRegion.strokeColor === 'transparent' ? 0 : selectedRegion.strokeWidth}
-                        onChange={(e) => {
-                          const val = Number(e.target.value);
-                          if (val === 0) updateRegion(selectedRegion.id, { strokeColor: 'transparent', strokeWidth: 0 });
-                          else updateRegion(selectedRegion.id, { strokeColor: selectedRegion.strokeColor === 'transparent' ? '#ffffff' : selectedRegion.strokeColor, strokeWidth: val });
-                        }}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-md p-1.5 text-xs outline-none"
-                      />
+                      <div className="flex items-center gap-2 flex-1">
+                        <input
+                          type="range"
+                          min="0"
+                          max="20"
+                          value={selectedRegion.strokeColor === 'transparent' ? 0 : selectedRegion.strokeWidth}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (val === 0) updateRegion(selectedRegion.id, { strokeColor: 'transparent', strokeWidth: 0 });
+                            else updateRegion(selectedRegion.id, { strokeColor: selectedRegion.strokeColor === 'transparent' ? '#ffffff' : selectedRegion.strokeColor, strokeWidth: val });
+                          }}
+                          className="w-full accent-indigo-500"
+                        />
+                        <span className="text-xs font-mono">{selectedRegion.strokeColor === 'transparent' ? 0 : selectedRegion.strokeWidth}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1248,6 +1251,39 @@ export default function App() {
                       className="flex-1 accent-indigo-500"
                     />
                     <span className="text-xs w-8 text-right font-mono">{Math.round(selectedRegion.angle)}°</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-400">Letter Spacing</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="-5"
+                        max="20"
+                        step="0.5"
+                        value={selectedRegion.letterSpacing || 0}
+                        onChange={(e) => updateRegion(selectedRegion.id, { letterSpacing: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-500"
+                      />
+                      <span className="text-xs w-6 text-right font-mono">{selectedRegion.letterSpacing || 0}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-400">Opacity (All)</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={selectedRegion.opacity ?? 1}
+                        onChange={(e) => updateRegion(selectedRegion.id, { opacity: Number(e.target.value) })}
+                        className="flex-1 accent-indigo-500"
+                      />
+                      <span className="text-xs w-8 text-right font-mono">{Math.round((selectedRegion.opacity ?? 1) * 100)}%</span>
+                    </div>
                   </div>
                 </div>
                 

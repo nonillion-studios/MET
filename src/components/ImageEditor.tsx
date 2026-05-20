@@ -42,14 +42,14 @@ const AutoFitText = ({ region }: { region: Region }) => {
     let maxFontSize = 100;
     let bestFontSize = region.fontSize;
 
-    // Reset properties for accurate measurement
-    node.fontSize(maxFontSize);
+    // Temporarily remove fixed height to let Konva measure the natural text height
+    node.height(undefined);
 
     while (minFontSize <= maxFontSize) {
       const mid = Math.floor((minFontSize + maxFontSize) / 2);
       node.fontSize(mid);
       
-      const textHeight = node.textHeight();
+      const textHeight = node.height();
       if (textHeight > region.height) {
         maxFontSize = mid - 1;
       } else {
@@ -59,6 +59,7 @@ const AutoFitText = ({ region }: { region: Region }) => {
     }
     
     node.fontSize(bestFontSize);
+    node.height(region.height); // restore fixed height for vertical centering
   }, [region.translatedText, region.width, region.height, region.fontSize, region.fontFamily, region.autoFitText, region.lineHeight, region.fontWeight, region.fontStyle]);
 
   return (
@@ -80,6 +81,7 @@ const AutoFitText = ({ region }: { region: Region }) => {
       fillAfterStrokeEnabled={true}
       shadowColor={region.shadowColor !== 'transparent' ? region.shadowColor : undefined}
       shadowBlur={region.shadowBlur}
+      letterSpacing={region.letterSpacing || 0}
     />
   );
 };
@@ -380,6 +382,7 @@ export function ImageEditor({
                       y={region.y + region.height / 2}
                       rotation={region.angle}
                       offset={{ x: region.width / 2, y: region.height / 2 }}
+                      opacity={region.opacity ?? 1}
                     >
                       <Rect
                         width={region.width}
@@ -419,6 +422,7 @@ export function ImageEditor({
                     width={region.width}
                     height={region.height}
                     rotation={region.angle}
+                    opacity={region.opacity ?? 1}
                     draggable={activeTool === 'select'}
                     onClick={() => activeTool === 'select' && onSelectRegion(region.id)}
                     onTap={() => activeTool === 'select' && onSelectRegion(region.id)}
