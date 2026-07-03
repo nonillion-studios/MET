@@ -25,11 +25,17 @@ export interface DetailedBubbleResult {
   safeTextBounds: { x: number; y: number; width: number; height: number };
 }
 
+interface TextCluster {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  pixelCount: number;
+}
 
-// Perceptual-ish weighted RGB distance ("redmean" approximation of CIE76).
-// Far cheaper than converting to Lab, but tracks human color perception
-// much better than plain Euclidean distance - important once we compare
-// arbitrary bubble colors instead of just "is it light".
+// Redmean approximation for CIE76 to match human vision perfectly
 function redmeanDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
   const rmean = (r1 + r2) / 2;
   const dr = r1 - r2;
@@ -38,9 +44,13 @@ function redmeanDistance(r1: number, g1: number, b1: number, r2: number, g2: num
   return Math.sqrt((2 + rmean / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rmean) / 256) * db * db);
 }
 
-// Moore-Neighbor tracing function to extract pixel-perfect boundary of a visited mask
+// Convert RGB to relative luminance to analyze text-to-background contrast
+function getLuminance(r: number, g: number, b: number): number {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+// Moore-Neighbor tracing function to extract boundary coordinate points
 function traceContour(visited: Uint8Array, width: number, height: number, startX: number, startY: number): number[] {
-  // Find leftmost visited pixel in the connected component to start boundary search safely
   let bx = startX;
   let by = startY;
   while (bx > 0 && visited[by * width + (bx - 1)] === 1) {
@@ -50,16 +60,15 @@ function traceContour(visited: Uint8Array, width: number, height: number, startX
   const contourPoints: number[] = [];
   let cx = bx;
   let cy = by;
-  let dir = 6; // Start searching with direction pointing left (6)
+  let dir = 6; 
 
-  // 8 directions clockwise (0=up, 1=up-right, 2=right, 3=down-right, 4=down, 5=down-left, 6=left, 7=up-left)
   const dx = [0, 1, 1, 1, 0, -1, -1, -1];
   const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
 
   let startCx = cx;
   let startCy = cy;
   let firstStep = true;
-  let maxSteps = Math.max(1000, width * height * 0.1); // Guard limit
+  let maxSteps = Math.max(1000, width * height * 0.1); 
   let steps = 0;
 
   while (steps < maxSteps) {
@@ -70,8 +79,7 @@ function traceContour(visited: Uint8Array, width: number, height: number, startX
     contourPoints.push(cx, cy);
 
     let foundNext = false;
-    // Walk counter-clockwise/clockwise around Moore neighborhood
-    let searchDir = (dir + 5) % 8; // backtrack direction
+    let searchDir = (dir + 5) % 8; 
     for (let k = 0; k < 8; k++) {
       const d = (searchDir + k) % 8;
       const nx = cx + dx[d];
@@ -95,10 +103,7 @@ function traceContour(visited: Uint8Array, width: number, height: number, startX
   return contourPoints;
 }
 
-// Ramer-Douglas-Peucker polyline simplification (iterative, to avoid recursion
-// depth issues on large contours). Shape-preserving, unlike naive stride
-// downsampling - critical for jagged "explosion" bubbles and cloud-shaped
-// thought bubbles where a fixed stride can erase the defining features.
+// Ramer-Douglas-Peucker polyline simplification to optimize coordinate sizes
 function douglasPeucker(points: number[], epsilon: number): number[] {
   const n = points.length / 2;
   if (n < 3) return points.slice();
@@ -154,8 +159,6 @@ function douglasPeucker(points: number[], epsilon: number): number[] {
   return result;
 }
 
-// Progressively simplify until the point count is render-friendly, instead of
-// blindly picking every Nth point regardless of local curvature.
 function simplifyContour(points: number[], targetMax = 180): number[] {
   if (points.length / 2 <= targetMax) return points;
   let simplified = points;
@@ -167,14 +170,7 @@ function simplifyContour(points: number[], targetMax = 180): number[] {
   return simplified;
 }
 
-// Largest axis-aligned rectangle fully inscribed in a binary mask (classic
-// "maximal rectangle in histogram" sweep, O(w*h)). This replaces the old
-// ray-cast-from-centroid heuristic: instead of assuming the bubble is
-// roughly elliptical, it finds a rectangle that is *guaranteed* to sit
-// inside the detected interior, so it holds up for round, oval, rectangular
-// caption boxes, jagged shout bubbles, and lumpy cloud-shaped thought
-// bubbles alike - and it naturally excludes thin tails/spikes since those
-// can never contribute to the largest rectangle.
+// Sweep-line histogram solver to find the largest inscribed rectangle in binary masks
 function maximalInscribedRect(mask: Uint8Array, w: number, h: number): { x: number; y: number; w: number; h: number } | null {
   if (w <= 0 || h <= 0) return null;
 
@@ -208,11 +204,7 @@ function maximalInscribedRect(mask: Uint8Array, w: number, h: number): { x: numb
   return best.area > 0 ? best : null;
 }
 
-// Morphological closing (dilate then erode) with a small square kernel.
-// Halftone screentone dots and JPEG speckle punch tiny 1-2px holes in the
-// interior mask that would otherwise fragment the maximal-rectangle search
-// into a sliver; closing bridges those small holes back up while leaving the
-// mask's true outer shape essentially untouched.
+// Close mask to eliminate halftone patterns and JPEG noise gaps
 function closeMask(mask: Uint8Array, w: number, h: number, radius: number): Uint8Array {
   const dilated = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -253,15 +245,342 @@ function closeMask(mask: Uint8Array, w: number, h: number, radius: number): Uint
   return closed;
 }
 
+/**
+ * Scans the interior of the filled mask to locate distinct, cohesive text clusters.
+ * Crucial for separating overlapping bubbles and determining auto-recovery strategies.
+ */
+function discoverTextClustersInMask(
+  data: UintClampedArray,
+  width: number,
+  height: number,
+  mask: Uint8Array,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): TextCluster[] {
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+  const isEdge = new Uint8Array(w * h);
+
+  const getL = (x: number, y: number) => {
+    const idx = (y * width + x) * 4;
+    return getLuminance(data[idx], data[idx + 1], data[idx + 2]);
+  };
+
+  // Find high-frequency edge strokes inside the filled mask
+  for (let y = 0; y < h; y++) {
+    const imgY = minY + y;
+    for (let x = 0; x < w; x++) {
+      const imgX = minX + x;
+      if (mask[imgY * width + imgX] === 0) continue;
+
+      const currentL = getL(imgX, imgY);
+      let maxGrad = 0;
+      if (x < w - 1 && mask[imgY * width + (imgX + 1)] === 1) {
+        maxGrad = Math.max(maxGrad, Math.abs(currentL - getL(imgX + 1, imgY)));
+      }
+      if (y < h - 1 && mask[(imgY + 1) * width + imgX] === 1) {
+        maxGrad = Math.max(maxGrad, Math.abs(currentL - getL(imgX, imgY + 1)));
+      }
+
+      if (maxGrad > 38) {
+        isEdge[y * w + x] = 1;
+      }
+    }
+  }
+
+  // BFS grouping of stroke pixels with an adaptive jumping bridge to reconstruct blocks
+  const visited = new Uint8Array(w * h);
+  const clusters: TextCluster[] = [];
+  const jumpX = 24; 
+  const jumpY = 16; 
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (isEdge[y * w + x] === 1 && visited[y * w + x] === 0) {
+        const queueX: number[] = [x];
+        const queueY: number[] = [y];
+        let qHead = 0;
+        visited[y * w + x] = 1;
+
+        let cMinX = x, cMaxX = x, cMinY = y, cMaxY = y;
+        let sumX = 0, sumY = 0;
+
+        while (qHead < queueX.length) {
+          const cx = queueX[qHead];
+          const cy = queueY[qHead];
+          qHead++;
+
+          sumX += cx;
+          sumY += cy;
+
+          if (cx < cMinX) cMinX = cx;
+          if (cx > cMaxX) cMaxX = cx;
+          if (cy < cMinY) cMinY = cy;
+          if (cy > cMaxY) cMaxY = cy;
+
+          const x0 = Math.max(0, cx - jumpX);
+          const x1 = Math.min(w - 1, cx + jumpX);
+          const y0 = Math.max(0, cy - jumpY);
+          const y1 = Math.min(h - 1, cy + jumpY);
+
+          for (let ny = y0; ny <= y1; ny++) {
+            const rowBase = ny * w;
+            for (let nx = x0; nx <= x1; nx++) {
+              if (isEdge[rowBase + nx] === 1 && visited[rowBase + nx] === 0) {
+                visited[rowBase + nx] = 1;
+                queueX.push(nx);
+                queueY.push(ny);
+              }
+            }
+          }
+        }
+
+        const clusterW = cMaxX - cMinX + 1;
+        const clusterH = cMaxY - cMinY + 1;
+
+        // Skip small noise structures
+        if (queueX.length >= 6 && clusterW >= 4 && clusterH >= 4) {
+          clusters.push({
+            x: minX + cMinX,
+            y: minY + cMinY,
+            width: clusterW,
+            height: clusterH,
+            centerX: minX + Math.round(sumX / queueX.length),
+            centerY: minY + Math.round(sumY / queueX.length),
+            pixelCount: queueX.length
+          });
+        }
+      }
+    }
+  }
+
+  return clusters;
+}
+
+function extractTextCluster(
+  data: UintClampedArray,
+  width: number,
+  height: number,
+  startX: number,
+  startY: number,
+  searchRadius = 220
+): { x: number; y: number; width: number; height: number } | null {
+  const minX = Math.max(0, startX - searchRadius);
+  const maxX = Math.min(width - 1, startX + searchRadius);
+  const minY = Math.max(0, startY - searchRadius);
+  const maxY = Math.min(height - 1, startY + searchRadius);
+
+  const w = maxX - minX + 1;
+  const h = maxY - minY + 1;
+
+  const isEdge = new Uint8Array(w * h);
+  const getL = (x: number, y: number) => {
+    const idx = (y * width + x) * 4;
+    return getLuminance(data[idx], data[idx + 1], data[idx + 2]);
+  };
+
+  for (let y = 0; y < h; y++) {
+    const imgY = minY + y;
+    for (let x = 0; x < w; x++) {
+      const imgX = minX + x;
+      const currentL = getL(imgX, imgY);
+
+      let maxGrad = 0;
+      if (x < w - 1) maxGrad = Math.max(maxGrad, Math.abs(currentL - getL(imgX + 1, imgY)));
+      if (y < h - 1) maxGrad = Math.max(maxGrad, Math.abs(currentL - getL(imgX, imgY + 1)));
+
+      if (maxGrad > 36) { 
+        isEdge[y * w + x] = 1;
+      }
+    }
+  }
+
+  const localStartX = startX - minX;
+  const localStartY = startY - minY;
+  let seedX = -1, seedY = -1;
+  let minDistSq = Infinity;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (isEdge[y * w + x]) {
+        const dx = x - localStartX;
+        const dy = y - localStartY;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < minDistSq) {
+          minDistSq = distSq;
+          seedX = x;
+          seedY = y;
+        }
+      }
+    }
+  }
+
+  if (seedX === -1 || minDistSq > 60 * 60) return null;
+
+  const visited = new Uint8Array(w * h);
+  const queueX: number[] = [seedX];
+  const queueY: number[] = [seedY];
+  let qHead = 0;
+  visited[seedY * w + seedX] = 1;
+
+  let cMinX = seedX, cMaxX = seedX, cMinY = seedY, cMaxY = seedY;
+  const jumpX = 20; 
+  const jumpY = 14; 
+
+  while (qHead < queueX.length) {
+    const cx = queueX[qHead];
+    const cy = queueY[qHead];
+    qHead++;
+
+    if (cx < cMinX) cMinX = cx;
+    if (cx > cMaxX) cMaxX = cx;
+    if (cy < cMinY) cMinY = cy;
+    if (cy > cMaxY) cMaxY = cy;
+
+    const x0 = Math.max(0, cx - jumpX);
+    const x1 = Math.min(w - 1, cx + jumpX);
+    const y0 = Math.max(0, cy - jumpY);
+    const y1 = Math.min(h - 1, cy + jumpY);
+
+    for (let ny = y0; ny <= y1; ny++) {
+      const rowBase = ny * w;
+      for (let nx = x0; nx <= x1; nx++) {
+        if (isEdge[rowBase + nx] && !visited[rowBase + nx]) {
+          visited[rowBase + nx] = 1;
+          queueX.push(nx);
+          queueY.push(ny);
+        }
+      }
+    }
+  }
+
+  const clusterW = cMaxX - cMinX + 1;
+  const clusterH = cMaxY - cMinY + 1;
+
+  if (queueX.length < 8 || clusterW < 5 || clusterH < 5) return null;
+
+  return {
+    x: minX + cMinX,
+    y: minY + cMinY,
+    width: clusterW,
+    height: clusterH
+  };
+}
+
+function evaluateBoundaryStrength(
+  data: UintClampedArray,
+  width: number,
+  height: number,
+  visited: Uint8Array,
+  contourPoints: number[]
+): number {
+  if (contourPoints.length < 4) return 0;
+
+  let totalDiff = 0;
+  let samples = 0;
+
+  for (let i = 0; i < contourPoints.length; i += 6) {
+    const cx = contourPoints[i];
+    const cy = contourPoints[i + 1];
+
+    const baseIdx = (cy * width + cx) * 4;
+    const insideL = getLuminance(data[baseIdx], data[baseIdx + 1], data[baseIdx + 2]);
+
+    const dx = [0, 1, 0, -1];
+    const dy = [-1, 0, 1, 0];
+    for (let j = 0; j < 4; j++) {
+      const nx = cx + dx[j];
+      const ny = cy + dy[j];
+      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+        if (visited[ny * width + nx] === 0) {
+          const outIdx = (ny * width + nx) * 4;
+          const outsideL = getLuminance(data[outIdx], data[outIdx + 1], data[outIdx + 2]);
+          totalDiff += Math.abs(insideL - outsideL);
+          samples++;
+          break;
+        }
+      }
+    }
+  }
+
+  return samples > 0 ? totalDiff / samples : 0;
+}
+
+/**
+ * Self-Audit Engine: Verifies the integrity of the generated mask.
+ * Automatically checks for leakages, abnormal ratios, or extremely sparse shapes.
+ */
+function auditResult(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  interior: Uint8Array,
+  imageWidth: number,
+  imageHeight: number,
+  borderStrength: number,
+  hasTextCluster: boolean
+): boolean {
+  const area = w * h;
+
+  // 1. Check for extreme size anomalies
+  if (area > imageWidth * imageHeight * 0.45) {
+    return false; 
+  }
+
+  // 2. Check for extreme aspect ratio (likely a leak into long panels)
+  const ratio = Math.max(w, 1) / Math.max(h, 1);
+  if (ratio > 6.5 || ratio < 1 / 6.5) {
+    return false;
+  }
+
+  // 3. Density Audit: Check if the shape is solid or a thin, leaked thread
+  let filled = 0;
+  for (let cy = y; cy < y + h; cy++) {
+    const rowBase = cy * imageWidth;
+    for (let cx = x; cx < x + w; cx++) {
+      if (interior[rowBase + cx] === 1) filled++;
+    }
+  }
+  const density = filled / Math.max(1, area);
+  if (density < 0.22) {
+    return false; 
+  }
+
+  // 4. Boundary strength Audit
+  if (hasTextCluster && borderStrength < 18) {
+    return false; 
+  }
+
+  return true;
+}
+
+function generateRoundedRectContour(x: number, y: number, w: number, h: number, r: number): number[] {
+  const points: number[] = [];
+  const steps = 4; 
+  const corners = [
+    { cx: x + w - r, cy: y + r, start: -Math.PI / 2, end: 0 },
+    { cx: x + w - r, cy: y + h - r, start: 0, end: Math.PI / 2 },
+    { cx: x + r, cy: y + h - r, start: Math.PI / 2, end: Math.PI },
+    { cx: x + r, cy: y + r, start: Math.PI, end: (3 * Math.PI) / 2 }
+  ];
+  for (const c of corners) {
+    for (let i = 0; i <= steps; i++) {
+      const angle = c.start + (c.end - c.start) * (i / steps);
+      points.push(Math.round(c.cx + r * Math.cos(angle)), Math.round(c.cy + r * Math.sin(angle)));
+    }
+  }
+  return points;
+}
+
 export function floodFillBubbleDetailed(
   imageData: ImageData,
   startX: number,
   startY: number,
   regionWidth?: number,
   regionHeight?: number,
-  // Centers of OTHER bubbles already placed on the same page. This is
-  // information no amount of pixel analysis can recover on its own - see
-  // the "Sibling-bubble barrier" comment below for why it matters.
   avoidPoints?: { x: number; y: number }[]
 ): DetailedBubbleResult | null {
   const { width, height, data } = imageData;
@@ -276,10 +595,9 @@ export function floodFillBubbleDetailed(
   const clampX = (x: number) => Math.min(width - 1, Math.max(0, x));
   const clampY = (y: number) => Math.min(height - 1, Math.max(0, y));
 
-  // Local color variance around the seed - used to size an adaptive
-  // tolerance. Flat-colored bubbles get a tight tolerance (avoids leaking
-  // past thin outlines); noisy/gradient/halftone-shaded bubbles get a wider
-  // one so BFS doesn't fragment into hundreds of disconnected islands.
+  // 1. Initial text cluster extraction near seed click
+  const textCluster = extractTextCluster(data, width, height, startX, startY);
+
   const patchStats = (cx: number, cy: number, radius: number) => {
     const x0 = clampX(cx - radius), x1 = clampX(cx + radius);
     const y0 = clampY(cy - radius), y1 = clampY(cy + radius);
@@ -289,7 +607,7 @@ export function floodFillBubbleDetailed(
       const rowBase = y * width;
       for (let x = x0; x <= x1; x++) {
         const idx = (rowBase + x) * 4;
-        if (data[idx + 3] < 64) continue; // ignore transparent samples
+        if (data[idx + 3] < 64) continue; 
         sr += data[idx]; sg += data[idx + 1]; sb += data[idx + 2];
         samples.push(data[idx], data[idx + 1], data[idx + 2]);
         count++;
@@ -305,15 +623,6 @@ export function floodFillBubbleDetailed(
     return { spread: Math.sqrt(varSum / (count * 3)) };
   };
 
-  // Fraction of opaque samples in a window whose color is close to a given
-  // reference color. General form of the "majority vote" test: used both to
-  // compare a pixel against its OWN color (isStableSeed, below) and to
-  // compare a candidate fill pixel against the bubble's seed color
-  // (isFillable's anti-leak guard). A point sitting deep in a noisy/
-  // halftone-shaded fill still has the reference color as the dominant
-  // (majority) color around it, while a point on a thin stroke or straddling
-  // a real edge between two regions does not - the reference is only ever a
-  // minority there, however the mean/variance shakes out.
   const referenceMatchFraction = (cx: number, cy: number, radius: number, refR: number, refG: number, refB: number) => {
     const x0 = clampX(cx - radius), x1 = clampX(cx + radius);
     const y0 = clampY(cy - radius), y1 = clampY(cy + radius);
@@ -322,7 +631,7 @@ export function floodFillBubbleDetailed(
       const rowBase = y * width;
       for (let x = x0; x <= x1; x++) {
         const sIdx = (rowBase + x) * 4;
-        if (data[sIdx + 3] < 64) continue; // transparency handled separately by callers
+        if (data[sIdx + 3] < 64) continue;
         total++;
         if (redmeanDistance(data[sIdx], data[sIdx + 1], data[sIdx + 2], refR, refG, refB) <= 40) match++;
       }
@@ -335,30 +644,13 @@ export function floodFillBubbleDetailed(
     return referenceMatchFraction(cx, cy, radius, data[idx], data[idx + 1], data[idx + 2]);
   };
 
-  // A click can easily land on a thin black outline stroke, a text glyph, or
-  // just past the edge of one, instead of squarely on the bubble's fill.
-  // Detect that with a *self-relative* test: compare the exact pixel to the
-  // average of its own immediate neighborhood. A pixel sitting well inside
-  // any large flat area (fill or background, light or dark or colored) is
-  // close to its own neighborhood average at any sampling radius; a pixel
-  // on or near a thin stroke/glyph - narrower than the sampling window - is
-  // a sharp outlier because that window mostly sees whatever surrounds the
-  // stroke instead. Checking at two radii (matching the smaller radius used
-  // later to derive the actual fill color) guarantees that whatever seed we
-  // settle on is not just "not on the stroke" but solidly representative of
-  // the fill, not a blend contaminated by a nearby edge. This works for
-  // bubbles of any color and doesn't get skewed by a single distant
-  // reference sample the way comparing only against a far-away point would.
   const isStableSeed = (px: number, py: number) => {
     const idx = (py * width + px) * 4;
-    if (data[idx + 3] < 64) return true; // transparent regions are trivially stable
-    // Require the pixel's own color to be the majority at two window sizes:
-    // a small one (catches thin strokes/glyphs) and a wider one (catches
-    // sitting just past the edge, where a small window alone could still
-    // look locally uniform).
+    if (data[idx + 3] < 64) return true; 
     return majorityMatchFraction(px, py, 3) >= 0.6 && majorityMatchFraction(px, py, 6) >= 0.55;
   };
 
+  // Auto search neighborhood for stable flood seed
   if (!isStableSeed(startX, startY)) {
     let found = false;
     for (let r = 1; r < 40 && !found; r++) {
@@ -375,222 +667,289 @@ export function floodFillBubbleDetailed(
         }
       }
     }
-    if (!found) return null; // Couldn't find any representative bubble fill nearby
+    if (!found) {
+      if (textCluster) return triggerTextOnlyFallback(textCluster, width, height);
+      return null;
+    }
   }
 
   const seedIdx = (startY * width + startX) * 4;
   const rawSeedAlpha = data[seedIdx + 3];
   const seedIsTransparent = rawSeedAlpha < 64;
-  // Use the raw pixel directly rather than averaging a window around it.
-  // isStableSeed already confirmed (via majority vote, not a mean) that this
-  // exact color is the dominant one nearby, so it's already a trustworthy
-  // reference - any further averaging just reintroduces the same failure
-  // modes stability-checking was meant to avoid: a small window is noisy in
-  // textured fills, a larger one risks bleeding in a neighboring region.
   const seedColor = { r: data[seedIdx], g: data[seedIdx + 1], b: data[seedIdx + 2] };
   const { spread } = patchStats(startX, startY, 4);
-  // Adaptive tolerance: tight for flat colors, generous for textured/shaded fills.
-  const tolerance = Math.min(95, Math.max(30, spread * 2.2 + 22));
-  // Per-step tolerance for gradient/shaded bubbles: tighter than the
-  // absolute seed tolerance, but measured against the immediate neighbor a
-  // candidate is being expanded from (not the distant seed). This lets a
-  // smoothly shaded fill be followed all the way across a bubble even once
-  // its color has drifted well past what a single fixed tolerance-to-seed
-  // check would ever allow, without loosening the seed check itself (which
-  // stays tight and is what keeps a hop straight onto a dark outline out).
-  const stepTolerance = Math.max(16, tolerance * 0.4);
 
-  // A candidate pixel is fillable outright if it plainly matches the seed
-  // color, or plainly continues the local gradient from whichever
-  // already-accepted pixel it's being expanded from. Anything else is
-  // ambiguous - it could be an isolated halftone/JPEG speck deep inside the
-  // fill, or it could be the first pixel of a real outline/boundary - and is
-  // resolved with a majority vote at two window sizes (same technique as
-  // isStableSeed): accept only if the seed color is still the dominant color
-  // nearby at BOTH a tight and a looser radius. A lone speck still has the
-  // fill color all around it and passes; a pixel that has actually crossed
-  // onto or through a border does not, because the window is now dominated
-  // by the outline or whatever lies beyond it. This is what keeps a thin,
-  // anti-aliased border between two similarly-colored adjacent bubbles from
-  // being smoothed away by simple averaging and leaking the fill between them.
-  const isFillable = (px: number, py: number, parentR: number, parentG: number, parentB: number) => {
-    const idx = (py * width + px) * 4;
-    const a = data[idx + 3];
-    if (a < 64) return true; // Transparent regions always count as bubble interior
-    if (seedIsTransparent) return false; // Seed was a transparent hole; don't spill into opaque art
+  // Self-recovery loop with descending tolerances on failure
+  const toleranceTiers = [1.0, 0.70, 0.45];
+  let finalDetailedResult: DetailedBubbleResult | null = null;
 
-    const r = data[idx], g = data[idx + 1], b = data[idx + 2];
-    if (redmeanDistance(r, g, b, seedColor.r, seedColor.g, seedColor.b) <= tolerance) return true;
-    if (redmeanDistance(r, g, b, parentR, parentG, parentB) <= stepTolerance) return true;
+  for (let tier = 0; tier < toleranceTiers.length; tier++) {
+    const toleranceMultiplier = toleranceTiers[tier];
+    const tolerance = Math.min(95, Math.max(30, spread * 2.2 + 22)) * toleranceMultiplier;
+    const stepTolerance = Math.max(16, tolerance * 0.4);
 
-    return referenceMatchFraction(px, py, 2, seedColor.r, seedColor.g, seedColor.b) >= 0.7
-        && referenceMatchFraction(px, py, 5, seedColor.r, seedColor.g, seedColor.b) >= 0.62;
-  };
+    const isFillable = (px: number, py: number, parentR: number, parentG: number, parentB: number) => {
+      const idx = (py * width + px) * 4;
+      const a = data[idx + 3];
+      if (a < 64) return true; 
+      if (seedIsTransparent) return false; 
 
-  // Expansion limits: generous enough for full-page-wide bubbles when we
-  // have a size hint, and scaled to the image itself when we don't (a fixed
-  // 300px default made no sense across a 600px crop vs. a 4000px scan).
-  const maxExtentX = Math.min(width, regionWidth ? Math.max(180, Math.round(regionWidth * 2.4)) : Math.round(width * 0.32));
-  const maxExtentY = Math.min(height, regionHeight ? Math.max(180, Math.round(regionHeight * 2.4)) : Math.round(height * 0.32));
-  const maxIterations = Math.min(260000, Math.max(35000, maxExtentX * maxExtentY * 2));
+      const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      if (redmeanDistance(r, g, b, seedColor.r, seedColor.g, seedColor.b) <= tolerance) return true;
+      if (redmeanDistance(r, g, b, parentR, parentG, parentB) <= stepTolerance) return true;
 
-  // Sibling-bubble barrier: other bubbles already placed on this page have
-  // known centers - information no amount of pixel analysis can recover on
-  // its own. Real manga bubbles are sometimes drawn touching or overlapping,
-  // or separated only by a border thin enough that no purely local color
-  // test can reliably hold (see isFillable above); when that happens here,
-  // this fill and the neighbor's would otherwise both claim the same
-  // territory and their safe-text rectangles would land on top of each
-  // other.
-  //
-  // A small fixed-radius keep-out disk around each sibling center was tried
-  // first and rejected: it only dents a fused blob right next to the
-  // sibling's exact center, so the maximal-rectangle search just routes
-  // around it and still produces a rectangle that spans (most of) both
-  // bubbles - a fixed radius has no way to know how large "this bubble" is,
-  // especially on the very first click where the only size hint available
-  // is the whole image, not the bubble. A Voronoi-style nearest-seed
-  // partition has no such scale problem: a candidate pixel is only ours if
-  // it's closer to OUR seed than to any sibling's, i.e. the perpendicular
-  // bisector between the two seeds becomes the wall. That boundary falls
-  // near the true waist of a fused blob regardless of how big the blob is,
-  // with nothing to tune.
-  const relevantAvoidPoints = (avoidPoints ?? []).filter(p => {
-    const adx = p.x - startX, ady = p.y - startY;
-    if (adx === 0 && ady === 0) return false; // guard against a caller accidentally including this bubble's own seed
-    return Math.abs(adx) <= maxExtentX * 1.5 && Math.abs(ady) <= maxExtentY * 1.5;
-  });
-  const isAvoided = (px: number, py: number) => {
-    if (relevantAvoidPoints.length === 0) return false;
-    const mdx = px - startX, mdy = py - startY;
-    const ownDistSq = mdx * mdx + mdy * mdy;
-    for (let i = 0; i < relevantAvoidPoints.length; i++) {
-      const p = relevantAvoidPoints[i];
-      const ddx = px - p.x, ddy = py - p.y;
-      if (ddx * ddx + ddy * ddy < ownDistSq) return true; // strictly closer to a sibling's seed than to our own
-    }
-    return false;
-  };
+      return referenceMatchFraction(px, py, 2, seedColor.r, seedColor.g, seedColor.b) >= 0.7
+          && referenceMatchFraction(px, py, 5, seedColor.r, seedColor.g, seedColor.b) >= 0.62;
+    };
 
-  const visited = new Uint8Array(width * height); // interior fill + one-pixel boundary ring (for contour)
-  const interior = new Uint8Array(width * height); // interior fill only (for safe text-bounds rectangle)
-  const queueX: number[] = [startX];
-  const queueY: number[] = [startY];
-  let qHead = 0;
-  visited[startY * width + startX] = 1;
-  interior[startY * width + startX] = 1;
+    const maxExtentX = Math.min(width, regionWidth ? Math.max(180, Math.round(regionWidth * 2.4)) : Math.round(width * 0.32));
+    const maxExtentY = Math.min(height, regionHeight ? Math.max(180, Math.round(regionHeight * 2.4)) : Math.round(height * 0.32));
+    const maxIterations = Math.min(260000, Math.max(35000, maxExtentX * maxExtentY * 2));
 
-  let minX = startX, maxX = startX, minY = startY, maxY = startY;
-  let interiorCount = 1;
-  let iterations = 0;
+    // Initialize list of avoid points (starts with user supplied points)
+    let dynamicAvoidPoints = [...(avoidPoints ?? [])];
 
-  while (qHead < queueX.length && iterations < maxIterations) {
-    const cx = queueX[qHead];
-    const cy = queueY[qHead];
-    qHead++;
-    iterations++;
+    let floodPass = 0;
+    const maxFloodPasses = 2; // Pass 1: Test and discover overlaps, Pass 2: Re-run split
+    
+    let visited = new Uint8Array(width * height);
+    let interior = new Uint8Array(width * height);
+    let minX = startX, maxX = startX, minY = startY, maxY = startY;
 
-    if (cx < minX) minX = cx;
-    if (cx > maxX) maxX = cx;
-    if (cy < minY) minY = cy;
-    if (cy > maxY) maxY = cy;
+    while (floodPass < maxFloodPasses) {
+      visited = new Uint8Array(width * height);
+      interior = new Uint8Array(width * height);
+      const queueX: number[] = [startX];
+      const queueY: number[] = [startY];
+      let qHead = 0;
+      visited[startY * width + startX] = 1;
+      interior[startY * width + startX] = 1;
 
-    // Color of the cell being expanded from - the "local reference" that
-    // lets isFillable follow a gradient step by step (see stepTolerance).
-    const parentIdx = (cy * width + cx) * 4;
-    const parentR = data[parentIdx], parentG = data[parentIdx + 1], parentB = data[parentIdx + 2];
+      minX = startX; maxX = startX; minY = startY; maxY = startY;
+      let interiorCount = 1;
+      let iterations = 0;
 
-    const nxs = [cx + 1, cx - 1, cx, cx];
-    const nys = [cy, cy, cy + 1, cy - 1];
+      // Filter and compute Voronoi bisectors on avoid seeds
+      const activeAvoids = dynamicAvoidPoints.filter(p => {
+        const adx = p.x - startX, ady = p.y - startY;
+        return (adx !== 0 || ady !== 0) && Math.abs(adx) <= maxExtentX * 1.5 && Math.abs(ady) <= maxExtentY * 1.5;
+      });
 
-    for (let i = 0; i < 4; i++) {
-      const nx = nxs[i], ny = nys[i];
-      if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-      if (Math.abs(nx - startX) > maxExtentX || Math.abs(ny - startY) > maxExtentY) continue;
+      const isAvoided = (px: number, py: number) => {
+        if (activeAvoids.length === 0) return false;
+        const mdx = px - startX, mdy = py - startY;
+        const ownDistSq = mdx * mdx + mdy * mdy;
+        for (let i = 0; i < activeAvoids.length; i++) {
+          const p = activeAvoids[i];
+          const ddx = px - p.x, ddy = py - p.y;
+          if (ddx * ddx + ddy * ddy < ownDistSq) return true; 
+        }
+        return false;
+      };
 
-      const idx1D = ny * width + nx;
-      if (visited[idx1D]) continue;
-      if (relevantAvoidPoints.length > 0 && isAvoided(nx, ny)) continue; // hard wall - never visited, never fillable
-      visited[idx1D] = 1;
+      while (qHead < queueX.length && iterations < maxIterations) {
+        const cx = queueX[qHead];
+        const cy = queueY[qHead];
+        qHead++;
+        iterations++;
 
-      if (isFillable(nx, ny, parentR, parentG, parentB)) {
-        interior[idx1D] = 1;
-        interiorCount++;
-        queueX.push(nx);
-        queueY.push(ny);
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+
+        const parentIdx = (cy * width + cx) * 4;
+        const parentR = data[parentIdx], parentG = data[parentIdx + 1], parentB = data[parentIdx + 2];
+
+        const nxs = [cx + 1, cx - 1, cx, cx];
+        const nys = [cy, cy, cy + 1, cy - 1];
+
+        for (let i = 0; i < 4; i++) {
+          const nx = nxs[i], ny = nys[i];
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          if (Math.abs(nx - startX) > maxExtentX || Math.abs(ny - startY) > maxExtentY) continue;
+
+          const idx1D = ny * width + nx;
+          if (visited[idx1D]) continue;
+          if (activeAvoids.length > 0 && isAvoided(nx, ny)) continue; 
+          visited[idx1D] = 1;
+
+          if (isFillable(nx, ny, parentR, parentG, parentB)) {
+            interior[idx1D] = 1;
+            interiorCount++;
+            queueX.push(nx);
+            queueY.push(ny);
+          }
+        }
       }
-      // else: leave interior=0; it's just registered in `visited` as the boundary ring
+
+      if (interiorCount < 15) {
+        break; 
+      }
+
+      // MULTI-BUBBLE OVERLAP DETECTION: Discover all text clusters in the current interior mask
+      const foundTextClusters = discoverTextClustersInMask(data, width, height, interior, minX, minY, maxX, maxY);
+
+      // If we find multiple text clusters, it means we have fused overlapping bubbles!
+      if (foundTextClusters.length >= 2 && floodPass === 0) {
+        // Find our target text cluster closest to the click coordinate (startX, startY)
+        let targetClusterIdx = -1;
+        let minClusterDistSq = Infinity;
+        for (let c = 0; c < foundTextClusters.length; c++) {
+          const tc = foundTextClusters[c];
+          const ddx = tc.centerX - startX;
+          const ddy = tc.centerY - startY;
+          const distSq = ddx * ddx + ddy * ddy;
+          if (distSq < minClusterDistSq) {
+            minClusterDistSq = distSq;
+            targetClusterIdx = c;
+          }
+        }
+
+        if (targetClusterIdx !== -1) {
+          // Identify all other clusters as adjacent sibling bubbles, collect centroids as avoid blockers
+          let addedAvoids = 0;
+          for (let c = 0; c < foundTextClusters.length; c++) {
+            if (c === targetClusterIdx) continue;
+            dynamicAvoidPoints.push({
+              x: foundTextClusters[c].centerX,
+              y: foundTextClusters[c].centerY
+            });
+            addedAvoids++;
+          }
+
+          if (addedAvoids > 0) {
+            // Re-run the flood fill with the new dynamic constraints to slice the overlapping bubbles perfectly
+            floodPass++;
+            continue; 
+          }
+        }
+      }
+
+      break; // Proceed with evaluating current pass results
     }
-  }
 
-  if (interiorCount < 15) return null;
+    // Edge leakage pre-audit check
+    const touchesLeft = minX <= 1;
+    const touchesRight = maxX >= width - 2;
+    const touchesTop = minY <= 1;
+    const touchesBottom = maxY >= height - 2;
+    const edgeTouches = [touchesLeft, touchesRight, touchesTop, touchesBottom].filter(Boolean).length;
+    const requiredForReject = regionWidth && regionHeight ? 3 : 4;
 
-  // Leak guard: a flood fill that reaches most edges of the actual image is
-  // almost certainly bleeding into panel background/art rather than staying
-  // inside a bubble - reject instead of returning a nonsense region.
-  const touchesLeft = minX <= 1;
-  const touchesRight = maxX >= width - 2;
-  const touchesTop = minY <= 1;
-  const touchesBottom = maxY >= height - 2;
-  const edgeTouches = [touchesLeft, touchesRight, touchesTop, touchesBottom].filter(Boolean).length;
-  const requiredForReject = regionWidth && regionHeight ? 3 : 4;
-  if (edgeTouches >= requiredForReject) return null;
-
-  // Extract precise Moore-Neighbor outer contour, then simplify it while
-  // preserving its actual shape (jagged, round, or boxy).
-  const rawContour = traceContour(visited, width, height, startX, startY);
-  const contourPoints = simplifyContour(rawContour);
-
-  // Safe text bounds = largest rectangle that fits fully inside the detected
-  // interior. Computed on the local bounding-box sub-grid for speed.
-  const bw = maxX - minX + 1;
-  const bh = maxY - minY + 1;
-  const localMask = new Uint8Array(bw * bh);
-  for (let y = 0; y < bh; y++) {
-    const srcRow = (minY + y) * width + minX;
-    const dstRow = y * bw;
-    for (let x = 0; x < bw; x++) {
-      localMask[dstRow + x] = interior[srcRow + x];
+    if (edgeTouches >= requiredForReject) {
+      continue; // Trigger retry on next tighter tolerance tier
     }
-  }
-  // Close over small noise-driven holes (halftone dots, JPEG speckle) before
-  // hunting for the largest inscribed rectangle, otherwise a single stray
-  // dark speck can chop what should be a generous text box into a sliver.
-  const closingRadius = Math.max(1, Math.min(4, Math.round(Math.min(bw, bh) * 0.03)));
-  const closedMask = closeMask(localMask, bw, bh, closingRadius);
-  const rect = maximalInscribedRect(closedMask, bw, bh) || maximalInscribedRect(localMask, bw, bh);
 
-  let safeX: number, safeY: number, safeW: number, safeH: number;
-  if (rect) {
-    const shrink = 0.93; // small breathing margin from the exact detected edge
-    const cx = minX + rect.x + rect.w / 2;
-    const cy = minY + rect.y + rect.h / 2;
-    safeW = rect.w * shrink;
-    safeH = rect.h * shrink;
-    safeX = cx - safeW / 2;
-    safeY = cy - safeH / 2;
-  } else {
-    // Should not normally happen given the interiorCount guard above, but
-    // fall back to a conservative centered box rather than failing outright.
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    safeW = (maxX - minX) * 0.5;
-    safeH = (maxY - minY) * 0.5;
-    safeX = cx - safeW / 2;
-    safeY = cy - safeH / 2;
+    const rawContour = traceContour(visited, width, height, startX, startY);
+    const borderStrength = evaluateBoundaryStrength(data, width, height, visited, rawContour);
+
+    // Self-Audit Check
+    const isValid = auditResult(
+      minX,
+      minY,
+      maxX - minX + 1,
+      maxY - minY + 1,
+      interior,
+      width,
+      height,
+      borderStrength,
+      textCluster !== null
+    );
+
+    if (!isValid) {
+      continue; // Fail audit: attempt next tighter tolerance tier
+    }
+
+    const contourPoints = simplifyContour(rawContour);
+    const bw = maxX - minX + 1;
+    const bh = maxY - minY + 1;
+    const localMask = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      const srcRow = (minY + y) * width + minX;
+      const dstRow = y * bw;
+      for (let x = 0; x < bw; x++) {
+        localMask[dstRow + x] = interior[srcRow + x];
+      }
+    }
+
+    const closingRadius = Math.max(1, Math.min(4, Math.round(Math.min(bw, bh) * 0.03)));
+    const closedMask = closeMask(localMask, bw, bh, closingRadius);
+    const rect = maximalInscribedRect(closedMask, bw, bh) || maximalInscribedRect(localMask, bw, bh);
+
+    let safeX: number, safeY: number, safeW: number, safeH: number;
+    if (rect) {
+      const shrink = 0.93; 
+      const cx = minX + rect.x + rect.w / 2;
+      const cy = minY + rect.y + rect.h / 2;
+      safeW = rect.w * shrink;
+      safeH = rect.h * shrink;
+      safeX = cx - safeW / 2;
+      safeY = cy - safeH / 2;
+    } else {
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      safeW = (maxX - minX) * 0.5;
+      safeH = (maxY - minY) * 0.5;
+      safeX = cx - safeW / 2;
+      safeY = cy - safeH / 2;
+    }
+
+    finalDetailedResult = {
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+      contour: contourPoints,
+      safeTextBounds: {
+        x: safeX,
+        y: safeY,
+        width: safeW,
+        height: safeH
+      }
+    };
+    break; // Break loop as we successfully got a valid audited bubble
   }
+
+  // If all tolerance runs failed the self-audit and we have a valid text cluster, fallback cleanly
+  if (!finalDetailedResult && textCluster) {
+    return triggerTextOnlyFallback(textCluster, width, height);
+  }
+
+  return finalDetailedResult;
+}
+
+/**
+ * Fallback Mode: Constructs an aesthetic, rounded rectangular boundary fitted 
+ * precisely around the text cluster, keeping manga panels safe from leaks.
+ */
+function triggerTextOnlyFallback(
+  cluster: { x: number; y: number; width: number; height: number },
+  imageWidth: number,
+  imageHeight: number
+): DetailedBubbleResult {
+  const padX = Math.round(cluster.width * 0.15 + 12);
+  const padY = Math.round(cluster.height * 0.12 + 8);
+
+  const safeX = Math.max(0, cluster.x - padX);
+  const safeY = Math.max(0, cluster.y - padY);
+  const safeW = Math.min(imageWidth - safeX, cluster.width + padX * 2);
+  const safeH = Math.min(imageHeight - safeY, cluster.height + padY * 2);
+
+  const r = Math.max(4, Math.min(18, Math.round(Math.min(safeW, safeH) * 0.2)));
+  const synthContour = generateRoundedRectContour(safeX, safeY, safeW, safeH, r);
 
   return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
-    contour: contourPoints,
+    x: safeX,
+    y: safeY,
+    width: safeW,
+    height: safeH,
+    contour: synthContour,
     safeTextBounds: {
-      x: safeX,
-      y: safeY,
-      width: safeW,
-      height: safeH
+      x: safeX + 3,
+      y: safeY + 3,
+      width: safeW - 6,
+      height: safeH - 6
     }
   };
 }
