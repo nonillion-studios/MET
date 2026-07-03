@@ -49,6 +49,105 @@ function getLuminance(r: number, g: number, b: number): number {
   return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
+/**
+ * AI Concept: Simple Unsupervised K-Means (K=2) to cluster local pixels 
+ * into background/foreground, used to accurately separate text and bubble colors.
+ */
+function localKMeans2D(samples: { r: number; g: number; b: number }[]): { c1: number[]; c2: number[] } {
+  if (samples.length < 2) return { c1: [255, 255, 255], c2: [0, 0, 0] };
+  
+  // Initialize centroids with extreme values
+  let m1 = [samples[0].r, samples[0].g, samples[0].b];
+  let m2 = [samples[samples.length - 1].r, samples[samples.length - 1].g, samples[samples.length - 1].b];
+  
+  for (let iter = 0; iter < 5; iter++) {
+    let s1R = 0, s1G = 0, s1B = 0, count1 = 0;
+    let s2R = 0, s2G = 0, s2B = 0, count2 = 0;
+    
+    for (let i = 0; i < samples.length; i++) {
+      const p = samples[i];
+      const d1 = redmeanDistance(p.r, p.g, p.b, m1[0], m1[1], m1[2]);
+      const d2 = redmeanDistance(p.r, p.g, p.b, m2[0], m2[1], m2[2]);
+      if (d1 < d2) {
+        s1R += p.r; s1G += p.g; s1B += p.b; count1++;
+      } else {
+        s2R += p.r; s2G += p.g; s2B += p.b; count2++;
+      }
+    }
+    
+    if (count1 > 0) m1 = [s1R / count1, s1G / count1, s1B / count1];
+    if (count2 > 0) m2 = [s2R / count2, s2G / count2, s2B / count2];
+  }
+  
+  return { c1: m1, c2: m2 };
+}
+
+/**
+ * AI Concept: Online Linear Classifier (Perceptron with Sigmoid Activation)
+ * We train this tiny neural network on-the-fly using the clicked location (stable seed)
+ * as positive feedback, and surrounding edge borders as negative samples.
+ */
+class LocalPerceptronClassifier {
+  private weights: number[] = [0, 0, 0]; // R, G, B weights
+  private bias = 0;
+
+  constructor() {
+    // Start with balanced initial state
+    this.weights = [0.1, 0.1, 0.1];
+    this.bias = -0.5;
+  }
+
+  // Sigmoid activation function
+  private sigmoid(z: number): number {
+    return 1 / (1 + Math.exp(-Math.max(-10, Math.min(10, z))));
+  }
+
+  public predict(r: number, g: number, b: number): number {
+    // Normalize inputs to [0, 1] for stable neural network performance
+    const nr = r / 255;
+    const ng = g / 255;
+    const nb = b / 255;
+    const z = nr * this.weights[0] + ng * this.weights[1] + nb * this.weights[2] + this.bias;
+    return this.sigmoid(z);
+  }
+
+  // Train the classifier on-the-fly using Stochastic Gradient Descent (SGD)
+  public train(
+    positives: { r: number; g: number; b: number }[],
+    negatives: { r: number; g: number; b: number }[],
+    epochs = 40
+  ) {
+    const lr = 0.12; // Adaptive learning rate
+    
+    for (let epoch = 0; epoch < epochs; epoch++) {
+      // Interleave positive and negative samples
+      const sampleSize = Math.max(positives.length, negatives.length);
+      for (let i = 0; i < sampleSize; i++) {
+        if (i < positives.length) {
+          const p = positives[i];
+          const pred = this.predict(p.r, p.g, p.b);
+          const error = 1.0 - pred; // Target is 1.0
+          const dZ = error * pred * (1.0 - pred); // derivative of sigmoid
+          this.weights[0] += lr * dZ * (p.r / 255);
+          this.weights[1] += lr * dZ * (p.g / 255);
+          this.weights[2] += lr * dZ * (p.b / 255);
+          this.bias += lr * dZ;
+        }
+        if (i < negatives.length) {
+          const n = negatives[i];
+          const pred = this.predict(n.r, n.g, n.b);
+          const error = 0.0 - pred; // Target is 0.0
+          const dZ = error * pred * (1.0 - pred);
+          this.weights[0] += lr * dZ * (n.r / 255);
+          this.weights[1] += lr * dZ * (n.g / 255);
+          this.weights[2] += lr * dZ * (n.b / 255);
+          this.bias += lr * dZ;
+        }
+      }
+    }
+  }
+}
+
 // Moore-Neighbor tracing function to extract boundary coordinate points
 function traceContour(visited: Uint8Array, width: number, height: number, startX: number, startY: number): number[] {
   let bx = startX;
@@ -170,6 +269,98 @@ function simplifyContour(points: number[], targetMax = 180): number[] {
   return simplified;
 }
 
+/**
+ * AI/Computer Vision Concept: Active Contour Model (Snakes)
+ * Iteratively deforms the contour to minimize an energy function.
+ * This smooths out pixel jaggedness, aligns with physical speech bubble borders,
+ * and maintains clean aesthetic shapes on complex manhwa backdrops.
+ */
+function optimizeContourSnakes(
+  points: number[],
+  imageData: ImageData,
+  alpha = 0.2, // Elasticity (pulls points together)
+  beta = 0.35,  // Stiffness (prevents sharp bending)
+  gamma = 1.8  // Image force (attracts to strong visual gradients)
+): number[] {
+  const n = points.length / 2;
+  if (n < 6) return points; // Avoid processing extremely small loops
+  
+  const width = imageData.width;
+  const height = imageData.height;
+  const data = imageData.data;
+  
+  // Create a fast gradient magnitude map
+  const getGradient = (x: number, y: number): number => {
+    const rx = Math.min(width - 1, Math.max(0, Math.round(x)));
+    const ry = Math.min(height - 1, Math.max(0, Math.round(y)));
+    const idx = (ry * width + rx) * 4;
+    const lCenter = getLuminance(data[idx], data[idx + 1], data[idx + 2]);
+    
+    // Simple Sobel-like edge contrast
+    const idxR = (ry * width + Math.min(width - 1, rx + 1)) * 4;
+    const idxD = (Math.min(height - 1, ry + 1) * width + rx) * 4;
+    const lR = getLuminance(data[idxR], data[idxR + 1], data[idxR + 2]);
+    const lD = getLuminance(data[idxD], data[idxD + 1], data[idxD + 2]);
+    
+    return Math.abs(lCenter - lR) + Math.abs(lCenter - lD);
+  };
+  
+  const refined = points.slice();
+  
+  // Run 4 optimization steps for smooth convergence
+  for (let step = 0; step < 4; step++) {
+    for (let i = 0; i < n; i++) {
+      const prevX = refined[((i - 1 + n) % n) * 2];
+      const prevY = refined[((i - 1 + n) % n) * 2 + 1];
+      const currX = refined[i * 2];
+      const currY = refined[i * 2 + 1];
+      const nextX = refined[((i + 1) % n) * 2];
+      const nextY = refined[((i + 1) % n) * 2 + 1];
+      
+      let bestX = currX;
+      let bestY = currY;
+      let minEnergy = Infinity;
+      
+      // Search in local 3x3 window around current point
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const cx = currX + dx;
+          const cy = currY + dy;
+          
+          if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
+          
+          // 1. Elastic Energy: minimize distance to neighbors
+          const d1x = cx - prevX;
+          const d1y = cy - prevY;
+          const d2x = nextX - cx;
+          const d2y = nextY - cy;
+          const eElastic = d1x * d1x + d1y * d1y + d2x * d2x + d2y * d2y;
+          
+          // 2. Stiffness Energy: keep lines straight/smooth
+          const sx = prevX - 2 * cx + nextX;
+          const sy = prevY - 2 * cy + nextY;
+          const eStiffness = sx * sx + sy * sy;
+          
+          // 3. Image Force Energy: lower energy at strong contrast lines
+          const grad = getGradient(cx, cy);
+          const eImage = -grad; // Negative because we want to maximize gradient contrast
+          
+          const totalEnergy = alpha * eElastic + beta * eStiffness + gamma * eImage;
+          if (totalEnergy < minEnergy) {
+            minEnergy = totalEnergy;
+            bestX = cx;
+            bestY = cy;
+          }
+        }
+      }
+      refined[i * 2] = bestX;
+      refined[i * 2 + 1] = bestY;
+    }
+  }
+  
+  return refined;
+}
+
 // Sweep-line histogram solver to find the largest inscribed rectangle in binary masks
 function maximalInscribedRect(mask: Uint8Array, w: number, h: number): { x: number; y: number; w: number; h: number } | null {
   if (w <= 0 || h <= 0) return null;
@@ -250,7 +441,7 @@ function closeMask(mask: Uint8Array, w: number, h: number, radius: number): Uint
  * Crucial for separating overlapping bubbles and determining auto-recovery strategies.
  */
 function discoverTextClustersInMask(
-  data: UintClampedArray,
+  data: Uint8ClampedArray,
   width: number,
   height: number,
   mask: Uint8Array,
@@ -360,7 +551,7 @@ function discoverTextClustersInMask(
 }
 
 function extractTextCluster(
-  data: UintClampedArray,
+  data: Uint8ClampedArray,
   width: number,
   height: number,
   startX: number,
@@ -470,7 +661,7 @@ function extractTextCluster(
 }
 
 function evaluateBoundaryStrength(
-  data: UintClampedArray,
+  data: Uint8ClampedArray,
   width: number,
   height: number,
   visited: Uint8Array,
@@ -525,7 +716,7 @@ function auditResult(
 ): boolean {
   const area = w * h;
 
-  // 1. Check for extreme size anomalies
+  // 1. Check for extreme size anomalies (leaking to whole page)
   if (area > imageWidth * imageHeight * 0.45) {
     return false; 
   }
@@ -679,6 +870,41 @@ export function floodFillBubbleDetailed(
   const seedColor = { r: data[seedIdx], g: data[seedIdx + 1], b: data[seedIdx + 2] };
   const { spread } = patchStats(startX, startY, 4);
 
+  // AI Concept: Train our tiny neural classifier before starting the flood fill!
+  const perceptron = new LocalPerceptronClassifier();
+  const positives: { r: number; g: number; b: number }[] = [];
+  const negatives: { r: number; g: number; b: number }[] = [];
+  
+  // Positives: Safe samples very close to the stable seed
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const nx = clampX(startX + dx);
+      const ny = clampY(startY + dy);
+      const idx = (ny * width + nx) * 4;
+      if (data[idx + 3] >= 64) {
+        positives.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] });
+      }
+    }
+  }
+  
+  // Negatives: Sample from surrounding gradients or edge strokes
+  let searchNegCount = 0;
+  for (let r = 10; r < 60 && searchNegCount < 40; r += 5) {
+    for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+      const nx = clampX(startX + Math.round(Math.cos(angle) * r));
+      const ny = clampY(startY + Math.round(Math.sin(angle) * r));
+      const idx = (ny * width + nx) * 4;
+      // High contrast edge pixels or background boundaries
+      if (data[idx + 3] >= 64) {
+        negatives.push({ r: data[idx], g: data[idx + 1], b: data[idx + 2] });
+        searchNegCount++;
+      }
+    }
+  }
+  
+  // Train model dynamically inside the web thread!
+  perceptron.train(positives, negatives, 30);
+
   // Self-recovery loop with descending tolerances on failure
   const toleranceTiers = [1.0, 0.70, 0.45];
   let finalDetailedResult: DetailedBubbleResult | null = null;
@@ -695,6 +921,13 @@ export function floodFillBubbleDetailed(
       if (seedIsTransparent) return false; 
 
       const r = data[idx], g = data[idx + 1], b = data[idx + 2];
+      
+      // Feature 1: Neural Classification Prediction (Probability of belonging to bubble)
+      const bubbleProbability = perceptron.predict(r, g, b);
+      if (bubbleProbability > 0.88) return true; // High model confidence overrides static formulas!
+      if (bubbleProbability < 0.15) return false; // High confidence background rejection
+      
+      // Feature 2: Fall back to traditional perceptual metrics if neural prediction is intermediate
       if (redmeanDistance(r, g, b, seedColor.r, seedColor.g, seedColor.b) <= tolerance) return true;
       if (redmeanDistance(r, g, b, parentR, parentG, parentB) <= stepTolerance) return true;
 
@@ -861,7 +1094,11 @@ export function floodFillBubbleDetailed(
       continue; // Fail audit: attempt next tighter tolerance tier
     }
 
-    const contourPoints = simplifyContour(rawContour);
+    // Simplify traced contour
+    const initialContour = simplifyContour(rawContour);
+    // AI Enhancement: Apply Active Contour Model (Snakes) energy optimization
+    const contourPoints = optimizeContourSnakes(initialContour, imageData);
+    
     const bw = maxX - minX + 1;
     const bh = maxY - minY + 1;
     const localMask = new Uint8Array(bw * bh);
