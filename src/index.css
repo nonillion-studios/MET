@@ -122,6 +122,60 @@
   }
 }
 
+/* Fog / ambient orb background: slow-drifting blurred accent blobs sitting
+   behind the app-shell-bg gradient, giving the liquid-glass surfaces above
+   something soft to refract. */
+@keyframes fogDrift {
+  0% { transform: translate(-8%, -6%) scale(1); }
+  33% { transform: translate(6%, 4%) scale(1.12); }
+  66% { transform: translate(-4%, 8%) scale(0.96); }
+  100% { transform: translate(-8%, -6%) scale(1); }
+}
+.fog-orbs {
+  position: fixed;
+  inset: 0;
+  z-index: -10;
+  overflow: hidden;
+  pointer-events: none;
+}
+.fog-orbs > span {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(120px);
+  opacity: 0.35;
+  animation: fogDrift 26s ease-in-out infinite;
+  will-change: transform;
+}
+.dark .fog-orbs > span {
+  opacity: 0.22;
+}
+.fog-orbs > span:nth-child(1) {
+  top: -10%;
+  left: -10%;
+  width: 55vw;
+  height: 55vw;
+  background: var(--color-accent);
+  animation-delay: 0s;
+}
+.fog-orbs > span:nth-child(2) {
+  bottom: -15%;
+  right: -10%;
+  width: 45vw;
+  height: 45vw;
+  background: var(--color-accent);
+  animation-delay: -9s;
+  animation-duration: 32s;
+}
+.fog-orbs > span:nth-child(3) {
+  top: 35%;
+  left: 45%;
+  width: 35vw;
+  height: 35vw;
+  background: color-mix(in srgb, var(--color-accent) 60%, white 20%);
+  animation-delay: -17s;
+  animation-duration: 22s;
+}
+
 /* Dynamic Gradient Animation */
 @keyframes dynamicGradient {
   0% { background-position: 0% 50%; }

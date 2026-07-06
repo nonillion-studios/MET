@@ -68,7 +68,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
       setClient(newClient);
       setIsConnected(true);
       setActiveTab('files');
-      swalToast({ icon: 'success', title: 'تم الاتصال بتيليجرام بنجاح' });
+      swalToast({ icon: 'success', title: 'Connected to Telegram successfully' });
     } catch (error) {
       console.error(error);
       setIsConnected(false);
@@ -79,7 +79,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
   const handleLogin = async () => {
     if (!apiId || !apiHash || !phoneNumber) {
-      swal({ title: 'خطأ', text: 'الرجاء إدخال API ID و API Hash ورقم الهاتف', icon: 'error' });
+      swal({ title: 'Error', text: 'Please enter API ID, API Hash, and phone number', icon: 'error' });
       return;
     }
     
@@ -98,9 +98,9 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
       );
 
       const { value: code } = await swal({
-        title: 'أدخل كود التحقق',
+        title: 'Enter Verification Code',
         input: 'text',
-        inputLabel: 'تم إرسال كود التحقق إلى حسابك في تيليجرام',
+        inputLabel: 'A verification code was sent to your Telegram account',
       });
 
       if (code) {
@@ -119,11 +119,11 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
         setIsConnected(true);
         setActiveTab('files');
         
-        swal({ title: 'نجاح', text: 'تم تسجيل الدخول بنجاح!', icon: 'success' });
+        swal({ title: 'Success', text: 'Logged in successfully!', icon: 'success' });
       }
     } catch (err: any) {
       console.error('Login error:', err);
-      swal({ title: 'خطأ', text: err.message || 'فشل تسجيل الدخول', icon: 'error' });
+      swal({ title: 'Error', text: err.message || 'Login failed', icon: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -174,7 +174,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
       
     } catch (err) {
       console.error(err);
-      swal({ title: 'خطأ', text: 'تأكد من صحة معرف القناة (Chat ID)', icon: 'error' });
+      swal({ title: 'Error', text: 'Check that the Chat ID is correct', icon: 'error' });
     } finally {
       setIsLoading(false);
     }
@@ -258,7 +258,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
   const handleUpload = async () => {
     if (!client || !chatId || !uploadFile) {
-      swal({ title: 'خطأ', text: 'تأكد من اختيار ملف وإدخال Chat ID', icon: 'error' });
+      swal({ title: 'Error', text: 'Make sure a file is selected and Chat ID is entered', icon: 'error' });
       return;
     }
     
@@ -327,14 +327,14 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
         }
       });
       
-      swal({ title: 'تم الرفع', text: 'تم رفع الملف بنجاح كقاعدة بيانات JSON.', icon: 'success' });
+      swal({ title: 'Upload Complete', text: 'File uploaded successfully with its JSON metadata.', icon: 'success' });
       setUploadFile(null);
       setUploadName('');
       setUploadProgress(0);
       fetchFiles();
     } catch (err: any) {
       console.error(err);
-      swal({ title: 'خطأ الرفع', text: err.message || 'حدث خطأ أثناء الرفع', icon: 'error' });
+      swal({ title: 'Upload Error', text: err.message || 'An error occurred during upload', icon: 'error' });
     } finally {
       setIsUploading(false);
     }
@@ -342,7 +342,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
   const saveConfig = () => {
     if (chatId) localStorage.setItem('tg_chat_id', chatId);
-    swalToast({ icon: 'success', title: 'تم الحفظ' });
+    swalToast({ icon: 'success', title: 'Saved' });
   };
 
   const handleDisconnect = () => {
@@ -353,7 +353,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
   };
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-start p-4 sm:p-8 relative overflow-y-auto w-full min-h-screen text-right" dir="rtl">
+    <div className="flex-1 flex flex-col items-center justify-start p-4 sm:p-8 relative overflow-y-auto w-full min-h-screen">
       <div className="absolute top-0 right-0 w-64 h-64 sm:w-[500px] sm:h-[500px] bg-accent/10 rounded-full blur-[150px] pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-64 h-64 sm:w-[500px] sm:h-[500px] bg-accent/10 rounded-full blur-[150px] pointer-events-none" />
 
@@ -362,10 +362,10 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
           <div>
             <h1 className="text-2xl sm:text-3xl font-display font-bold text-ink flex items-center gap-3">
               <Cloud className="text-accent" size={32} />
-              التخزين السحابي المركزي
+              Central Cloud Storage
             </h1>
             <p className="text-ink-muted text-sm mt-1">
-              متصل عبر GramJS (تيليجرام) و Google Drive لرفع ومزامنة الملفات (حتى 2 جيجا).
+              Connected via GramJS (Telegram) and Google Drive to upload and sync files (up to 2GB).
             </p>
           </div>
           {isConnected && (
@@ -374,19 +374,19 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                 onClick={() => setActiveTab('files')}
                 className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'files' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
               >
-                الملفات المرفوعة
+                Uploaded Files
               </button>
               <button
                 onClick={() => setActiveTab('chat')}
                 className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'chat' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
               >
-                النقاشات
+                Discussions
               </button>
               <button
                 onClick={() => setActiveTab('config')}
                 className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'config' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
               >
-                الإعدادات
+                Settings
               </button>
             </div>
           )}
@@ -403,20 +403,20 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
             >
               <GlassCard className="p-6">
                 <h2 className="text-xl font-bold text-ink mb-4 flex items-center gap-2">
-                  <Smartphone className="text-accent" /> ربط تيليجرام (GramJS)
+                  <Smartphone className="text-accent" /> Connect Telegram (GramJS)
                 </h2>
 
                 {!isConnected ? (
                   <div className="space-y-4">
                     <p className="text-xs text-ink-muted leading-relaxed mb-4">
-                      نستخدم مكتبة GramJS للاتصال بشبكة تيليجرام المشفرة مباشرة من متصفحك. هذه العملية يتم تنفيذها محلياً Client-Side دون المرور بأي سيرفر وسيط. مفاتيحك تُخزن محلياً في المتصفح فقط.
+                      We use the GramJS library to connect to Telegram's encrypted network directly from your browser. This happens entirely client-side with no intermediary server. Your keys are stored locally in your browser only.
                     </p>
                     <div className="space-y-1">
                       <label className="text-xs text-accent font-semibold">API ID</label>
                       <Input
                         type="text"
                         value={apiId} onChange={e => setApiId(e.target.value)}
-                        placeholder="مثال: 1234567" dir="ltr"
+                        placeholder="e.g. 1234567" dir="ltr"
                       />
                     </div>
                     <div className="space-y-1">
@@ -424,11 +424,11 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                       <Input
                         type="text"
                         value={apiHash} onChange={e => setApiHash(e.target.value)}
-                        placeholder="أدخل API Hash الخاص بحسابك المطور" dir="ltr"
+                        placeholder="Enter your developer API Hash" dir="ltr"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs text-accent font-semibold">رقم الهاتف الدولي</label>
+                      <label className="text-xs text-accent font-semibold">International Phone Number</label>
                       <Input
                         type="text"
                         value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)}
@@ -439,7 +439,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                       onClick={handleLogin} disabled={isLoading}
                       className="w-full mt-4"
                     >
-                      {isLoading ? 'جاري الاتصال...' : 'طلب كود التحقق (Login)'}
+                      {isLoading ? 'Connecting...' : 'Request Verification Code (Login)'}
                     </Button>
                   </div>
                 ) : (
@@ -447,15 +447,15 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                     <div className="bg-success/10 border border-success/30 rounded-xl p-4 flex items-center gap-3">
                       <CheckCircle className="text-success" size={24} />
                       <div>
-                        <h3 className="text-success font-bold text-sm">متصل بخوادم تيليجرام!</h3>
-                        <p className="text-xs text-success/70">الجلسة مشفرة ومحفوظة محلياً.</p>
+                        <h3 className="text-success font-bold text-sm">Connected to Telegram servers!</h3>
+                        <p className="text-xs text-success/70">Your session is encrypted and stored locally.</p>
                       </div>
                     </div>
 
                     <div className="space-y-1 mt-4">
                       <label className="text-xs text-accent font-semibold flex items-center justify-between">
-                        معرف القناة أو الجروب التخزيني (Chat ID)
-                        <span className="text-[10px] text-ink-faint">مثال: -100123456789</span>
+                        Storage Channel or Group ID (Chat ID)
+                        <span className="text-[10px] text-ink-faint">e.g. -100123456789</span>
                       </label>
                       <Input
                         type="text"
@@ -466,10 +466,10 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
                     <div className="flex gap-2">
                        <Button onClick={saveConfig} className="flex-1" size="sm">
-                        حفظ الإعدادات
+                        Save Settings
                       </Button>
                       <Button onClick={handleDisconnect} variant="danger" size="sm">
-                        تسجيل الخروج
+                        Log Out
                       </Button>
                     </div>
                   </div>
@@ -478,18 +478,18 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
               <GlassCard className="p-6 transition-opacity">
                  <h2 className="text-xl font-bold text-ink mb-4 flex items-center gap-2">
-                  <User className="text-accent" /> الملف الشخصي للفريق
+                  <User className="text-accent" /> Team Profile
                 </h2>
                 <div className="space-y-4">
                   <p className="text-xs text-ink-muted leading-relaxed">
-                    قم بإعداد اسمك وصورتك الشخصية التي ستظهر لباقي أعضاء الفريق عند رفع الملفات أو النقاش في الشات. لا توجد خوادم خارجية، كل شيء مفلتر عبر رسائل تيليجرام.
+                    Set up your name and avatar shown to other team members when uploading files or chatting. There are no external servers — everything is relayed through Telegram messages.
                   </p>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-accent font-semibold">اسم المستخدم</label>
+                    <label className="text-xs text-accent font-semibold">Username</label>
                     <Input
                       type="text"
-                      placeholder="مثال: أحمد (مبيض)"
+                      placeholder="e.g. Alex"
                       onChange={(e) => {
                         try {
                            const p = JSON.parse(localStorage.getItem('team_profile') || '{}');
@@ -551,13 +551,13 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
               {/* Help & Guide Section */}
               <GlassCard className="md:col-span-2 p-6">
                 <h3 className="text-lg font-bold text-ink mb-3 flex items-center gap-2">
-                  <HelpCircle className="text-ink-muted" size={18} /> كيف يعمل نظام التخزين السحابي Client-Side؟
+                  <HelpCircle className="text-ink-muted" size={18} /> How does client-side cloud storage work?
                 </h3>
                 <ul className="text-sm text-ink-muted space-y-2 list-disc list-inside">
-                  <li><strong>استخراج الـ API Keys:</strong> يجب عليك الحصول على <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_ID</code> و <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_HASH</code> من موقع <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-accent hover:underline">my.telegram.org</a>.</li>
-                  <li><strong>الأمان:</strong> التطبيق يعتمد على الـ Web Browser كمنصة عمل فقط. يتم تخزين جلسة تيليجرام الخاصة بك مشفرة في متصفحك (localStorage).</li>
-                  <li><strong>القناة التخزينية المعتمدة:</strong> أنشئ قناة أو جروب في تيليجرام وانسخ المعرف الخاص بها (عبر تحويل رسالة إلى بوت مثل @userinfobot) وضعه في حقل Chat ID.</li>
-                  <li><strong>الحوسبة الوصفية لملف JSON:</strong> عند رفع أي ملف (مثل ملفات فوتوشوب أو الفصول المترجمة)، سيتم إرفاق هيكل JSON يحتوي على تفاصيل الأنمي وحالتها ليقوم تطبيق الويب بقرائتها وعرضها بلوحة التحكم.</li>
+                  <li><strong>Get your API Keys:</strong> You'll need an <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_ID</code> and <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_HASH</code> from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-accent hover:underline">my.telegram.org</a>.</li>
+                  <li><strong>Security:</strong> The app uses your web browser purely as a client. Your Telegram session is stored encrypted in your browser (localStorage).</li>
+                  <li><strong>Storage channel:</strong> Create a Telegram channel or group and copy its ID (forward a message to a bot like @userinfobot) into the Chat ID field.</li>
+                  <li><strong>JSON metadata:</strong> When you upload a file (like a Photoshop archive or translated chapter), a JSON structure with project details and status is attached so the app can read and display it on the dashboard.</li>
                 </ul>
               </GlassCard>
             </motion.div>
@@ -574,13 +574,13 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
               {/* Upload Dropzone */}
               <GlassCard className="rounded-2xl p-6">
                 <h3 className="text-lg font-bold text-ink mb-4 flex items-center gap-2">
-                  <UploadIcon className="text-accent" /> إضافة ملف للمخزن
+                  <UploadIcon className="text-accent" /> Add File to Storage
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-3">
                     <Input
                       type="text"
-                      placeholder="اسم الملف (مثال: Solo Leveling Ch.12)"
+                      placeholder="File name (e.g. Solo Leveling Ch.12)"
                       value={uploadName} onChange={e => setUploadName(e.target.value)}
                     />
                     <select
@@ -637,7 +637,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                     ) : (
                       <>
                         <UploadIcon size={32} className="text-ink-faint mb-3 group-hover:text-accent transition-colors" />
-                        <p className="text-sm font-semibold text-ink-muted">انقر هنا لاختيار الملف (حتى 2GB)</p>
+                        <p className="text-sm font-semibold text-ink-muted">Click here to choose a file (up to 2GB)</p>
                       </>
                     )}
                   </div>
@@ -656,7 +656,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                   className="w-full mt-4"
                   size="lg"
                 >
-                  {isUploading ? 'جاري الرفع لتيليجرام...' : 'رفع الملف إلى السحابة'}
+                  {isUploading ? 'Uploading to Telegram...' : 'Upload File to Cloud'}
                 </Button>
               </GlassCard>
 
@@ -729,7 +729,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                             <div className="w-6 h-6 rounded-full overflow-hidden bg-accent-soft border border-accent/30 shrink-0">
                                {file.avatar ? <img src={file.avatar} alt="Sender" className="w-full h-full object-cover" /> : <User size={12} className="m-auto mt-1 text-accent" />}
                             </div>
-                            <span className="text-xs text-ink-muted truncate">{file.sender || 'مستخدم مجهول'}</span>
+                            <span className="text-xs text-ink-muted truncate">{file.sender || 'Anonymous user'}</span>
                           </div>
 
                           <div className="flex justify-between items-center text-xs text-ink-muted font-mono border-t border-hairline pt-2 mt-2">
@@ -786,10 +786,10 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
              <GlassCard className="p-4 sm:p-6 flex flex-col flex-1 min-h-0">
                <div className="flex justify-between items-center mb-4 border-b border-hairline pb-4">
                  <h3 className="text-xl font-bold text-ink flex items-center gap-2">
-                   <MessageSquare className="text-accent" /> نقاش الفريق (القناة المركزية)
+                   <MessageSquare className="text-accent" /> Team Discussion (Central Channel)
                  </h3>
                  <button onClick={fetchChatMessages} className="text-accent hover:text-ink flex items-center gap-1 bg-accent-soft px-3 py-1.5 rounded-lg text-sm transition-colors">
-                    <RefreshCw size={14} /> تحديث
+                    <RefreshCw size={14} /> Refresh
                  </button>
                </div>
 
@@ -797,7 +797,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                  {chatMessages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-ink-faint opacity-50">
                       <MessageSquare size={48} className="mb-2" />
-                      <p>لا توجد رسائل سابقة. ابدأ النقاش مع الفريق المجهول الخاص بك!</p>
+                      <p>No messages yet. Start the discussion with your team!</p>
                     </div>
                  ) : (
                     chatMessages.slice().reverse().map((msg, idx) => {
@@ -887,7 +887,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                    value={chatMessage}
                    onChange={e => setChatMessage(e.target.value)}
                    onKeyDown={e => e.key === 'Enter' && sendChatMessage()}
-                   placeholder="اكتب رسالتك وتوجيهاتك للفريق هنا..."
+                   placeholder="Write your message or notes for the team here..."
                    className="flex-1 py-3 shrink min-w-0"
                  />
                  <Button
@@ -895,7 +895,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                    disabled={!chatMessage.trim() && !chatFile}
                    className="whitespace-nowrap"
                  >
-                   إرسال
+                   Send
                  </Button>
                </div>
              </GlassCard>

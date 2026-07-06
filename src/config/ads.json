@@ -1,0 +1,49 @@
+{
+  "banners": [
+    {
+      "id": "library-top",
+      "placement": "library-top",
+      "enabled": true,
+      "title": "Your Ad Here",
+      "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
+      "imageUrl": "",
+      "linkUrl": ""
+    },
+    {
+      "id": "cloud-top",
+      "placement": "cloud-top",
+      "enabled": true,
+      "title": "Your Ad Here",
+      "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
+      "imageUrl": "",
+      "linkUrl": ""
+    },
+    {
+      "id": "settings-bottom",
+      "placement": "settings-bottom",
+      "enabled": true,
+      "title": "Your Ad Here",
+      "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
+      "imageUrl": "",
+      "linkUrl": ""
+    },
+    {
+      "id": "studio-placeholder",
+      "placement": "studio-placeholder",
+      "enabled": true,
+      "title": "Your Ad Here",
+      "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
+      "imageUrl": "",
+      "linkUrl": ""
+    },
+    {
+      "id": "bottom-nav",
+      "placement": "bottom-nav",
+      "enabled": true,
+      "title": "Your Ad Here",
+      "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
+      "imageUrl": "",
+      "linkUrl": ""
+    }
+  ]
+}

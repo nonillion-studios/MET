@@ -1,6 +1,6 @@
 {
   "name": "MET",
-  "description": "MET (Manga Editing Tool) - An advanced web tool for cleaning, smart bubble detection, translation alignment with custom font files (ZIP/TTF/OTF), and multiple exporting formats (including high-fidelity PSD export).",
+  "description": "MET (Manga Editing Tool) - A library manager for organizing manga/manhwa series, volumes, and chapters, with a new editing studio in active development.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

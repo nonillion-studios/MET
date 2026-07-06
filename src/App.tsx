@@ -1,49 +1,37 @@
-import React, { useState, useRef, useEffect, useCallback, Suspense } from 'react';
-import { Upload, Download, Play, Save, Loader2, Image as ImageIcon, Type as TypeIcon, MousePointer2, Brush, Eraser, PenTool, ZoomIn, ZoomOut, Maximize, Palette, Plus, Pipette, Trash2, ChevronUp, ChevronDown, ImagePlus, Key, Sparkles, Scissors, Undo, Wand2, Settings, LayoutGrid } from 'lucide-react';
-import { extractImagesFromZip, downloadProcessedZip, downloadPdf, downloadSingleImage } from './lib/zip';
-import { processMangaPages, generateInpaint, RawRegion } from './lib/gemini';
-import { floodFillBubble, floodFillBubbleDetailed, detectSfxDetailed } from './lib/bubbleDetect';
-import { createTranslationDoc, parseTranslationDoc } from './lib/translationDoc';
-import { ProcessedImage, Region, PaintStroke, CropSelection, MangaSeries, Volume, Chapter } from './types';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  Plus, Trash2, Upload, BookOpen, Layers, FileStack, ImagePlus, Sparkles
+} from 'lucide-react';
 import { get, set } from 'idb-keyval';
-import { swal, swalToast, Swal } from './lib/swalTheme';
+import { extractImagesFromZip } from './lib/zip';
+import { MangaSeries, Volume, Chapter } from './types';
+import { swal, swalToast } from './lib/swalTheme';
 import 'sweetalert2/dist/sweetalert2.min.css';
-import JSZip from 'jszip';
-import { saveAs } from 'file-saver';
-import { CloudStorage } from './components/CloudStorage';
 import { TopBar } from './components/TopBar';
 import { FloatingMusicPlayer } from './components/FloatingMusicPlayer';
 import { SplashScreen } from './components/SplashScreen';
 import { SettingsPanel } from './components/SettingsPanel';
 import { BottomTabBar } from './components/BottomTabBar';
 import { SidebarRail } from './components/SidebarRail';
-import { Modal, Button } from './components/ui';
-
-const ImageEditor = React.lazy(() => import('./components/ImageEditor').then(m => ({ default: m.ImageEditor })));
-
-type Tool = 'select' | 'draw' | 'erase' | 'fill_poly' | 'bg_erase' | 'smart_sfx' | 'gen_erase' | 'crop' | 'scribble_bubble';
+import { CloudStorage } from './components/CloudStorage';
+import { AdSlot } from './components/AdSlot';
+import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
+import { UserAgreement } from './components/legal/UserAgreement';
+import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
+import type { NavTabId } from './config/navTabs';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
-  const [images, setImages] = useState<ProcessedImage[]>([]);
-  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
-  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
-  const [isProcessingAll, setIsProcessingAll] = useState(false);
-  const [exportProgress, setExportProgress] = useState<string | null>(null);
-  const [selectedForProcess, setSelectedForProcess] = useState<Set<string>>(new Set());
-  const [bubblePreviews, setBubblePreviews] = useState<{ [imgId: string]: any[] }>({});
-  const [showBubblePreviews, setShowBubblePreviews] = useState(false);
-  const [isGeneratingPreviews, setIsGeneratingPreviews] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const projectInputRef = useRef<HTMLInputElement>(null);
 
-  // Manga Hierarchical Library state
+  // Manga hierarchical library
   const [mangas, setMangas] = useState<MangaSeries[]>([]);
   const [activeMangaId, setActiveMangaId] = useState<string | null>(null);
   const [activeVolumeId, setActiveVolumeId] = useState<string | null>(null);
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
 
-  // Series Creator Modal state
+  const [activeNavigationTab, setActiveNavigationTab] = useState<NavTabId>('library');
+
+  // Create series modal
   const [showCreateSeriesModal, setShowCreateSeriesModal] = useState(false);
   const [newSeriesTitle, setNewSeriesTitle] = useState('');
   const [newSeriesType, setNewSeriesType] = useState<'manga' | 'manhwa'>('manga');
@@ -51,4473 +39,464 @@ export default function App() {
   const [newSeriesCoverUrl, setNewSeriesCoverUrl] = useState('');
   const coverFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load hierarchical projects on mount
+  // Legal modals
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
+
+  const chapterZipInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     get('mangas_library').then((saved) => {
       if (saved && Array.isArray(saved) && saved.length > 0) {
         setMangas(saved);
-      } else {
-        // Fallback or migration from previous legacy session
-        get('manga_project').then((legacyImages) => {
-          if (legacyImages && Array.isArray(legacyImages) && legacyImages.length > 0) {
-            const defaultManga: MangaSeries = {
-              id: 'legacy-manga-' + Math.random().toString(36).substr(2, 9),
-              title: 'Solo Leveling (Cleaned)',
-              type: 'manhwa',
-              coverUrl: '', // auto beautiful gradient
-              description: 'Imported from previous workspace session.',
-              volumes: [
-                {
-                  id: 'legacy-volume-1',
-                  name: 'Volume 1',
-                  chapters: [
-                    {
-                      id: 'legacy-chapter-1',
-                      name: 'Chapter 1',
-                      images: legacyImages
-                    }
-                  ]
-                }
-              ]
-            };
-            setMangas([defaultManga]);
-            set('mangas_library', [defaultManga]).catch(console.error);
-            
-            // Auto open the chapter
-            setActiveMangaId(defaultManga.id);
-            setActiveVolumeId('legacy-volume-1');
-            setActiveChapterId('legacy-chapter-1');
-            setImages(legacyImages);
-            setSelectedImageId(legacyImages[0].id);
-          }
-        }).catch(console.error);
       }
     }).catch(console.error);
   }, []);
 
-  // Save changes to mangas_library when state updates
   useEffect(() => {
     if (mangas.length > 0) {
       const timeout = setTimeout(() => {
         set('mangas_library', mangas).catch(console.error);
-      }, 1000);
+      }, 800);
       return () => clearTimeout(timeout);
     }
   }, [mangas]);
 
-  // Sync editor modifications back into the active Chapter
-  useEffect(() => {
-    if (activeMangaId && activeVolumeId && activeChapterId) {
-      setMangas(prev => prev.map(manga => {
-        if (manga.id !== activeMangaId) return manga;
-        return {
-          ...manga,
-          volumes: manga.volumes.map(vol => {
-            if (vol.id !== activeVolumeId) return vol;
-            return {
-              ...vol,
-              chapters: vol.chapters.map(chap => {
-                if (chap.id !== activeChapterId) return chap;
-                return { ...chap, images: images };
-              })
-            };
-          })
-        };
-      }));
-    }
-  }, [images, activeMangaId, activeVolumeId, activeChapterId]);
-  
-  // Settings State
-  const [customApiKey, setCustomApiKey] = useState('');
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [customInstructions, setCustomInstructions] = useState('');
-  const [translateJapanese, setTranslateJapanese] = useState(true);
-  const [translateSfx, setTranslateSfx] = useState(true);
-  const [zipMatchMode, setZipMatchMode] = useState<'filename' | 'index'>('filename');
-
-  const [autoFitAndCenter, setAutoFitAndCenter] = useState<boolean>(() => {
-    return localStorage.getItem('manga_auto_fit_and_center') !== 'false';
-  });
-  const [compressBeforeProcessing, setCompressBeforeProcessing] = useState<boolean>(() => {
-    return localStorage.getItem('manga_compress_before_processing') !== 'false';
-  });
-  const [cropsQueue, setCropsQueue] = useState<CropSelection[]>([]);
-  
-  const [customFonts, setCustomFonts] = useState<string[]>([]);
-  const [showExternalAIModal, setShowExternalAIModal] = useState(false);
-  const [externalAIPasteData, setExternalAIPasteData] = useState('');
-  const fontInputRef = useRef<HTMLInputElement>(null);
-
-  const [appInitializing, setAppInitializing] = useState(true);
-  const [activeNavigationTab, setActiveNavigationTab] = useState<'library' | 'cloud' | 'scheduler' | 'settings'>('library');
-  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setAppInitializing(false);
-    }, 2200);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const savedKey = localStorage.getItem('manga_gemini_key');
-    if (savedKey) setCustomApiKey(savedKey);
-    const savedInst = localStorage.getItem('manga_custom_instructions');
-    if (savedInst) setCustomInstructions(savedInst);
-    const savedTransJp = localStorage.getItem('manga_translate_jp');
-    if (savedTransJp !== null) setTranslateJapanese(savedTransJp === 'true');
-    const savedTransSfx = localStorage.getItem('manga_translate_sfx');
-    if (savedTransSfx !== null) setTranslateSfx(savedTransSfx === 'true');
-    const savedMatchMode = localStorage.getItem('manga_zip_match_mode');
-    if (savedMatchMode) setZipMatchMode(savedMatchMode as any);
-    
-    const savedAutoFit = localStorage.getItem('manga_auto_fit_and_center');
-    if (savedAutoFit !== null) setAutoFitAndCenter(savedAutoFit === 'true');
-    const savedCompress = localStorage.getItem('manga_compress_before_processing');
-    if (savedCompress !== null) setCompressBeforeProcessing(savedCompress === 'true');
-    
-    // Preload Arabic fonts
-    const fontsToLoad = [
-      "Cairo", "Tajawal", "Marhey", "Aref Ruqaa", "El Messiri", "Amiri", 
-      "Changa", "Harmattan", "Katibeh", "Lalezar", "Lemonada", "Mada", 
-      "Markazi Text", "Reem Kufi", "Rakkas", "Almarai"
-    ];
-    if ('fonts' in document) {
-      Promise.all(fontsToLoad.map(font => (document as any).fonts.load(`12px "${font}"`)))
-        .catch(console.error);
-    }
-  }, []);
-
-  const handleApiKeyChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
-    const val = e.target.value;
-    setCustomApiKey(val);
-    localStorage.setItem('manga_gemini_key', val);
-  };
-
-  const handleCustomInstructionsChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setCustomInstructions(val);
-    localStorage.setItem('manga_custom_instructions', val);
-  };
-
-  const handleSetTranslateJapanese = (val: boolean) => {
-    setTranslateJapanese(val);
-    localStorage.setItem('manga_translate_jp', String(val));
-  };
-
-  const handleSetTranslateSfx = (val: boolean) => {
-    setTranslateSfx(val);
-    localStorage.setItem('manga_translate_sfx', String(val));
-  };
-  
-  const handleSetZipMatchMode = (val: 'filename' | 'index') => {
-    setZipMatchMode(val);
-    localStorage.setItem('manga_zip_match_mode', val);
-  };
-  
-  const handleSetAutoFitAndCenter = (val: boolean) => {
-    setAutoFitAndCenter(val);
-    localStorage.setItem('manga_auto_fit_and_center', String(val));
-  };
-
-  const handleSetCompressBeforeProcessing = (val: boolean) => {
-    setCompressBeforeProcessing(val);
-    localStorage.setItem('manga_compress_before_processing', String(val));
-  };
-
-  const compressImageBase64 = async (base64: string, maxDim: number = 1600, quality: number = 0.85): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = base64;
-      img.onload = () => {
-        let width = img.width;
-        let height = img.height;
-        if (width <= maxDim && height <= maxDim) {
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL('image/jpeg', quality));
-            return;
-          }
-        }
-        if (width > height) {
-          if (width > maxDim) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          }
-        } else {
-          if (height > maxDim) {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', quality));
-        } else {
-          resolve(base64);
-        }
-      };
-      img.onerror = () => resolve(base64);
-    });
-  };
-  
-  // Editor State
-  const [showLeftPanel, setShowLeftPanel] = useState(false);
-  const [showRightPanel, setShowRightPanel] = useState(false);
-  const [activeTool, setActiveTool] = useState<Tool>('select');
-  const [brushSize, setBrushSize] = useState(20);
-  const [brushColor, setBrushColor] = useState('#ffffff');
-  const [zoom, setZoom] = useState(1);
-  const [showOriginal, setShowOriginal] = useState(false);
-  const [showText, setShowText] = useState(true);
-
-  const [manhwaMode, setManhwaMode] = useState<boolean>(() => {
-    return localStorage.getItem('manhwa_mode') === 'true';
-  });
-  const [isProcessingCrop, setIsProcessingCrop] = useState(false);
-
-  const selectedImage = images.find(img => img.id === selectedImageId);
-  const selectedRegion = selectedImage?.regions.find(r => r.id === selectedRegionId);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts if user is typing in an input or textarea
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
-      
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedImageId && selectedRegionId) {
-          saveHistory(selectedImageId);
-          setImages(prev => prev.map(img => {
-            if (img.id === selectedImageId) {
-              return { ...img, regions: img.regions.filter(r => r.id !== selectedRegionId) };
-            }
-            return img;
-          }));
-          setSelectedRegionId(null);
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-        e.preventDefault();
-        if (selectedImageId) {
-          undo(selectedImageId);
-        }
-      } else if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
-         // Maybe add action to select all? Though we don't have multiple select regions right now.
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedImageId, selectedRegionId, images]);
-
-  const handleSaveProject = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(images));
-    const a = document.createElement('a');
-    a.href = dataStr;
-    a.download = "manga_project.json";
-    a.click();
-  };
-
-  const handleLoadProject = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = JSON.parse(event.target?.result as string);
-        setImages(data);
-        if (data.length > 0) setSelectedImageId(data[0].id);
-      } catch (err) {
-        alert("Invalid project file.");
-      }
-    };
-    reader.readAsText(file);
-    if (projectInputRef.current) projectInputRef.current.value = '';
-  };
-
-  const handleApplyExternalAICocktail = () => {
-    if (!selectedImageId) {
-      swal({
-        icon: 'warning',
-        title: 'تنبيه',
-        text: 'برجاء فتح صفحة واحدة أولاً والوقوف عليها داخل الاستوديو لتطبيق الTranslation.'
-      });
-      return;
-    }
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-
-    try {
-      const cleanData = externalAIPasteData.trim();
-      if (!cleanData) {
-        swal({
-          icon: 'error',
-          title: 'حقل Empty',
-          text: 'برجاء لصق الكود (مصفوفة الـ JSON) المسترجع من الذكاء الاصطناعي أولاً.'
-        });
-        return;
-      }
-
-      const jsonStart = cleanData.indexOf('[');
-      const jsonEnd = cleanData.lastIndexOf(']');
-      
-      if (jsonStart === -1 || jsonEnd === -1) {
-        throw new Error("Invalid format: JSON list of regions brackets '[ ... ]' not found.");
-      }
-      
-      const jsonText = cleanData.substring(jsonStart, jsonEnd + 1);
-      const parsed = JSON.parse(jsonText) as any[];
-
-      saveHistory(img.id);
-
-      const newRegions: Region[] = parsed.map(raw => {
-        const isNormalized = (raw.xmax <= 1000 && raw.ymax <= 1000 && raw.xmax > 1);
-        const x = isNormalized ? ((raw.xmin / 1000) * img.width) : (raw.x ?? raw.xmin ?? 50);
-        const y = isNormalized ? ((raw.ymin / 1000) * img.height) : (raw.y ?? raw.ymin ?? 50);
-        const width = isNormalized ? (((raw.xmax - raw.xmin) / 1000) * img.width) : (raw.w ?? raw.width ?? (raw.xmax - raw.xmin) ?? 150);
-        const height = isNormalized ? (((raw.ymax - raw.ymin) / 1000) * img.height) : (raw.h ?? raw.height ?? (raw.ymax - raw.ymin) ?? 80);
-
-        return {
-          id: 'region-' + Math.random().toString(36).substr(2, 9),
-          type: raw.type || 'bubble',
-          originalText: raw.originalText || '',
-          translatedText: raw.translatedText || '',
-          x,
-          y,
-          width,
-          height,
-          angle: 0,
-          textColor: '#000000',
-          strokeColor: 'transparent',
-          strokeWidth: 0,
-          bgColor: '#ffffff',
-          fontFamily: 'Cairo',
-          fontSize: Math.max(16, Math.floor(height / 4)),
-          fontWeight: 'bold',
-          fontStyle: 'normal',
-          textAlign: 'center',
-          lineHeight: 1.3,
-          autoFitText: true
-        };
-      });
-
-      const updatedImages = images.map(item => {
-        if (item.id !== img.id) return item;
-        return {
-          ...item,
-          regions: [...item.regions, ...newRegions]
-        };
-      });
-
-      setImages(updatedImages);
-      setExternalAIPasteData('');
-      setShowExternalAIModal(false);
-
-      swal({
-        icon: 'success',
-        title: 'تم دمج الTranslation الخارجية بSuccess!',
-        text: `تم التعرف واسترداد عدد ${newRegions.length} فقاعات حوارية وتطبيقها بذكاء مع توسيط الTextوص.`
-      });
-    } catch (err: any) {
-      console.error(err);
-      swal({
-        icon: 'error',
-        title: 'صيغة غير صالحة',
-        text: 'فشل تحليل الText المنسوخ كقائمة مدخلات Translation صالحة. تأكد من ثبات قائمة الـ JSON المسترجعة.'
-      });
-    }
-  };
-
-  const handleFontUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    
-    swal({
-      title: 'Loading and parsing fonts...',
-      text: 'الرجاء الانتظار الحين معالجة ملفات الخطوط',
-      allowOutsideClick: false,
-      didOpen: () => {
-        Swal.showLoading();
-      }
-    });
-
-    try {
-      const loadedFonts: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filename = file.name.toLowerCase();
-        
-        if (filename.endsWith('.zip')) {
-          const zip = await JSZip.loadAsync(file);
-          for (const [zipFilename, zipEntry] of Object.entries(zip.files)) {
-            if (zipEntry.dir) continue;
-            if (zipFilename.match(/\.(ttf|otf|woff|woff2)$/i)) {
-              const buffer = await zipEntry.async('arraybuffer');
-              const cleanName = zipFilename.split('/').pop()?.replace(/\.[^/.]+$/, "") || "CustomFont";
-              const fontName = `MET-${cleanName}`;
-              
-              const fontFace = new FontFace(fontName, buffer);
-              await fontFace.load();
-              document.fonts.add(fontFace);
-              loadedFonts.push(fontName);
-            }
-          }
-        } else if (filename.match(/\.(ttf|otf|woff|woff2)$/)) {
-          const buffer = await file.arrayBuffer();
-          const cleanName = file.name.replace(/\.[^/.]+$/, "");
-          const fontName = `MET-${cleanName}`;
-          
-          const fontFace = new FontFace(fontName, buffer);
-          await fontFace.load();
-          document.fonts.add(fontFace);
-          loadedFonts.push(fontName);
-        }
-      }
-
-      if (loadedFonts.length > 0) {
-        setCustomFonts(prev => [...prev, ...loadedFonts]);
-        swal({
-          icon: 'success',
-          title: 'تم تفعيل الخطوط المخصصة!',
-          text: `تم استخراج وLoading ${loadedFonts.length} من الخطوط بSuccess داخل الاستوديو.`,
-          confirmButtonText: 'رائع'
-        });
-      } else {
-        swal({
-          icon: 'error',
-          title: 'Error في معالجة الملف',
-          text: 'لم يتم العثور على خطوط صالحة (TTF/OTF) داخل الملف المرفوع.'
-        });
-      }
-    } catch (err) {
-      console.error(err);
-      swal({
-        icon: 'error',
-        title: 'فشل تثبيت الخطوط',
-        text: 'حدث Error غير متوقع أثناء تفكيك وقراءة ملفات الخط.'
-      });
-    }
-  };
-
-  const handleSplitBubble = () => {
-    if (!selectedImageId || !selectedRegionId) return;
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-    const region = img.regions.find(r => r.id === selectedRegionId);
-    if (!region) return;
-
-    saveHistory(img.id);
-
-    // Filter out active region to make room for two distinct halved split bubbles
-    const updatedRegions = img.regions.filter(r => r.id !== region.id);
-    
-    const id1 = 'region-' + Math.random().toString(36).substr(2, 9);
-    const id2 = 'region-' + Math.random().toString(36).substr(2, 9);
-    
-    let region1: Region;
-    let region2: Region;
-
-    if (region.width > region.height) {
-      const halfW = region.width / 2;
-      region1 = {
-        ...region,
-        id: id1,
-        width: halfW,
-        originalText: region.originalText ? region.originalText.substring(0, Math.floor(region.originalText.length / 2)) : '',
-        translatedText: region.translatedText ? region.translatedText.substring(0, Math.floor(region.translatedText.length / 2)) : 'الفقاعة الأولى',
-      };
-      region2 = {
-        ...region,
-        id: id2,
-        x: region.x + halfW,
-        width: halfW,
-        originalText: region.originalText ? region.originalText.substring(Math.floor(region.originalText.length / 2)) : '',
-        translatedText: region.translatedText ? region.translatedText.substring(Math.floor(region.translatedText.length / 2)) : 'الفقاعة الثانية',
-      };
-    } else {
-      const halfH = region.height / 2;
-      region1 = {
-        ...region,
-        id: id1,
-        height: halfH,
-        originalText: region.originalText ? region.originalText.substring(0, Math.floor(region.originalText.length / 2)) : '',
-        translatedText: region.translatedText ? region.translatedText.substring(0, Math.floor(region.translatedText.length / 2)) : 'الفقاعة العلوية',
-      };
-      region2 = {
-        ...region,
-        id: id2,
-        y: region.y + halfH,
-        height: halfH,
-        originalText: region.originalText ? region.originalText.substring(Math.floor(region.originalText.length / 2)) : '',
-        translatedText: region.translatedText ? region.translatedText.substring(Math.floor(region.translatedText.length / 2)) : 'الفقاعة السفلية',
-      };
-    }
-
-    const updatedImages = images.map(item => {
-      if (item.id !== img.id) return item;
-      return {
-        ...item,
-        regions: [...updatedRegions, region1, region2]
-      };
-    });
-
-    setImages(updatedImages);
-    setSelectedRegionId(id1);
-
-    setMangas(prev => prev.map(m => {
-      if (m.id !== activeMangaId) return m;
-      return {
-        ...m,
-        volumes: m.volumes.map(v => {
-          if (v.id !== activeVolumeId) return v;
-          return {
-            ...v,
-            chapters: v.chapters.map(c => {
-              if (c.id !== activeChapterId) return c;
-              return {
-                ...c,
-                images: updatedImages
-              };
-            })
-          };
-        })
-      };
-    }));
-
-    swal({
-      icon: 'success',
-      title: 'تم فصل الفقاعتين!',
-      text: 'تم فصل الفقاعة المستهدفة بذكاء لفقاعتين مستقلتين مواءمتين للمحاذاة.',
-      timer: 1500,
-      showConfirmButton: false
-    });
-  };
-
-  const applyKashidaHarmony = (style: 'oval' | 'rectangular') => {
-    if (!selectedImageId || !selectedRegionId) return;
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-    const region = img.regions.find(r => r.id === selectedRegionId);
-    if (!region) return;
-
-    saveHistory(img.id);
-    let originalText = region.translatedText || '';
-    
-    // Remove any existing kashidas to format cleanly
-    let cleanText = originalText.replace(/ـ+/g, '');
-
-    let formatted = cleanText;
-    if (style === 'oval') {
-      const words = cleanText.split(/\s+/);
-      if (words.length > 2) {
-        const middleIndex = Math.floor(words.length / 2);
-        const extendableArabicLetters = /[ابتثجحخدرزسشصضطظعغفقمنهويىئؤأإ]/;
-        
-        const elongatedWords = words.map((word, idx) => {
-          if (idx === middleIndex || (words.length > 4 && Math.abs(idx - middleIndex) <= 1)) {
-            for (let charIdx = 0; charIdx < word.length; charIdx++) {
-              if (extendableArabicLetters.test(word[charIdx]) && charIdx < word.length - 1) {
-                return word.slice(0, charIdx + 1) + 'ـــ' + word.slice(charIdx + 1);
-              }
-            }
-          }
-          return word;
-        });
-        formatted = elongatedWords.join(' ');
-      } else if (words.length > 0) {
-        const extendableArabicLetters = /[ابتثجحخدرزسشصضطظعغفقمنهويىئؤأإ]/;
-        const w = words[0];
-        for (let charIdx = 0; charIdx < w.length; charIdx++) {
-          if (extendableArabicLetters.test(w[charIdx]) && charIdx < w.length - 1) {
-            formatted = w.slice(0, charIdx + 1) + 'ـــ' + w.slice(charIdx + 1);
-            break;
-          }
-        }
-      }
-    }
-
-    updateRegion(region.id, { translatedText: formatted });
-
-    swal({
-      icon: 'success',
-      title: 'تم ضبط كشيدة الTextوص!',
-      text: style === 'oval' ? 'تم تطبيق كشيدة التدريج البيضاوي لملائمة الدوائر.' : 'تم استعادة التنسيق المستطيل القياسي.',
-      timer: 1200,
-      showConfirmButton: false
-    });
-  };
-
-  const handleExportPsd = async () => {
-    if (images.length === 0) {
-      swal({ title: 'Error', text: 'برجاء Loading Images الفصل للExport.', icon: 'error' });
-      return;
-    }
-
-    swal({
-      title: 'توليد ملفات Photoshop PSD...',
-      text: 'Packing layers, transparent texts, and repainted art into a PSD-compatible workspace...',
-      allowOutsideClick: false,
-      didOpen: () => {
-        Swal.showLoading();
-      }
-    });
-
-    try {
-      const zip = new JSZip();
-      
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i];
-        const pageFolder = zip.folder(`Page_${i + 1}`);
-        if (!pageFolder) continue;
-
-        const bgResponse = await fetch(img.originalDataUrl || img.dataUrl);
-        const bgBlob = await bgResponse.blob();
-        pageFolder.file('Background_Clean.png', bgBlob);
-
-        const textLayerInfo = img.regions.map(r => ({
-          text: r.translatedText,
-          original: r.originalText,
-          x: Math.round(r.x),
-          y: Math.round(r.y),
-          width: Math.round(r.width),
-          height: Math.round(r.height),
-          font: r.fontFamily,
-          size: Math.round(r.fontSize),
-          color: r.textColor,
-          align: r.textAlign
-        }));
-
-        pageFolder.file('PSD_Text_Layers.json', JSON.stringify(textLayerInfo, null, 2));
-
-        const textCanvas = document.createElement('canvas');
-        textCanvas.width = img.width;
-        textCanvas.height = img.height;
-        const textCtx = textCanvas.getContext('2d');
-        if (textCtx) {
-          textCtx.clearRect(0, 0, img.width, img.height);
-          
-          img.regions.forEach(r => {
-            textCtx.fillStyle = r.textColor;
-            textCtx.font = `${r.fontWeight || 'normal'} ${r.fontSize}px "${r.fontFamily}"`;
-            textCtx.textAlign = r.textAlign as any;
-            
-            const lines = (r.translatedText || '').split('\n');
-            const startX = r.textAlign === 'center' ? r.x + r.width / 2 : r.x + 10;
-            const startY = r.y + r.fontSize;
-            lines.forEach((line, lIdx) => {
-              textCtx.fillText(line, startX, startY + (lIdx * r.fontSize * 1.3));
-            });
-          });
-
-          const transparentTextBase64Blob = await new Promise<Blob>((res) => {
-            textCanvas.toBlob((b) => res(b!), 'image/png');
-          });
-          pageFolder.file('Text_Overlay_Layer.png', transparentTextBase64Blob);
-        }
-      }
-
-      const content = await zip.generateAsync({ type: 'blob' });
-      saveAs(content, `${mangas.find(m => m.id === activeMangaId)?.title || 'MET'}_Photoshop_MultiLayer_PSD.zip`);
-
-      swal({
-        icon: 'success',
-        title: 'تم Export حزمة طبقات PSD بSuccess!',
-        text: 'تم تسليمك ملف ZIP يضم الطبقات مفصولة بالكامل، خطوط الTextوص الشفافة المستقلة، والتصميم الجمالي الجاهز للمتابعة داخل فوتوشوب دقة عالية.',
-        confirmButtonText: 'ممتاز'
-      });
-    } catch (err) {
-      console.error(err);
-      swal({ title: 'Error في الExport', text: 'تعذر كتابة ملف PSD الExportي.', icon: 'error' });
-    }
-  };
-
-  const handleScribbleBubble = (seedX: number, seedY: number) => {
-    if (!selectedImageId) return;
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-
-    const imageObj = new Image();
-    imageObj.crossOrigin = 'anonymous';
-    imageObj.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = imageObj.width;
-      canvas.height = imageObj.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      ctx.drawImage(imageObj, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      // Keep the new fill from swallowing any bubble that's already placed nearby.
-      const avoidPoints = img.regions
-        .filter(r => r.type === 'bubble')
-        .map(r => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }));
-      const result = floodFillBubbleDetailed(imageData, Math.floor(seedX), Math.floor(seedY), imageObj.width, imageObj.height, avoidPoints);
-
-      if (result) {
-        saveHistory(img.id);
-        const id = 'region-' + Math.random().toString(36).substr(2, 9);
-        const newRegion: Region = {
-          id,
-          type: 'bubble',
-          x: result.safeTextBounds.x,
-          y: result.safeTextBounds.y,
-          width: result.safeTextBounds.width,
-          height: result.safeTextBounds.height,
-          bubbleContour: result.contour,
-          angle: 0,
-          bgColor: 'transparent',
-          textColor: '#000000',
-          strokeColor: '#ffffff',
-          strokeWidth: 2,
-          fontFamily: customFonts[0] || 'Cairo',
-          fontSize: 24,
-          fontWeight: 'bold',
-          fontStyle: 'normal',
-          textAlign: 'center',
-          lineHeight: 1.3,
-          originalText: 'Scribble Detected Area',
-          translatedText: 'Text الفقاعة الجديد',
-          autoFitText: true
-        };
-
-        const updatedImages = images.map(item => {
-          if (item.id !== img.id) return item;
-          return {
-            ...item,
-            regions: [...item.regions, newRegion]
-          };
-        });
-
-        setImages(updatedImages);
-        setSelectedRegionId(id);
-        
-        setMangas(prev => prev.map(m => {
-          if (m.id !== activeMangaId) return m;
-          return {
-            ...m,
-            volumes: m.volumes.map(v => {
-              if (v.id !== activeVolumeId) return v;
-              return {
-                ...v,
-                chapters: v.chapters.map(c => {
-                  if (c.id !== activeChapterId) return c;
-                  return {
-                    ...c,
-                    images: updatedImages
-                  };
-                })
-              };
-            })
-          };
-        }));
-        
-        swal({
-          icon: 'success',
-          title: 'حدود محاذاة ذكية!',
-          text: 'تم رصد واحتواء فقاعة الحوار تلقائياً بدلالة الشخبطة وتوسيط الText.',
-          timer: 1500,
-          showConfirmButton: false
-        });
-      } else {
-        swal({
-          icon: 'warning',
-          title: 'تنبيه',
-          text: 'تعذر التعرف التلقائي على حدود الفقاعة من نقطة الشخبطة. يرجى تجربة الشخبطة بمنتصف الفقاعة تماماً.'
-        });
-      }
-    };
-    imageObj.src = img.originalDataUrl || img.dataUrl;
-  };
-
-  const handleZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    swal({
-      title: 'Importing Manga Pages...',
-      text: 'Please wait while we unpack the archive and prepare the pages.',
-      allowOutsideClick: false,
-      didOpen: () => {
-        Swal.showLoading();
-      }
-    });
-
-    try {
-      const extractedImages = await extractImagesFromZip(file);
-      setImages(extractedImages);
-      if (extractedImages.length > 0) {
-        setSelectedImageId(extractedImages[0].id);
-      }
-      Swal.close();
-
-      swalToast({
-        icon: 'success',
-        title: 'Archive Imported!',
-        text: `Successfully loaded ${extractedImages.length} images into the library.`,
-        timer: 2000
-      });
-    } catch (error) {
-      console.error("Error reading zip", error);
-      swal({
-        icon: 'error',
-        title: 'ZIP Import Failed',
-        text: 'The archive might be corrupted or in an unsupported format.'
-      });
-    }
-  };
-
-  const cleanZipInputRef = useRef<HTMLInputElement>(null);
-
-  const handleCleanedZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    swal({
-      title: 'Merging Cleaned Plates...',
-      text: 'Matching the whitened manga sheets against original page indices...',
-      allowOutsideClick: false,
-      didOpen: () => {
-        Swal.showLoading();
-      }
-    });
-
-    try {
-      const cleanedImages = await extractImagesFromZip(file);
-      if (cleanedImages.length === 0) {
-        swal({
-          icon: 'warning',
-          title: 'Empty Clean Archive',
-          text: 'No matching cleaned image sheets were found in the uploaded file.'
-        });
-        return;
-      }
-
-      setImages(prev => {
-        const newImages = [...prev];
-        for (let i = 0; i < cleanedImages.length; i++) {
-          const cleanInfo = cleanedImages[i];
-          let targetIndex = -1;
-          
-          if (zipMatchMode === 'filename') {
-             targetIndex = newImages.findIndex(img => img.filename === cleanInfo.filename);
-             if (targetIndex === -1) targetIndex = i; // fallback to index if names don't match
-          } else {
-             targetIndex = i;
-          }
-          
-          if (targetIndex < newImages.length) {
-             const target = newImages[targetIndex];
-             // Save current as original if not already set, then swap dataUrl
-             const originalDataUrl = target.originalDataUrl || target.dataUrl;
-             
-             // Remove backgrounds from regions as the image is already cleaned
-             const newRegions = target.regions.map(r => ({ ...r, bgColor: 'transparent' }));
-             // Remove all paint strokes, since the user only wants texts over the cleaned image
-             const newStrokes: PaintStroke[] = [];
-             
-             newImages[targetIndex] = {
-               ...target,
-               originalDataUrl,
-               dataUrl: cleanInfo.dataUrl,
-               regions: newRegions,
-               paintStrokes: newStrokes
-             };
-          }
-        }
-        return newImages;
-      });
-      
-      swal({
-        icon: 'success',
-        title: 'Manga Cleaning Plates Merged!',
-        text: 'Successfully swapped original sheets for whitened plates. Use the "View Original" toggle to inspect any changes.'
-      });
-    } catch (error) {
-      console.error("Error reading cleaned zip", error);
-      swal({
-        icon: 'error',
-        title: 'Clean Plate Import Failed',
-        text: 'Could not successfully swap or process image paths: ' + (error as Error).message
-      });
-    }
-    if (cleanZipInputRef.current) cleanZipInputRef.current.value = '';
-  };
-
-  const updateImage = (imgId: string, updates: Partial<ProcessedImage>) => {
-    setImages(prev => prev.map(img => img.id === imgId ? { ...img, ...updates } : img));
-  };
-
-  const saveHistory = (imgId: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id === imgId) {
-        const currentHistory = img.history || [];
-        const newHistory = [...currentHistory, {
-          regions: JSON.parse(JSON.stringify(img.regions)),
-          paintStrokes: JSON.parse(JSON.stringify(img.paintStrokes))
-        }].slice(-20); // Keep last 20 steps
-        return { ...img, history: newHistory };
-      }
-      return img;
-    }));
-  };
-
-  const undo = (imgId: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id === imgId) {
-        const history = img.history || [];
-        if (history.length === 0) return img;
-        const prevState = history[history.length - 1];
-        const newHistory = history.slice(0, -1);
-        return {
-          ...img,
-          regions: prevState.regions,
-          paintStrokes: prevState.paintStrokes,
-          history: newHistory
-        };
-      }
-      return img;
-    }));
-  };
-
-  const updateRegion = (regionId: string, updates: Partial<Region>) => {
-    if (!selectedImageId) return;
-    setImages(prev => prev.map(img => {
-      if (img.id !== selectedImageId) return img;
-      return {
-        ...img,
-        regions: img.regions.map(r => r.id === regionId ? { ...r, ...updates } : r)
-      };
-    }));
-  };
-
-  const handleSmartBubbleFill = async (imgId: string, region: Region) => {
-    const img = images.find(i => i.id === imgId);
-    if (!img) return;
-
-    // Bubbles are traced on the whitened/inpainted layer so leftover text strokes
-    // don't block the flood fill; SFX tracing needs the original lettering intact.
-    const imgSrc = region.type === 'sfx'
-      ? (img.originalDataUrl || img.dataUrl)
-      : img.dataUrl;
-    const imageObj = new Image();
-    imageObj.src = imgSrc;
-    await new Promise(resolve => imageObj.onload = resolve);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = imageObj.width;
-    canvas.height = imageObj.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.drawImage(imageObj, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-    const startX = Math.floor(region.x + region.width / 2);
-    const startY = Math.floor(region.y + region.height / 2);
-
-    const avoidPoints = img.regions
-      .filter(r => r.type === 'bubble' && r.id !== region.id)
-      .map(r => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 }));
-    const result = region.type === 'sfx'
-      ? detectSfxDetailed(imageData, startX, startY, region.width, region.height)
-      : floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height, avoidPoints);
-
-    if (result) {
-      saveHistory(img.id);
-      updateRegion(region.id, {
-        ...result.safeTextBounds,
-        bubbleContour: result.contour,
-        textAlign: 'center'
-      });
-    } else {
-      alert(region.type === 'sfx'
-        ? "تعذر التعرف على حدود المؤثر الصوتي (SFX). ضع مركز الصندوق فوق حروف المؤثر مباشرة ثم أعد المحاولة."
-        : "تعذر التعرف التلقائي على حدود الفقاعة.");
-    }
-  };
-
-  const handleCenterText = (regionId: string) => {
-    saveHistory(selectedImageId!);
-    updateRegion(regionId, { textAlign: 'center' }); // usually already handled, but we can also snap to center of parent bubble if preferred
-  };
-
-  const traceRegionsWithBubbleDetection = async (imgDataUrl: string, regions: Region[]): Promise<Region[]> => {
-    try {
-      const imageObj = new Image();
-      imageObj.src = imgDataUrl;
-      await new Promise((resolve) => {
-        imageObj.onload = resolve;
-        imageObj.onerror = resolve;
-      });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = imageObj.width;
-      canvas.height = imageObj.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return regions;
-
-      ctx.drawImage(imageObj, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      // Fixed snapshot of every bubble's original center, taken before any of
-      // them are re-detected, so processing order can't change the outcome.
-      const allBubbleCenters = regions
-        .filter(r => r.type === 'bubble')
-        .map(r => ({ id: r.id, x: r.x + r.width / 2, y: r.y + r.height / 2 }));
-
-      return regions.map(region => {
-        if (region.type === 'bubble') {
-          const startX = Math.floor(region.x + region.width / 2);
-          const startY = Math.floor(region.y + region.height / 2);
-          const avoidPoints = allBubbleCenters.filter(p => p.id !== region.id);
-          const result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height, avoidPoints);
-          if (result) {
-            return {
-              ...region,
-              ...result.safeTextBounds,
-              bubbleContour: result.contour,
-              textAlign: 'center'
-            };
-          }
-        }
-        return region;
-      });
-    } catch (e) {
-      console.error("Error auto-tracing bubbles:", e);
-      return regions;
-    }
-  };
-
-  const handleProcessCropSection = async (rect: { x: number, y: number, w: number, h: number }) => {
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-
-    setIsProcessingCrop(true);
-    try {
-      const imgSrc = img.originalDataUrl || img.dataUrl;
-      const imageObj = new Image();
-      imageObj.src = imgSrc;
-      await new Promise((resolve, reject) => {
-        imageObj.onload = resolve;
-        imageObj.onerror = reject;
-      });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = rect.w;
-      canvas.height = rect.h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error("Unable to create canvas 2D context");
-      }
-
-      // Draw only the cropped section
-      ctx.drawImage(imageObj, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-      const croppedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.95);
-
-      const key = customApiKey || '';
-      
-      const results = await processMangaPages(
-        [{ id: 'crop-temp', base64Image: croppedBase64DataUrl, mimeType: 'image/jpeg' }],
-        key,
-        customInstructions,
-        translateJapanese,
-        translateSfx
-      );
-
-      const rawRegions = results[0]?.regions || [];
-      if (rawRegions.length === 0) {
-        swal({
-          icon: 'info',
-          title: 'No Texts Found',
-          text: 'The AI model could not detect any text or bubbles in this specified crop segment.'
-        });
-        return;
-      }
-
-      // Project regions back to the master image coordinate system
-      let newRegions: Region[] = rawRegions.map((raw, idx) => {
-        const cx = (raw.xmin / 1000) * rect.w;
-        const cy = (raw.ymin / 1000) * rect.h;
-        const cw = ((raw.xmax - raw.xmin) / 1000) * rect.w;
-        const ch = ((raw.ymax - raw.ymin) / 1000) * rect.h;
-
-        const rx = rect.x + cx;
-        const ry = rect.y + cy;
-
-        return {
-          id: `region_${Date.now()}_crop_${idx}`,
-          type: raw.type || 'bubble',
-          originalText: raw.originalText || '',
-          translatedText: raw.translatedText || '',
-          x: rx,
-          y: ry,
-          width: cw,
-          height: ch,
-          angle: raw.angle || 0,
-          textColor: raw.textColor || '#000000',
-          strokeColor: raw.strokeColor || 'transparent',
-          strokeWidth: raw.strokeWidth ?? 0,
-          bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
-          fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Cairo' : 'Aref Ruqaa'),
-          fontSize: raw.fontSize || Math.max(14, Math.floor(ch / 4.2)),
-          fontWeight: raw.fontWeight || 'normal',
-          fontStyle: raw.fontStyle || 'normal',
-          textAlign: raw.textAlign || 'center',
-          lineHeight: 1.25,
-          autoFitText: true
-        };
-      });
-
-      // Automatically trace contours and center alignment of newly created bubble regions if enabled!
-      if (autoFitAndCenter) {
-        newRegions = await traceRegionsWithBubbleDetection(imgSrc, newRegions);
-      }
-
-      saveHistory(img.id);
-      updateImage(img.id, {
-        regions: [...img.regions, ...newRegions]
-      });
-
-      if (newRegions.length > 0) {
-        setSelectedRegionId(newRegions[0].id);
-      }
-
-      swalToast({
-        icon: 'success',
-        title: 'Translated Successfully!',
-        timer: 1500,
-        timerProgressBar: true
-      });
-
-    } catch (err) {
-      console.error("AI Cropped Translate error:", err);
-      swal({
-        icon: 'error',
-        title: 'Translation Failed',
-        text: 'An error occurred during crop segment translation: ' + (err as Error).message
-      });
-    } finally {
-      setIsProcessingCrop(false);
-    }
-  };
-
-  const handleQueueCropSection = async (rect: { x: number, y: number, w: number, h: number }) => {
-    const img = images.find(i => i.id === selectedImageId);
-    if (!img) return;
-
-    try {
-      const imgSrc = img.originalDataUrl || img.dataUrl;
-      const imageObj = new Image();
-      imageObj.src = imgSrc;
-      await new Promise((resolve, reject) => {
-        imageObj.onload = resolve;
-        imageObj.onerror = reject;
-      });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = rect.w;
-      canvas.height = rect.h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      ctx.drawImage(imageObj, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-      const croppedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.90);
-
-      const newCrop: CropSelection = {
-        id: `crop_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-        sourceImageId: img.id,
-        imageName: img.filename,
-        x: rect.x,
-        y: rect.y,
-        w: rect.w,
-        h: rect.h,
-        cropUrl: croppedBase64DataUrl
-      };
-
-      setCropsQueue(prev => [...prev, newCrop]);
-
-      swalToast({
-        icon: 'success',
-        title: 'Added to Batch Queue',
-        text: `Segment bounding [${Math.round(rect.w)}x${Math.round(rect.h)}] saved to batch pipeline.`,
-        timer: 2000,
-        timerProgressBar: true
-      });
-
-    } catch (e) {
-      console.error("Error cropping section for queue:", e);
-      swal({
-        icon: 'error',
-        title: 'Crop Segment Error',
-        text: 'Failed to write cropped canvas data: ' + (e as Error).message
-      });
-    }
-  };
-
-  const handleTranslateCropQueue = async () => {
-    if (cropsQueue.length === 0) {
-      swal({
-        icon: 'warning',
-        title: 'Crop Queue is Empty',
-        text: 'Please crop at least one segment first using the Crop tool, then proceed with translation.'
-      });
-      return;
-    }
-
-    setIsProcessingCrop(true);
-    try {
-      const loadedImages: { selection: CropSelection; imgElement: HTMLImageElement }[] = [];
-      for (const item of cropsQueue) {
-        const imgObj = new Image();
-        imgObj.src = item.cropUrl;
-        await new Promise((resolve) => {
-          imgObj.onload = resolve;
-          imgObj.onerror = resolve;
-        });
-        loadedImages.push({ selection: item, imgElement: imgObj });
-      }
-
-      const spacing = 30; 
-      const canvasWidth = Math.max(...cropsQueue.map(c => c.w), 800); 
-      let totalStitchedHeight = 0;
-      
-      const renderSpecs = loadedImages.map((lm, idx) => {
-        const item = lm.selection;
-        const scale = canvasWidth / item.w;
-        const renderedH = item.h * scale;
-        const yOffset = totalStitchedHeight;
-        totalStitchedHeight += renderedH + (idx < loadedImages.length - 1 ? spacing : 0);
-        return {
-          ...item,
-          imgElement: lm.imgElement,
-          scale,
-          renderedW: canvasWidth,
-          renderedH,
-          yOffset
-        };
-      });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = canvasWidth;
-      canvas.height = totalStitchedHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error("Unable to create stitched canvas");
-      }
-
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvasWidth, totalStitchedHeight);
-
-      renderSpecs.forEach((spec) => {
-        ctx.drawImage(spec.imgElement, 0, spec.yOffset, spec.renderedW, spec.renderedH);
-        ctx.strokeStyle = '#4f46e5';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(0, spec.yOffset, spec.renderedW, spec.renderedH);
-      });
-
-      const stitchedBase64DataUrl = canvas.toDataURL('image/jpeg', 0.88);
-      const key = customApiKey || '';
-
-      const results = await processMangaPages(
-        [{ id: 'stitched-crop', base64Image: stitchedBase64DataUrl, mimeType: 'image/jpeg' }],
-        key,
-        customInstructions,
-        translateJapanese,
-        translateSfx
-      );
-
-      const rawRegions = results[0]?.regions || [];
-      if (rawRegions.length === 0) {
-        swal({
-          icon: 'info',
-          title: 'No Texts Found',
-          text: 'The Gemini AI model did not detect any text regions in the crop segments.'
-        });
-        return;
-      }
-
-      const updatesGroupedByImage: { [imageId: string]: Region[] } = {};
-
-      for (let idx = 0; idx < rawRegions.length; idx++) {
-        const raw = rawRegions[idx];
-
-        const stitchedX = (raw.xmin / 1000) * canvasWidth;
-        const stitchedY = (raw.ymin / 1000) * totalStitchedHeight;
-        const stitchedW = ((raw.xmax - raw.xmin) / 1000) * canvasWidth;
-        const stitchedH = ((raw.ymax - raw.ymin) / 1000) * totalStitchedHeight;
-
-        const centerY = stitchedY + stitchedH / 2;
-        const matchedSpec = renderSpecs.find(spec => centerY >= spec.yOffset && centerY <= (spec.yOffset + spec.renderedH + spacing));
-        if (!matchedSpec) continue; 
-
-        const relYStitched = stitchedY - matchedSpec.yOffset;
-        const relXStitched = stitchedX; 
-
-        const relXOriginalSub = relXStitched / matchedSpec.scale;
-        const relYOriginalSub = relYStitched / matchedSpec.scale;
-        const relWOriginalSub = stitchedW / matchedSpec.scale;
-        const relHOriginalSub = stitchedH / matchedSpec.scale;
-
-        const origX = matchedSpec.x + relXOriginalSub;
-        const origY = matchedSpec.y + relYOriginalSub;
-        const origW = relWOriginalSub;
-        const origH = relHOriginalSub;
-
-        const rId = `region_${Date.now()}_queued_crop_${idx}`;
-        const region: Region = {
-          id: rId,
-          type: raw.type || 'bubble',
-          originalText: raw.originalText || '',
-          translatedText: raw.translatedText || '',
-          x: origX,
-          y: origY,
-          width: origW,
-          height: origH,
-          angle: raw.angle || 0,
-          textColor: raw.textColor || '#000000',
-          strokeColor: raw.strokeColor || 'transparent',
-          strokeWidth: raw.strokeWidth ?? 0,
-          bgColor: 'transparent', 
-          fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Cairo' : 'Aref Ruqaa'),
-          fontSize: raw.fontSize || Math.max(14, Math.floor(origH / 4.2)),
-          fontWeight: raw.fontWeight || 'normal',
-          fontStyle: raw.fontStyle || 'normal',
-          textAlign: raw.textAlign || 'center',
-          lineHeight: 1.25,
-          autoFitText: true
-        };
-
-        if (!updatesGroupedByImage[matchedSpec.sourceImageId]) {
-          updatesGroupedByImage[matchedSpec.sourceImageId] = [];
-        }
-        updatesGroupedByImage[matchedSpec.sourceImageId].push(region);
-      }
-
-      let totalAddedCount = 0;
-      for (const [imgId, newRegs] of Object.entries(updatesGroupedByImage)) {
-        const matchingImg = images.find(i => i.id === imgId);
-        if (!matchingImg) continue;
-
-        let finalRegsForImg = newRegs;
-        if (autoFitAndCenter) {
-          finalRegsForImg = await traceRegionsWithBubbleDetection(matchingImg.originalDataUrl || matchingImg.dataUrl, newRegs);
-        }
-
-        saveHistory(imgId);
-        updateImage(imgId, {
-          regions: [...matchingImg.regions, ...finalRegsForImg]
-        });
-        totalAddedCount += finalRegsForImg.length;
-      }
-
-      setCropsQueue([]);
-
-      swal({
-        icon: 'success',
-        title: 'Batch Translation Complete!',
-        text: `Processed crops and localized ${totalAddedCount} translated text bubbled regions directly on their matching original sheets.`
-      });
-
-    } catch (err) {
-      console.error("Batch Queue translate error:", err);
-      swal({
-        icon: 'error',
-        title: 'Batch Translation Failed',
-        text: 'An error occurred during multi-crop Gemini API processing: ' + (err as Error).message
-      });
-    } finally {
-      setIsProcessingCrop(false);
-    }
-  };
-
-  const handleSmartBubbleFillAll = async (imgId: string) => {
-    const img = images.find(i => i.id === imgId);
-    if (!img) return;
-
-    // Use the whitened/inpainted image dataUrl strictly
-    const imgSrc = img.dataUrl;
-    const imageObj = new Image();
-    imageObj.src = imgSrc;
-    await new Promise(resolve => imageObj.onload = resolve);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = imageObj.width;
-    canvas.height = imageObj.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    ctx.drawImage(imageObj, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-    // SFX lettering is erased on the whitened layer, so SFX regions are traced
-    // on the original artwork instead.
-    let sfxImageData: ImageData | null = null;
-    if (img.regions.some(r => r.type === 'sfx')) {
-      const origObj = new Image();
-      origObj.src = img.originalDataUrl || img.dataUrl;
-      await new Promise(resolve => { origObj.onload = resolve; origObj.onerror = resolve; });
-      const origCanvas = document.createElement('canvas');
-      origCanvas.width = origObj.width;
-      origCanvas.height = origObj.height;
-      const origCtx = origCanvas.getContext('2d');
-      if (origCtx) {
-        origCtx.drawImage(origObj, 0, 0);
-        sfxImageData = origCtx.getImageData(0, 0, origCanvas.width, origCanvas.height);
-      }
-    }
-
-    const newRegions = [...img.regions];
-    let changed = false;
-
-    // Fixed snapshot of every bubble's original center, taken before any of
-    // them are re-detected, so processing order can't change the outcome.
-    const allBubbleCenters = img.regions
-      .filter(r => r.type === 'bubble')
-      .map(r => ({ id: r.id, x: r.x + r.width / 2, y: r.y + r.height / 2 }));
-
-    for (let i = 0; i < newRegions.length; i++) {
-       const region = newRegions[i];
-       const startX = Math.floor(region.x + region.width / 2);
-       const startY = Math.floor(region.y + region.height / 2);
-       let result: ReturnType<typeof floodFillBubbleDetailed> = null;
-       if (region.type === 'bubble') {
-         const avoidPoints = allBubbleCenters.filter(p => p.id !== region.id);
-         result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height, avoidPoints);
-       } else if (region.type === 'sfx' && sfxImageData) {
-         result = detectSfxDetailed(sfxImageData, startX, startY, region.width, region.height);
-       }
-       if (result) {
-         newRegions[i] = {
-           ...region,
-           ...result.safeTextBounds,
-           bubbleContour: result.contour,
-           textAlign: 'center'
-         };
-         changed = true;
-       }
-    }
-
-    if (changed) {
-      saveHistory(img.id);
-      updateImage(img.id, { regions: newRegions });
-    } else {
-      alert("No text bubbles or SFX regions were detected for dynamic improvement on this page.");
-    }
-  };
-
-  const generateBubblePreviews = async (imgId: string) => {
-    const img = images.find(i => i.id === imgId);
-    if (!img) return;
-
-    setIsGeneratingPreviews(true);
-    try {
-      // Use the whitened/inpainted image dataUrl strictly
-      const imgSrc = img.dataUrl;
-      const imageObj = new Image();
-      imageObj.src = imgSrc;
-      await new Promise(resolve => imageObj.onload = resolve);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = imageObj.width;
-      canvas.height = imageObj.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      ctx.drawImage(imageObj, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-
-      // SFX lettering is erased on the whitened layer, so SFX regions preview
-      // against the original artwork instead.
-      let sfxImageData: ImageData | null = null;
-      if (img.regions.some(r => r.type === 'sfx')) {
-        const origObj = new Image();
-        origObj.src = img.originalDataUrl || img.dataUrl;
-        await new Promise(resolve => { origObj.onload = resolve; origObj.onerror = resolve; });
-        const origCanvas = document.createElement('canvas');
-        origCanvas.width = origObj.width;
-        origCanvas.height = origObj.height;
-        const origCtx = origCanvas.getContext('2d');
-        if (origCtx) {
-          origCtx.drawImage(origObj, 0, 0);
-          sfxImageData = origCtx.getImageData(0, 0, origCanvas.width, origCanvas.height);
-        }
-      }
-
-      const previews: any[] = [];
-
-      // Fixed snapshot of every bubble's original center, taken before any of
-      // them are re-detected, so processing order can't change the outcome.
-      const allBubbleCenters = img.regions
-        .filter(r => r.type === 'bubble')
-        .map(r => ({ id: r.id, x: r.x + r.width / 2, y: r.y + r.height / 2 }));
-
-      for (const region of img.regions) {
-        const startX = Math.floor(region.x + region.width / 2);
-        const startY = Math.floor(region.y + region.height / 2);
-        let result: ReturnType<typeof floodFillBubbleDetailed> = null;
-        if (region.type === 'bubble') {
-          const avoidPoints = allBubbleCenters.filter(p => p.id !== region.id);
-          result = floodFillBubbleDetailed(imageData, startX, startY, region.width, region.height, avoidPoints);
-        } else if (region.type === 'sfx' && sfxImageData) {
-          result = detectSfxDetailed(sfxImageData, startX, startY, region.width, region.height);
-        }
-        if (result) {
-          previews.push({
-            regionId: region.id,
-            contour: result.contour, // exact fluid polygon outline points
-            safeTextBounds: result.safeTextBounds
-          });
-        }
-      }
-      
-      setBubblePreviews(prev => ({ ...prev, [imgId]: previews }));
-      setShowBubblePreviews(true);
-    } catch (e) {
-      console.error(e);
-      alert("تعذر تشغيل المعاينة التلقائية للفقاعات.");
-    } finally {
-      setIsGeneratingPreviews(false);
-    }
-  };
-
-  const applyBubblePreviews = (imgId: string) => {
-    const list = bubblePreviews[imgId];
-    if (!list || list.length === 0) return;
-    
-    saveHistory(imgId);
-    setImages(prev => prev.map(img => {
-      if (img.id !== imgId) return img;
-      return {
-        ...img,
-        regions: img.regions.map(region => {
-          const preview = list.find(p => p.regionId === region.id);
-          if (preview) {
-            return {
-              ...region,
-              ...preview.safeTextBounds,
-              bubbleContour: preview.contour,
-              textAlign: 'center'
-            };
-          }
-          return region;
-        })
-      };
-    }));
-    
-    setShowBubblePreviews(false);
-  };
-
-  const toggleSelectForProcess = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const newSet = new Set(selectedForProcess);
-    const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
-    const maxSelect = 5 * Math.max(1, keysList.length);
-    if (newSet.has(id)) {
-      newSet.delete(id);
-    } else {
-      if (newSet.size >= maxSelect) {
-        alert(`You can select up to ${maxSelect} images based on your API key list (5 per key).`);
-        return;
-      }
-      newSet.add(id);
-    }
-    setSelectedForProcess(newSet);
-  };
-
-  const runParallelMangaTranslation = async (batch: ProcessedImage[]) => {
-    const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
-    const keysToUse = keysList.length > 0 ? keysList : [''];
-    
-    // Chunk batch into groups of 5
-    const chunks: ProcessedImage[][] = [];
-    for (let i = 0; i < batch.length; i += 5) {
-      chunks.push(batch.slice(i, i + 5));
-    }
-    
-    const maxConcurrent = keysToUse.length;
-    
-    // Process matching the number of keys concurrently
-    for (let i = 0; i < chunks.length; i += maxConcurrent) {
-      const currentChunks = chunks.slice(i, i + maxConcurrent);
-      
-      await Promise.all(currentChunks.map(async (chunk, index) => {
-        const key = keysToUse[index % keysToUse.length];
-        
-        // Mark all in chunk as processing
-        chunk.forEach(img => updateImage(img.id, { status: 'processing', error: undefined }));
-        
-        try {
-          const processedPages = await Promise.all(chunk.map(async img => {
-            const srcBase64 = img.originalDataUrl || img.dataUrl;
-            let imgBase64 = srcBase64;
-            let mimeType = img.mimeType;
-            if (compressBeforeProcessing) {
-              try {
-                imgBase64 = await compressImageBase64(srcBase64, 1600, 0.82);
-                mimeType = 'image/jpeg';
-              } catch (e) {
-                console.error("Compression failed for img:", img.id, e);
-              }
-            }
-            return { id: img.id, base64Image: imgBase64, mimeType };
-          }));
-
-          const chunkResults = await processMangaPages(
-            processedPages, 
-            key,
-            customInstructions,
-            translateJapanese,
-            translateSfx
-          );
-          
-          await Promise.all(chunkResults.map(async result => {
-            const img = chunk.find(b => b.id === result.id);
-            if (!img) return;
-            
-            const newRegions: Region[] = result.regions.map(raw => {
-              const x = (raw.xmin / 1000) * img.width;
-              const y = (raw.ymin / 1000) * img.height;
-              const width = ((raw.xmax - raw.xmin) / 1000) * img.width;
-              const height = ((raw.ymax - raw.ymin) / 1000) * img.height;
-              
-              return {
-                id: Math.random().toString(36).substr(2, 9),
-                type: raw.type,
-                originalText: raw.originalText,
-                translatedText: raw.translatedText,
-                x, y, width, height,
-                angle: raw.angle || 0,
-                textColor: raw.textColor || '#000000',
-                strokeColor: raw.strokeColor || 'transparent',
-                strokeWidth: raw.strokeWidth ?? 0,
-                bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
-                fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Marhey' : 'Aref Ruqaa'),
-                fontSize: raw.fontSize || Math.max(16, Math.floor(height / 4)),
-                fontWeight: raw.fontWeight || 'normal',
-                fontStyle: raw.fontStyle || 'normal',
-                textAlign: raw.textAlign || 'center',
-                lineHeight: raw.lineHeight || 1.2,
-                letterSpacing: 0,
-                opacity: 1,
-                shadowBlur: 0,
-                shadowColor: 'transparent',
-                autoFitText: true
-              };
-            });
-            
-            let finalRegions = newRegions;
-            if (autoFitAndCenter) {
-              finalRegions = await traceRegionsWithBubbleDetection(img.originalDataUrl || img.dataUrl, newRegions);
-            }
-            
-            updateImage(img.id, { status: 'done', regions: finalRegions });
-          }));
-        } catch (err: any) {
-          chunk.forEach(img => updateImage(img.id, { status: 'error', error: err.message }));
-        }
-      }));
-    }
-  };
-
-  const processSelectedImages = async () => {
-    if (selectedForProcess.size === 0) return;
-    const batch = images.filter(img => selectedForProcess.has(img.id) && img.status !== 'done');
-    if (batch.length === 0) {
-       setSelectedForProcess(new Set());
-       return;
-    }
-    
-    await runParallelMangaTranslation(batch);
-    setSelectedForProcess(new Set());
-  };
-
-  const processAllImages = async () => {
-    setIsProcessingAll(true);
-    const uncompleted = images.filter(img => img.status !== 'done');
-    await runParallelMangaTranslation(uncompleted);
-    setIsProcessingAll(false);
-  };
-  
-  const processImage = async (img: ProcessedImage) => {
-    if (img.status === 'processing') return;
-    updateImage(img.id, { status: 'processing', error: undefined });
-    
-    try {
-      const keysList = customApiKey.split(/[\s,\n]+/).map(k => k.trim()).filter(Boolean);
-      const key = keysList[0] || '';
-      
-      const srcBase64 = img.originalDataUrl || img.dataUrl;
-      let imgBase64 = srcBase64;
-      let mimeType = img.mimeType;
-      
-      if (compressBeforeProcessing) {
-        try {
-          imgBase64 = await compressImageBase64(srcBase64, 1600, 0.82);
-          mimeType = 'image/jpeg';
-        } catch (e) {
-          console.error("Compression failed for single image:", e);
-        }
-      }
-
-      const results = await processMangaPages([{ id: img.id, base64Image: imgBase64, mimeType: mimeType }], key, customInstructions, translateJapanese, translateSfx);
-      const rawRegions = results[0]?.regions || [];
-      
-      const newRegions: Region[] = rawRegions.map(raw => {
-        // Map 0-1000 to pixel coordinates
-        const x = (raw.xmin / 1000) * img.width;
-        const y = (raw.ymin / 1000) * img.height;
-        const width = ((raw.xmax - raw.xmin) / 1000) * img.width;
-        const height = ((raw.ymax - raw.ymin) / 1000) * img.height;
-
-        return {
-          id: Math.random().toString(36).substr(2, 9),
-          type: raw.type,
-          originalText: raw.originalText,
-          translatedText: raw.translatedText,
-          x,
-          y,
-          width,
-          height,
-          angle: raw.angle || 0,
-          textColor: raw.textColor || '#000000',
-          strokeColor: raw.strokeColor || 'transparent',
-          strokeWidth: raw.strokeWidth ?? 0,
-          bgColor: img.originalDataUrl ? 'transparent' : (raw.bgColor && raw.bgColor !== 'transparent' ? raw.bgColor : (raw.type === 'bubble' ? '#ffffff' : 'transparent')),
-          fontFamily: raw.fontFamily || (raw.type === 'bubble' ? 'Marhey' : 'Aref Ruqaa'),
-          fontSize: raw.fontSize || Math.max(16, Math.floor(height / 4)),
-          fontWeight: raw.fontWeight || 'normal',
-          fontStyle: raw.fontStyle || 'normal',
-          textAlign: raw.textAlign || 'center',
-          lineHeight: raw.lineHeight || 1.2,
-          letterSpacing: 0,
-          opacity: 1,
-          shadowBlur: 0,
-          shadowColor: 'transparent',
-          autoFitText: true
-        };
-      });
-
-      let finalRegions = newRegions;
-      if (autoFitAndCenter) {
-        finalRegions = await traceRegionsWithBubbleDetection(srcBase64, newRegions);
-      }
-
-      updateImage(img.id, { status: 'done', regions: finalRegions });
-    } catch (error: any) {
-      updateImage(img.id, { status: 'error', error: error.message });
-    }
-  };
-
-  // Helper handlers for library hierarchy
-  const handleOpenChapter = (chap: Chapter) => {
-    setActiveChapterId(chap.id);
-    setImages(chap.images);
-    if (chap.images.length > 0) {
-      setSelectedImageId(chap.images[0].id);
-    } else {
-      setSelectedImageId(null);
-    }
-  };
-
-  const handleDeleteManga = (mangaId: string) => {
-    swal({
-      title: 'هل ترغب بDelete هذه المانجا كلياً من Library؟',
-      text: "سيؤدي هذا الإجراء لDelete كافة الVolumeات والفصول والصفحات المTranslation نهائياً ولا يمكن الBack فيه!",
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonText: 'نعم، اDelete السلسلة',
-      cancelButtonText: 'Cancel'
-    }).then((result) => {
-      if (result.isConfirmed) {
-        setMangas(prev => prev.filter(m => m.id !== mangaId));
-        if (activeMangaId === mangaId) {
-          setActiveMangaId(null);
-          setActiveVolumeId(null);
-          setActiveChapterId(null);
-        }
-        swal({
-          icon: 'success',
-          text: 'تم Delete سلسلة المانجا بSuccess!'
-        });
-      }
-    });
-  };
-
-  const handleDeleteVolume = (volId: string) => {
-    swal({
-      title: 'هل تريد Delete هذا الVolume وجسد فصوله؟',
-      text: "سيتم Delete الVolume بكافة الفصول الموجودة بداخله نهائياً!",
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonText: 'نعم، اDeleteه',
-      cancelButtonText: 'Cancel'
-    }).then((result) => {
-      if (result.isConfirmed) {
-        setMangas(prev => prev.map(m => {
-          if (m.id !== activeMangaId) return m;
-          return {
-            ...m,
-            volumes: m.volumes.filter(v => v.id !== volId)
-          };
-        }));
-        if (activeVolumeId === volId) {
-          setActiveVolumeId(null);
-          setActiveChapterId(null);
-        }
-        swal({
-          icon: 'success',
-          text: 'تم Delete الVolume بSuccess!'
-        });
-      }
-    });
-  };
-
-  const handleDeleteChapter = (chapId: string) => {
-    swal({
-      title: 'هل تريد Delete هذا الChapter كلياً؟',
-      text: "سيؤدي هذا لDelete كافة الImages المغروسة والEditات المطبقة نهائياً!",
-      icon: 'warning',
-      showCancelButton: true,
-      confirmButtonText: 'نعم، اDeleteه',
-      cancelButtonText: 'Cancel'
-    }).then((result) => {
-      if (result.isConfirmed) {
-        setMangas(prev => prev.map(m => {
-          if (m.id !== activeMangaId) return m;
-          return {
-            ...m,
-            volumes: m.volumes.map(v => {
-              if (v.id !== activeVolumeId) return v;
-              return {
-                ...v,
-                chapters: v.chapters.filter(c => c.id !== chapId)
-              };
-            })
-          };
-        }));
-        if (activeChapterId === chapId) {
-          setActiveChapterId(null);
-          setImages([]);
-        }
-        swal({
-          icon: 'success',
-          text: 'تم Delete الChapter المترجم بSuccess!'
-        });
-      }
-    });
-  };
-
-  const handleAddVolumePrompt = () => {
-    swal({
-      title: 'Add Volume جديد (New Volume)',
-      text: 'أدخل اسم الVolume أو رقمه الترتيبي للتصنيف:',
-      input: 'text',
-      inputPlaceholder: 'مثلا: Volume 20 أو Volume 1...',
-      showCancelButton: true,
-      confirmButtonText: 'Add الVolume',
-      cancelButtonText: 'Cancel',
-      inputValidator: (value) => {
-        if (!value) {
-          return 'يجب كتابة اسم الVolume!';
-        }
-        return null;
-      }
-    }).then((result) => {
-      if (result.isConfirmed && result.value) {
-        const value = result.value.trim();
-        const newVol: Volume = {
-          id: 'volume-' + Math.random().toString(36).substr(2, 9),
-          name: value,
-          chapters: []
-        };
-        setMangas(prev => prev.map(m => {
-          if (m.id !== activeMangaId) return m;
-          return {
-            ...m,
-            volumes: [...m.volumes, newVol]
-          };
-        }));
-        swal({
-          icon: 'success',
-          text: `تمت Add الVolume ${value} بSuccess!`
-        });
-      }
-    });
-  };
-
-  const handleAddChapterPrompt = () => {
-    swal({
-      title: 'Add Chapter جديد (New Chapter)',
-      text: 'أدخل رقم الفصل أو اسم الجزء لحساب الTranslation:',
-      input: 'text',
-      inputPlaceholder: 'مثلا: Chapter 150 أو الفصل الأول...',
-      showCancelButton: true,
-      confirmButtonText: 'إنشاء الفصل',
-      cancelButtonText: 'Cancel',
-      inputValidator: (value) => {
-        if (!value) {
-          return 'يجب كتابة اسم الفصل!';
-        }
-        return null;
-      }
-    }).then((result) => {
-      if (result.isConfirmed && result.value) {
-        const value = result.value.trim();
-        const newChap: Chapter = {
-          id: 'chapter-' + Math.random().toString(36).substr(2, 9),
-          name: value,
-          images: []
-        };
-        setMangas(prev => prev.map(m => {
-          if (m.id !== activeMangaId) return m;
-          return {
-            ...m,
-            volumes: m.volumes.map(v => {
-              if (v.id !== activeVolumeId) return v;
-              return {
-                ...v,
-                chapters: [...v.chapters, newChap]
-              };
-            })
-          };
-        }));
-        
-        // Auto enter chapter directly as workspace!
-        handleOpenChapter(newChap);
-      }
-    });
+  const activeManga = mangas.find(m => m.id === activeMangaId) || null;
+  const activeVolume = activeManga?.volumes.find(v => v.id === activeVolumeId) || null;
+  const activeChapter = activeVolume?.chapters.find(c => c.id === activeChapterId) || null;
+
+  const resetToLibraryRoot = () => {
+    setActiveMangaId(null);
+    setActiveVolumeId(null);
+    setActiveChapterId(null);
   };
 
   const handleCoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 2 * 1024 * 1024) {
-        swal({
-          icon: 'warning',
-          text: 'يرجى اختيار Imagesة بحجم أصغر من 2 ميجابايت لضمان سرعة الأداء.'
-        });
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          setNewSeriesCoverUrl(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      swal({ icon: 'warning', title: 'Image Too Large', text: 'Please choose a cover image smaller than 2MB.' });
+      return;
     }
+    const reader = new FileReader();
+    reader.onload = (ev) => setNewSeriesCoverUrl(ev.target?.result as string);
+    reader.readAsDataURL(file);
   };
 
   const handleCreateSeries = () => {
     if (!newSeriesTitle.trim()) {
-      swal({
-        icon: 'error',
-        text: 'يجب كتابة عنوان المانجا/المانهوا للبدء!'
-      });
+      swal({ icon: 'error', title: 'Title Required', text: 'Please enter a title for your series to continue.' });
       return;
     }
-
     const newManga: MangaSeries = {
       id: 'manga-' + Math.random().toString(36).substr(2, 9),
       title: newSeriesTitle.trim(),
       type: newSeriesType,
-      coverUrl: newSeriesCoverUrl || '', 
-      description: newSeriesDesc.trim() || 'لا يوجد وصف مخصص لهذه السلسلة.',
-      volumes: []
+      coverUrl: newSeriesCoverUrl,
+      description: newSeriesDesc.trim(),
+      volumes: [],
     };
-
     setMangas(prev => [...prev, newManga]);
-    
-    // Clear and close
+    setShowCreateSeriesModal(false);
     setNewSeriesTitle('');
-    setNewSeriesType('manga');
     setNewSeriesDesc('');
     setNewSeriesCoverUrl('');
-    setShowCreateSeriesModal(false);
+    setNewSeriesType('manga');
+    swalToast({ icon: 'success', title: 'Series added to your library!' });
+  };
 
-    swal({
-      icon: 'success',
-      text: 'تمت Add السلسلة الجديدة لمكتبتك بSuccess! انقر عليها الآن لإنشاء الVolumeات والفصول.'
+  const handleAddVolumePrompt = async () => {
+    if (!activeManga) return;
+    const { value: name } = await swal({
+      title: 'New Volume',
+      input: 'text',
+      inputPlaceholder: 'e.g. Volume 1',
+      showCancelButton: true,
+      confirmButtonText: 'Add Volume',
     });
+    if (!name || !name.trim()) return;
+    const newVolume: Volume = { id: 'volume-' + Math.random().toString(36).substr(2, 9), name: name.trim(), chapters: [] };
+    setMangas(prev => prev.map(m => m.id === activeManga.id ? { ...m, volumes: [...m.volumes, newVolume] } : m));
+    setActiveVolumeId(newVolume.id);
   };
 
-  const loadDemoProject = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 800;
-    canvas.height = 1200;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-       // Canvas background
-       ctx.fillStyle = '#f3f4f6';
-       ctx.fillRect(0, 0, 800, 1200);
-       
-       // Panel borders
-       ctx.strokeStyle = '#111827';
-       ctx.lineWidth = 6;
-       ctx.strokeRect(30, 30, 740, 340);
-       ctx.strokeRect(30, 400, 350, 760);
-       ctx.strokeRect(410, 400, 360, 760);
-       
-       // Decorative manga speedlines background
-       ctx.strokeStyle = '#d1d5db';
-       ctx.lineWidth = 1.5;
-       for (let i = 0; i < 20; i++) {
-         ctx.beginPath();
-         ctx.moveTo(35 + i * 18, 35);
-         ctx.lineTo(210 + i * 8, 365);
-         ctx.stroke();
-       }
-       
-       // Draw dialogue bubble outline 1
-       ctx.fillStyle = '#ffffff';
-       ctx.strokeStyle = '#000000';
-       ctx.lineWidth = 4;
-       ctx.beginPath();
-       ctx.ellipse(200, 150, 90, 60, 0, 0, Math.PI * 2);
-       ctx.fill();
-       ctx.stroke();
-       // tail
-       ctx.beginPath();
-       ctx.moveTo(170, 200);
-       ctx.lineTo(150, 250);
-       ctx.lineTo(210, 195);
-       ctx.fillStyle = '#ffffff';
-       ctx.fill();
-       ctx.stroke();
-       ctx.beginPath();
-       ctx.moveTo(171, 198);
-       ctx.lineTo(209, 193);
-       ctx.strokeStyle = '#ffffff';
-       ctx.lineWidth = 6;
-       ctx.stroke();
-       
-       // Draw dialogue bubble outline 2
-       ctx.fillStyle = '#ffffff';
-       ctx.strokeStyle = '#000000';
-       ctx.lineWidth = 4;
-       ctx.beginPath();
-       ctx.ellipse(580, 700, 100, 70, 0, 0, Math.PI * 2);
-       ctx.fill();
-       ctx.stroke();
-       // tail
-       ctx.beginPath();
-       ctx.moveTo(550, 755);
-       ctx.lineTo(530, 810);
-       ctx.lineTo(590, 750);
-       ctx.fillStyle = '#ffffff';
-       ctx.fill();
-       ctx.stroke();
-       ctx.beginPath();
-       ctx.moveTo(551, 753);
-       ctx.lineTo(589, 748);
-       ctx.strokeStyle = '#ffffff';
-       ctx.lineWidth = 6;
-       ctx.stroke();
-    }
-    const dataUrl = canvas.toDataURL();
-    
-    // Seed high precision mock boxes to make it immediately interactive
-    const demoRegions: Region[] = [
-      {
-        id: "demo-bubble-1",
-        type: "bubble",
-        originalText: "本当に？マンガ翻訳AIがついに完成したのか？！",
-        translatedText: "Really? The manga translation AI is finally complete?!",
-        x: 120,
-        y: 110,
-        width: 160,
-        height: 80,
-        angle: 0,
-        textColor: "#000000",
-        strokeColor: "transparent",
-        strokeWidth: 2,
-        bgColor: "transparent",
-        fontFamily: "Inter",
-        fontSize: 16,
-        fontWeight: "600",
-        fontStyle: "normal",
-        textAlign: "center",
-        lineHeight: 1.3
-      },
-      {
-        id: "demo-bubble-2",
-        type: "bubble",
-        originalText: "ええ、素晴らしい流動ガラスのUIを備えています！",
-        translatedText: "Yes, featuring a gorgeous liquid glass UI edition!",
-        x: 495,
-        y: 650,
-        width: 170,
-        height: 100,
-        angle: 0,
-        textColor: "#000000",
-        strokeColor: "transparent",
-        strokeWidth: 2,
-        bgColor: "transparent",
-        fontFamily: "Inter",
-        fontSize: 16,
-        fontWeight: "650",
-        fontStyle: "normal",
-        textAlign: "center",
-        lineHeight: 1.3
-      }
-    ];
-
-    const demoImage: ProcessedImage = {
-       id: "demo-project-ch1",
-       filename: "demo_manga_page_01.png",
-       dataUrl,
-       mimeType: "image/png",
-       regions: demoRegions,
-       paintStrokes: [],
-       status: "done",
-       width: 800,
-       height: 1200
-    };
-
-    const demoMangaId = 'demo-manga-150';
-    const demoVolumeId = 'demo-volume-20';
-    const demoChapterId = 'demo-chapter-150';
-
-    const newDemoManga: MangaSeries = {
-      id: demoMangaId,
-      title: 'Solo Leveling (Demo)',
-      type: 'manhwa',
-      coverUrl: '', // Auto colorful dark gradient
-      description: 'The legendary webtoon Solo Leveling loaded with pre-segmented dialogues, custom fonts and automated OCR regions.',
-      volumes: [
-        {
-          id: demoVolumeId,
-          name: 'Volume 20',
-          chapters: [
-            {
-              id: demoChapterId,
-              name: 'Chapter 150',
-              images: [demoImage]
-            }
-          ]
-        }
-      ]
-    };
-
-    setMangas(prev => {
-      const exists = prev.some(m => m.id === demoMangaId);
-      if (exists) {
-        return prev.map(m => m.id === demoMangaId ? newDemoManga : m);
-      }
-      return [...prev, newDemoManga];
+  const handleAddChapterPrompt = async () => {
+    if (!activeManga || !activeVolume) return;
+    const { value: name } = await swal({
+      title: 'New Chapter',
+      input: 'text',
+      inputPlaceholder: 'e.g. Chapter 1',
+      showCancelButton: true,
+      confirmButtonText: 'Add Chapter',
     });
+    if (!name || !name.trim()) return;
+    const newChapter: Chapter = { id: 'chapter-' + Math.random().toString(36).substr(2, 9), name: name.trim(), images: [] };
+    setMangas(prev => prev.map(m => {
+      if (m.id !== activeManga.id) return m;
+      return { ...m, volumes: m.volumes.map(v => v.id === activeVolume.id ? { ...v, chapters: [...v.chapters, newChapter] } : v) };
+    }));
+    setActiveChapterId(newChapter.id);
+  };
 
-    setActiveMangaId(demoMangaId);
-    setActiveVolumeId(demoVolumeId);
-    setActiveChapterId(demoChapterId);
-    setImages([demoImage]);
-    setSelectedImageId(demoImage.id);
-    setActiveNavigationTab('library');
-    swal({
-      icon: 'success',
-      text: 'Interactive sample demo project loaded! Select individual speech bubbles to translate, realign, or change fonts.'
+  const handleCreatePress = () => {
+    if (activeManga) {
+      if (activeVolume) handleAddChapterPrompt();
+      else handleAddVolumePrompt();
+    } else {
+      setShowCreateSeriesModal(true);
+    }
+  };
+
+  const handleDeleteManga = async (manga: MangaSeries) => {
+    const result = await swal({
+      icon: 'warning',
+      title: 'Delete this series?',
+      text: `This will permanently remove "${manga.title}" and all of its volumes and chapters.`,
+      showCancelButton: true,
+      confirmButtonText: 'Delete Series',
+      confirmButtonColor: '#FF3B30',
     });
+    if (!result.isConfirmed) return;
+    setMangas(prev => prev.filter(m => m.id !== manga.id));
+    if (activeMangaId === manga.id) resetToLibraryRoot();
   };
 
-  const appendImagesInputRef = useRef<HTMLInputElement>(null);
-
-  const handleAppendImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    
-    const newImages: ProcessedImage[] = [];
-    for (let i = 0; i < files.length; i++) {
-       const file = files[i];
-       const dataUrl = await new Promise<string>((resolve) => {
-           const reader = new FileReader();
-           reader.onload = (ev) => resolve(ev.target?.result as string);
-           reader.readAsDataURL(file);
-       });
-       const dimensions = await new Promise<{width: number, height: number}>((resolve) => {
-           const img = new Image();
-           img.onload = () => resolve({ width: img.width, height: img.height });
-           img.src = dataUrl;
-       });
-       newImages.push({
-           id: Math.random().toString(36).substr(2, 9),
-           filename: file.name,
-           dataUrl,
-           mimeType: file.type,
-           regions: [],
-           paintStrokes: [],
-           status: "idle",
-           width: dimensions.width,
-           height: dimensions.height
-       });
-    }
-    setImages(prev => [...prev, ...newImages]);
-    if (appendImagesInputRef.current) appendImagesInputRef.current.value = '';
+  const handleDeleteVolume = async (volume: Volume) => {
+    if (!activeManga) return;
+    const result = await swal({
+      icon: 'warning',
+      title: 'Delete this volume?',
+      text: `This will permanently remove "${volume.name}" and all of its chapters.`,
+      showCancelButton: true,
+      confirmButtonText: 'Delete Volume',
+      confirmButtonColor: '#FF3B30',
+    });
+    if (!result.isConfirmed) return;
+    setMangas(prev => prev.map(m => m.id === activeManga.id ? { ...m, volumes: m.volumes.filter(v => v.id !== volume.id) } : m));
+    if (activeVolumeId === volume.id) { setActiveVolumeId(null); setActiveChapterId(null); }
   };
 
-  const moveImageUp = (index: number) => {
-    if (index === 0) return;
-    const newImages = [...images];
-    [newImages[index - 1], newImages[index]] = [newImages[index], newImages[index - 1]];
-    setImages(newImages);
+  const handleDeleteChapter = async (chapter: Chapter) => {
+    if (!activeManga || !activeVolume) return;
+    const result = await swal({
+      icon: 'warning',
+      title: 'Delete this chapter?',
+      text: `This will permanently remove "${chapter.name}" and all of its pages.`,
+      showCancelButton: true,
+      confirmButtonText: 'Delete Chapter',
+      confirmButtonColor: '#FF3B30',
+    });
+    if (!result.isConfirmed) return;
+    setMangas(prev => prev.map(m => {
+      if (m.id !== activeManga.id) return m;
+      return { ...m, volumes: m.volumes.map(v => v.id === activeVolume.id ? { ...v, chapters: v.chapters.filter(c => c.id !== chapter.id) } : v) };
+    }));
+    if (activeChapterId === chapter.id) setActiveChapterId(null);
   };
 
-  const moveImageDown = (index: number) => {
-    if (index === images.length - 1) return;
-    const newImages = [...images];
-    [newImages[index + 1], newImages[index]] = [newImages[index], newImages[index + 1]];
-    setImages(newImages);
-  };
-
-  const deleteImage = (id: string, event: React.MouseEvent) => {
-    event.stopPropagation();
-    setImages(prev => prev.filter(img => img.id !== id));
-    if (selectedImageId === id) setSelectedImageId(null);
-  };
-
-  const handleExportZip = async () => {
-    if (images.length === 0) return;
-    setExportProgress('Preparing images for highest quality export...');
-    try {
-      await downloadProcessedZip(images, (msg) => setExportProgress(msg));
-    } catch (err) {
-      console.error(err);
-      alert("Failed to export ZIP");
-    } finally {
-      setExportProgress(null);
-    }
-  };
-
-  const handleExportPdf = async () => {
-    if (images.length === 0) return;
-    setExportProgress('Preparing PDF export...');
-    try {
-      await downloadPdf(images, (msg) => setExportProgress(msg));
-    } catch (err) {
-      console.error(err);
-      alert("Failed to export PDF");
-    } finally {
-      setExportProgress(null);
-    }
-  };
-
-  const importTranslationRef = useRef<HTMLInputElement>(null);
-
-  const handleExportTranslation = () => {
-    if (images.length === 0) return;
-    const docText = createTranslationDoc(images);
-    const blob = new Blob([docText], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Translation_Doc.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImportTranslation = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleChapterZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const text = event.target?.result as string;
-        const newImages = parseTranslationDoc(text, images);
-        setImages(newImages);
-        alert("Translation imported successfully!");
-      } catch (err) {
-        console.error(err);
-        alert("Failed to parse translation file. Ensure the file has not been corrupted and metadata is intact.");
-      }
-    };
-    reader.readAsText(file);
-  };
+    if (!file || !activeManga || !activeVolume || !activeChapter) return;
 
-  const handleDownloadCurrentPage = async () => {
-    const imgToDownload = selectedImage || images[0];
-    if (!imgToDownload) return;
-    setExportProgress('Rendering image...');
+    swal({
+      title: 'Importing Pages...',
+      text: 'Unpacking the archive and preparing pages.',
+      allowOutsideClick: false,
+    });
+
     try {
-      await downloadSingleImage(imgToDownload);
+      const extracted = await extractImagesFromZip(file);
+      setMangas(prev => prev.map(m => {
+        if (m.id !== activeManga.id) return m;
+        return {
+          ...m,
+          volumes: m.volumes.map(v => {
+            if (v.id !== activeVolume.id) return v;
+            return {
+              ...v,
+              chapters: v.chapters.map(c => c.id === activeChapter.id ? { ...c, images: [...c.images, ...extracted] } : c),
+            };
+          }),
+        };
+      }));
+      swalToast({ icon: 'success', title: `Imported ${extracted.length} pages!` });
     } catch (err) {
       console.error(err);
-      alert("Failed to download image");
-    } finally {
-      setExportProgress(null);
+      swal({ icon: 'error', title: 'Import Failed', text: 'The archive might be corrupted or in an unsupported format.' });
     }
+    if (chapterZipInputRef.current) chapterZipInputRef.current.value = '';
   };
 
   return (
-    <div className="flex flex-col h-screen app-shell-bg dynamic-bg text-ink overflow-hidden font-sans">
+    <div className="min-h-screen app-shell-bg dynamic-bg text-ink">
       {showSplash && <SplashScreen onFinish={() => setShowSplash(false)} />}
+
+      <div className="fog-orbs" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </div>
+
       <TopBar />
       <FloatingMusicPlayer />
-      
-      {exportProgress && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm">
-          <div className="liquid-glass rounded-3xl p-8 flex flex-col items-center gap-4 max-w-md w-full shadow-[0_20px_50px_var(--color-accent-soft)] border border-accent/35 animate-fade-in">
-            <Loader2 size={48} className="animate-spin text-accent" />
-            <h2 className="text-xl font-display font-bold text-ink tracking-tight">Exporting High Quality ZIP</h2>
-            <p className="text-sm text-ink-muted text-center font-mono">{exportProgress}</p>
-          </div>
-        </div>
-      )}
-      {/* Topbar */}
-      {activeNavigationTab === 'library' && activeChapterId !== null && (
-        <header className="h-14 sm:h-16 border-b border-hairline flex items-center justify-between px-2.5 sm:px-6 bg-surface/70 backdrop-blur-md shrink-0 overflow-x-auto scrollbar-thin gap-3">
-          <div className="flex items-center gap-3 sm:gap-6 shrink-0">
-            <button
-              onClick={() => {
-                setActiveChapterId(null);
-                setImages([]);
-                setSelectedImageId(null);
-              }}
-              className="flex items-center gap-2 bg-accent-soft hover:bg-accent/30 border border-accent/35 text-accent hover:text-ink px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold font-display transition-all shrink-0 whitespace-nowrap"
-            >
-              ← <span className="hidden xs:inline">Back للمكتبة (Library)</span>
-            </button>
-            <div className="hidden sm:flex items-center gap-3 shrink-0">
-              <TypeIcon className="text-accent" />
-              <h1 className="font-display font-bold text-xl tracking-tight text-ink leading-none whitespace-nowrap">MangaAI Studio</h1>
+
+      <SidebarRail activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />
+
+      <div className="flex flex-1 lg:pl-20">
+        <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-6 sm:py-8 pb-32 lg:pb-10 max-w-6xl mx-auto w-full">
+          {activeNavigationTab === 'settings' && (
+            <SettingsPanel onShowPrivacy={() => setShowPrivacyModal(true)} onShowTerms={() => setShowTermsModal(true)} />
+          )}
+
+          {activeNavigationTab === 'cloud' && (
+            <div className="space-y-4">
+              <AdSlot placement="cloud-top" />
+              <CloudStorage onBack={() => setActiveNavigationTab('library')} />
             </div>
+          )}
 
-            <div className="relative shrink-0">
-             <button
-               onClick={() => setShowSettingsModal(true)}
-               className={`flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-md text-xs font-medium transition-colors border whitespace-nowrap ${customApiKey ? 'bg-success/10 border-success/40 text-success' : 'bg-elevated border-hairline text-ink-muted'}`}
-             >
-               <Settings size={14} />
-               <span className="hidden xs:inline">Settings</span>
-             </button>
-          </div>
-        </div>
-        
-        <Modal
-          open={showSettingsModal}
-          onClose={() => setShowSettingsModal(false)}
-          title="Application Settings"
-          size="md"
-          footer={
-            <div className="flex justify-end">
-              <Button variant="primary" onClick={() => setShowSettingsModal(false)}>
-                Close Settings
-              </Button>
-            </div>
-          }
-        >
-          <SettingsPanel
-            customApiKey={customApiKey}
-            onApiKeyChange={handleApiKeyChange}
-            zipMatchMode={zipMatchMode}
-            onZipMatchModeChange={handleSetZipMatchMode}
-            customInstructions={customInstructions}
-            onCustomInstructionsChange={handleCustomInstructionsChange}
-            translateJapanese={translateJapanese}
-            onTranslateJapaneseChange={handleSetTranslateJapanese}
-            translateSfx={translateSfx}
-            onTranslateSfxChange={handleSetTranslateSfx}
-            autoFitAndCenter={autoFitAndCenter}
-            onAutoFitAndCenterChange={handleSetAutoFitAndCenter}
-            compressBeforeProcessing={compressBeforeProcessing}
-            onCompressBeforeProcessingChange={handleSetCompressBeforeProcessing}
-          />
-        </Modal>
+          {activeNavigationTab === 'scheduler' && (
+            <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
+              <Sparkles className="text-accent" size={28} />
+              <h2 className="text-lg font-display font-semibold text-ink">Automation — Coming Soon</h2>
+              <p className="text-sm text-ink-muted max-w-md">Scheduled scans, batch translation runs, and recurring pipelines will land here in a future update.</p>
+            </GlassCard>
+          )}
 
-        <div className="flex items-center gap-4 z-10">
-           <div className="flex bg-elevated rounded-md p-1">
-            <input
-              type="file"
-              accept=".zip"
-              className="hidden"
-              ref={fileInputRef}
-              onChange={handleZipUpload}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-2 hover:bg-ink/10 px-3 py-1.5 rounded text-sm transition-colors text-ink-muted"
-              title="Import ZIP"
-            >
-              <Upload size={16} /> Import ZIP
-            </button>
+          {activeNavigationTab === 'library' && (
+            <div className="space-y-5">
+              {!activeChapter && <AdSlot placement="library-top" />}
 
-            <div className="w-px bg-hairline mx-1 my-1"></div>
-
-            <input
-              type="file"
-              accept=".zip"
-              className="hidden"
-              ref={cleanZipInputRef}
-              onChange={handleCleanedZipUpload}
-            />
-            <button
-              onClick={() => cleanZipInputRef.current?.click()}
-              className="flex items-center gap-2 hover:bg-ink/10 px-3 py-1.5 rounded text-sm transition-colors text-ink-muted"
-              title="Upload Cleaned ZIP"
-            >
-              <Sparkles size={16} /> Cleaned ZIP
-            </button>
-
-            <div className="w-px bg-hairline mx-1 my-1"></div>
-
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              ref={appendImagesInputRef}
-              onChange={handleAppendImages}
-            />
-            <button
-              onClick={() => appendImagesInputRef.current?.click()}
-              className="flex items-center gap-2 hover:bg-ink/10 px-3 py-1.5 rounded text-sm transition-colors text-ink-muted"
-              title="Add Images"
-            >
-              <ImagePlus size={16} /> Add Images
-            </button>
-
-            <div className="w-px bg-hairline mx-1 my-1"></div>
-
-            <input
-              type="file"
-              accept=".json"
-              className="hidden"
-              ref={projectInputRef}
-              onChange={handleLoadProject}
-            />
-            <button
-              onClick={() => projectInputRef.current?.click()}
-              className="flex items-center gap-1.5 hover:bg-ink/10 px-3 py-1.5 rounded text-sm transition-colors text-ink-muted"
-              title="Load Project"
-            >
-              Load State
-            </button>
-            <button
-              onClick={handleSaveProject}
-              disabled={images.length === 0}
-              className="flex items-center gap-1.5 hover:bg-ink/10 disabled:opacity-50 px-3 py-1.5 rounded text-sm transition-colors text-ink-muted"
-              title="Save Project"
-            >
-              <Save size={16} /> Save State
-            </button>
-          </div>
-
-          <button
-            onClick={processAllImages}
-            disabled={images.length === 0 || isProcessingAll}
-            className="flex items-center gap-2 bg-accent hover:brightness-110 disabled:bg-accent/50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm text-white transition-colors"
-          >
-            {isProcessingAll ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-            Process All
-          </button>
-
-          <button
-            onClick={() => setShowOriginal(!showOriginal)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-colors border ${showOriginal ? 'bg-warning border-warning text-white' : 'bg-elevated border-hairline text-ink-muted hover:bg-ink/10'}`}
-          >
-            {showOriginal ? 'Showing Original' : 'View Original'}
-          </button>
-
-          <button
-            onClick={() => setShowText(!showText)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-colors border ${!showText ? 'bg-accent border-accent text-white' : 'bg-elevated border-hairline text-ink-muted hover:bg-ink/10'}`}
-          >
-            <TypeIcon size={16} />
-            {showText ? 'Hide Texts' : 'Show Texts'}
-          </button>
-
-          <div className="flex bg-success/30 rounded-md overflow-hidden border border-success/30">
-            <button
-              onClick={handleExportZip}
-              disabled={images.length === 0}
-              className="flex items-center gap-2 bg-success hover:brightness-110 disabled:bg-success/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-success/20"
-              title="Export as ZIP archive"
-            >
-              <Download size={16} /> ZIP
-            </button>
-            <button
-              onClick={handleExportPsd}
-              disabled={images.length === 0}
-              className="flex items-center gap-2 bg-accent hover:brightness-110 disabled:bg-accent/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-accent/20"
-              title="Export حزمة PSD لبرنامج فوتوشوب (Photoshop Layout Layers Archive)"
-            >
-              <Download size={16} className="text-white/80" /> PSD جديد
-            </button>
-            <button
-              onClick={handleExportPdf}
-              disabled={images.length === 0}
-              className="flex items-center gap-2 bg-success hover:brightness-110 disabled:bg-success/50 disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-white transition-colors border-r border-success/20"
-              title="Export as paginated PDF"
-            >
-              PDF
-            </button>
-            <button
-              onClick={handleExportTranslation}
-              disabled={images.length === 0}
-              className="flex items-center gap-2 bg-ink/15 hover:bg-ink/25 disabled:bg-elevated disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-ink transition-colors border-r border-hairline"
-              title="Export text document for external translation"
-            >
-              Export Docs
-            </button>
-            <button
-              onClick={() => importTranslationRef.current?.click()}
-              disabled={images.length === 0}
-              className="flex items-center gap-2 bg-ink/15 hover:bg-ink/25 disabled:bg-elevated disabled:cursor-not-allowed px-4 py-2 font-medium text-sm text-ink transition-colors"
-              title="Import translated text document"
-            >
-              Import Docs
-            </button>
-            <input 
-              type="file" 
-              ref={importTranslationRef} 
-              onChange={handleImportTranslation} 
-              accept=".txt" 
-              className="hidden" 
-            />
-          </div>
-        </div>
-      </header>
-      )}
-
-      {/* Main Content */}
-      {activeChapterId === null && (
-        <SidebarRail
-          activeTab={activeNavigationTab}
-          onTabChange={setActiveNavigationTab}
-          onCreatePress={() => {
-            if (activeMangaId) {
-              if (activeVolumeId) {
-                handleAddChapterPrompt();
-              } else {
-                handleAddVolumePrompt();
-              }
-            } else {
-              setShowCreateSeriesModal(true);
-            }
-          }}
-        />
-      )}
-      <div className={`flex flex-1 overflow-hidden ${activeChapterId === null ? 'lg:pl-20' : ''}`}>
-        {activeNavigationTab === 'settings' && (
-          <div className="flex-1 flex flex-col p-4 sm:p-8 overflow-y-auto pb-32">
-            <div className="max-w-3xl mx-auto w-full flex flex-col gap-6">
-              <div>
-                <h1 className="text-2xl sm:text-3xl font-display font-bold text-ink tracking-tight">Studio Configuration Settings</h1>
-                <p className="text-sm text-ink-muted mt-1">Fine-tune translation thresholds, OCR dialects, parallel execution caches, and Gemini API keys.</p>
-              </div>
-
-              <SettingsPanel
-                customApiKey={customApiKey}
-                onApiKeyChange={handleApiKeyChange}
-                zipMatchMode={zipMatchMode}
-                onZipMatchModeChange={handleSetZipMatchMode}
-                customInstructions={customInstructions}
-                onCustomInstructionsChange={handleCustomInstructionsChange}
-                translateJapanese={translateJapanese}
-                onTranslateJapaneseChange={handleSetTranslateJapanese}
-                translateSfx={translateSfx}
-                onTranslateSfxChange={handleSetTranslateSfx}
-                autoFitAndCenter={autoFitAndCenter}
-                onAutoFitAndCenterChange={handleSetAutoFitAndCenter}
-                compressBeforeProcessing={compressBeforeProcessing}
-                onCompressBeforeProcessingChange={handleSetCompressBeforeProcessing}
-              />
-            </div>
-          </div>
-        )}
-
-        {activeNavigationTab === 'cloud' && (
-          <CloudStorage onBack={() => setActiveNavigationTab('library')} />
-        )}
-
-        {activeNavigationTab === 'scheduler' && (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-base relative">
-            <div className="absolute top-10 right-10 w-96 h-96 bg-accent/5 rounded-full blur-[140px] pointer-events-none" />
-            <div className="text-center flex flex-col items-center max-w-lg z-10 animate-fade-in">
-              <div className="relative mb-6">
-                {/* Spinning gear (ترس دوار) */}
-                <Settings size={72} className="animate-spin text-accent duration-[4000ms] ease-linear shadow-[0_0_40px_var(--color-accent-soft)] rounded-full p-2 bg-accent-soft border border-accent/20" />
-                <span className="absolute bottom-0 right-0 w-4.5 h-4.5 bg-accent border border-elevated rounded-full animate-ping"></span>
-              </div>
-              <h1 className="text-3xl font-display font-semibold text-ink tracking-tight mb-2">إدارة الجدولة (Scheduler)</h1>
-              <p className="text-lg text-accent font-sans mb-4">تحت العمل والتطوير المستمر حالياً...</p>
-              <div className="liquid-glass p-4 rounded-xl border border-hairline text-xs text-ink-muted font-sans leading-relaxed">
-                Tools أتمتة وجدولة دورات المسح والTranslation التلقائية للفصول الجديدة فور صدورها على مTextات Webtoon الكورية الرسمية.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeNavigationTab === 'library' && activeChapterId === null && (
-          <div className="flex-1 flex flex-col p-8 bg-base relative overflow-y-auto pb-32">
-            <div className="absolute top-10 right-10 w-96 h-96 bg-accent/5 rounded-full blur-[140px] pointer-events-none" />
-            <div className="absolute bottom-10 left-10 w-96 h-96 bg-accent/5 rounded-full blur-[140px] pointer-events-none" />
-
-            <div className="max-w-6xl mx-auto w-full flex flex-col gap-8 relative z-10">
-
-              {/* BREADCRUMBS & ACTION HEADER */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-hairline pb-6">
-                <div>
-                  <div className="flex items-center gap-2 text-xs font-mono text-accent mb-2">
-                    <span className="font-semibold select-none">Library (Library)</span>
-                    {activeMangaId && (
-                      <>
-                        <span>/</span>
-                        <button
-                          onClick={() => { setActiveMangaId(null); setActiveVolumeId(null); }}
-                          className="hover:text-ink transition-all underline decoration-accent/50"
-                        >
-                          {mangas.find(m => m.id === activeMangaId)?.title}
-                        </button>
-                      </>
-                    )}
-                    {activeVolumeId && (
-                      <>
-                        <span>/</span>
-                        <button
-                          onClick={() => setActiveVolumeId(null)}
-                          className="hover:text-ink transition-all underline decoration-accent/50"
-                        >
-                          {mangas.find(m => m.id === activeMangaId)?.volumes.find(v => v.id === activeVolumeId)?.name}
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  <h1 className="text-3xl font-display font-bold text-ink tracking-tight">
-                    {!activeMangaId
-                      ? 'قسم مكتبتي - السلاسل (Series Library)'
-                      : !activeVolumeId
-                        ? 'إدارة الVolumeات (Volumes List)'
-                        : 'فصول الTranslation (Chapter Workspace)'}
-                  </h1>
-                  <p className="text-xs text-ink-muted mt-1.5 font-sans leading-relaxed">
-                    {!activeMangaId
-                      ? 'تصفح قصص المانجا والمانهوا الحالية، أو أنشئ سلسلة Translation جديدة بضغطة زر.'
-                      : !activeVolumeId
-                        ? 'اختر Volumeاً محدداً لتقسيم وإدارة فصول الTranslation التابعة له.'
-                        : 'افتح فصل الTranslation للدخول إلى الاستوديو وبدء المسح الآلي وملاءمة الفقاعات وسحب النتائج.'}
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2.5">
-                  {!activeMangaId && (
+              {/* Breadcrumb */}
+              {(activeManga || activeVolume) && (
+                <div className="flex items-center gap-2 text-sm">
+                  <button onClick={resetToLibraryRoot} className="text-ink-muted hover:text-accent transition-colors">Library</button>
+                  {activeManga && (
                     <>
-                      <button
-                        onClick={loadDemoProject}
-                        className="bg-elevated hover:bg-ink/10 border border-accent/25 text-accent font-bold py-2.5 px-5 rounded-xl transition-all cursor-pointer text-xs"
-                      >
-                        ⚡ Loading عينة مانهوا (Load Demo)
-                      </button>
-                      <button
-                        onClick={() => setShowCreateSeriesModal(true)}
-                        className="bg-accent hover:brightness-110 text-white font-bold py-2.5 px-5 rounded-xl transition-all cursor-pointer text-xs shadow-md"
-                      >
-                        + إنشاء مانجا جديدة (New Manga)
-                      </button>
+                      <span className="text-ink-faint">/</span>
+                      <button onClick={() => { setActiveVolumeId(null); setActiveChapterId(null); }} className={`transition-colors ${!activeVolume ? 'text-ink font-semibold' : 'text-ink-muted hover:text-accent'}`}>{activeManga.title}</button>
                     </>
                   )}
-                  {activeMangaId && !activeVolumeId && (
+                  {activeVolume && (
                     <>
-                      <button
-                        onClick={() => { setActiveMangaId(null); }}
-                        className="bg-elevated border border-hairline hover:border-accent/40 text-ink-muted font-bold py-2.5 px-4 rounded-xl transition-all text-xs"
-                      >
-                        ← Back للكل (Back)
-                      </button>
-                      <button
-                        onClick={handleAddVolumePrompt}
-                        className="bg-accent hover:brightness-110 text-white font-bold py-2.5 px-5 rounded-xl transition-all text-xs cursor-pointer shadow-md shadow-[0_0_20px_var(--color-accent-soft)]"
-                      >
-                        + Add Volume جديد (Add Volume)
-                      </button>
+                      <span className="text-ink-faint">/</span>
+                      <button onClick={() => setActiveChapterId(null)} className={`transition-colors ${!activeChapter ? 'text-ink font-semibold' : 'text-ink-muted hover:text-accent'}`}>{activeVolume.name}</button>
                     </>
                   )}
-                  {activeMangaId && activeVolumeId && (
+                  {activeChapter && (
                     <>
-                      <button
-                        onClick={() => { setActiveVolumeId(null); }}
-                        className="bg-elevated border border-hairline hover:border-accent/40 text-ink-muted font-bold py-2.5 px-4 rounded-xl transition-all text-xs"
-                      >
-                        ← الVolumeات (Volumes)
-                      </button>
-                      <label
-                        className="bg-accent-soft hover:bg-accent/40 border border-accent/30 text-accent font-bold py-2.5 px-5 rounded-xl transition-all text-xs cursor-pointer flex items-center justify-center gap-2"
-                      >
-                        <Upload size={14} /> Upload Volume as Chapter
-                        <input 
-                          type="file" 
-                          // @ts-ignore
-                          webkitdirectory="true" 
-                          directory="true" 
-                          multiple 
-                          className="hidden"
-                          onChange={async (e) => {
-                             const files = e.target.files;
-                             if (!files || files.length === 0) return;
-                             
-                             swal({ title: 'Processing folder images...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-
-                             // filter images only and sort them by name naturally
-                             const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/')).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-
-                             if (imageFiles.length === 0) {
-                               return swal({ title: 'Empty', text: 'لا توجد Images في هذا الVolume', icon: 'error' });
-                             }
-                             
-                             const newImages: ProcessedImage[] = [];
-                             for (let i = 0; i < imageFiles.length; i++) {
-                               const file = imageFiles[i];
-                               const dataUrl = await new Promise<string>((resolve) => {
-                                 const reader = new FileReader();
-                                 reader.onload = (ev) => resolve(ev.target?.result as string);
-                                 reader.readAsDataURL(file);
-                               });
-                               const dimensions = await new Promise<{width: number, height: number}>((resolve) => {
-                                   const img = new Image();
-                                   img.onload = () => resolve({ width: img.width, height: img.height });
-                                   img.src = dataUrl;
-                               });
-                               newImages.push({
-                                   id: Math.random().toString(36).substr(2, 9),
-                                   filename: file.name,
-                                   dataUrl,
-                                   mimeType: file.type,
-                                   regions: [],
-                                   paintStrokes: [],
-                                   status: "idle",
-                                   width: dimensions.width,
-                                   height: dimensions.height
-                               });
-                             }
-                             
-                             const folderPathParts = imageFiles[0].webkitRelativePath.split('/');
-                             const chapterName = folderPathParts.length > 1 ? folderPathParts[0] : 'Chapter جديد (من Volume)';
-                             
-                             const newChapter: Chapter = {
-                               id: Math.random().toString(36).substr(2, 9),
-                               name: chapterName,
-                               images: newImages
-                             };
-                             
-                             setMangas(prev => prev.map(m => {
-                               if (m.id !== activeMangaId) return m;
-                               return {
-                                 ...m,
-                                 volumes: m.volumes.map(v => {
-                                   if (v.id !== activeVolumeId) return v;
-                                   return { ...v, chapters: [...v.chapters, newChapter] }
-                                 })
-                               }
-                             }));
-                             
-                             Swal.close();
-                             
-                             // clear input
-                             e.target.value = '';
-                          }}
-                        />
-                      </label>
-                      <button
-                        onClick={handleAddChapterPrompt}
-                        className="bg-accent hover:brightness-110 text-white font-bold py-2.5 px-5 rounded-xl transition-all text-xs cursor-pointer shadow-md shadow-[0_0_20px_var(--color-accent-soft)]"
-                      >
-                        + Add Chapter Empty
-                      </button>
+                      <span className="text-ink-faint">/</span>
+                      <span className="text-ink font-semibold">{activeChapter.name}</span>
                     </>
                   )}
                 </div>
-              </div>
+              )}
 
-              {/* STATE A: MANGA SERIES GRID */}
-              {!activeMangaId && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                  {mangas.length === 0 ? (
-                    <div className="col-span-full py-16 text-center">
-                      <div className="w-16 h-16 bg-accent-soft border border-accent/20 rounded-2xl flex items-center justify-center text-accent mx-auto mb-4">
-                        <ImageIcon size={28} />
+              {/* Chapter view: studio placeholder */}
+              {activeChapter && activeVolume && activeManga && (
+                <div className="space-y-4">
+                  <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
+                    <Sparkles className="text-accent" size={30} />
+                    <h2 className="text-lg font-display font-semibold text-ink">Studio Coming Soon</h2>
+                    <p className="text-sm text-ink-muted max-w-md">The new editing studio for "{activeChapter.name}" is being rebuilt. For now you can import and manage pages here.</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Button variant="secondary" size="sm" onClick={() => chapterZipInputRef.current?.click()}>
+                        <Upload size={14} /> Import Pages (ZIP)
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => handleDeleteChapter(activeChapter)}>
+                        <Trash2 size={14} /> Delete Chapter
+                      </Button>
+                    </div>
+                    <input ref={chapterZipInputRef} type="file" accept=".zip" className="hidden" onChange={handleChapterZipUpload} />
+                  </GlassCard>
+
+                  <AdSlot placement="studio-placeholder" />
+
+                  {activeChapter.images.length > 0 && (
+                    <GlassCard className="p-5">
+                      <h3 className="text-sm font-semibold text-ink mb-3">{activeChapter.images.length} Page(s)</h3>
+                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                        {activeChapter.images.map(img => (
+                          <div key={img.id} className="aspect-[2/3] rounded-lg overflow-hidden border border-hairline bg-ink/5">
+                            <img src={img.dataUrl} alt={img.filename} className="w-full h-full object-cover" />
+                          </div>
+                        ))}
                       </div>
-                      <h3 className="text-lg font-bold text-ink">لا توجد سلاسل مانجا حالياً</h3>
-                      <p className="text-xs text-ink-muted max-w-sm mx-auto mt-2 leading-relaxed font-sans">
-                        قم بالبدء بإنشاء سلسلة مانجا/مانهوا جديدة لتسجيل فصولها وترجمتها بشكل منظم، أو اضغط زر "Loading عينة مانهوا" للحصول على مانهوا سولو ليفنج تجريبية.
-                      </p>
-                      <button
-                        onClick={() => setShowCreateSeriesModal(true)}
-                        className="mt-5 bg-accent text-white font-bold text-xs py-2.5 px-6 rounded-xl transition-all"
-                      >
-                        + إنشاء مانجا جديدة للبدء (Create New)
-                      </button>
-                    </div>
-                  ) : (
-                    mangas.map(manga => {
-                      const totalChaptersCount = manga.volumes.reduce((acc, v) => acc + v.chapters.length, 0);
-                      return (
-                        <div
-                          key={manga.id}
-                          onClick={() => setActiveMangaId(manga.id)}
-                          className="relative aspect-[3/4] rounded-2xl overflow-hidden group shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-hairline hover:border-accent/35 transition-all duration-300 cursor-pointer flex flex-col justify-end bg-elevated"
-                        >
-                          {/* Cover Image/Gradient Representation */}
-                          {manga.coverUrl ? (
-                            <img 
-                              src={manga.coverUrl} 
-                              alt={manga.title} 
-                              referrerPolicy="no-referrer"
-                              className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-60"
-                            />
-                          ) : (
-                            <div className="absolute inset-0 bg-elevated flex flex-col items-center justify-center p-6 text-center">
-                              <Sparkles className="w-10 h-10 text-accent/60 animate-pulse mb-3" />
-                              <span className="text-xs text-accent/85 tracking-widest uppercase font-mono font-bold leading-none">{manga.type}</span>
-                            </div>
-                          )}
-
-                          {/* Type Badge top-left */}
-                          <span className={`absolute top-4 left-4 text-[9px] font-bold px-2.5 py-1 rounded-md uppercase tracking-wider z-20 ${manga.type === 'manhwa' ? 'bg-accent border border-accent text-white' : 'bg-warning border border-warning text-white'}`}>
-                            {manga.type}
-                          </span>
-
-                          {/* Quick Delete top-right */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteManga(manga.id);
-                            }}
-                            className="absolute top-4 right-4 bg-danger/80 hover:bg-danger text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 shadow-md border border-danger/20"
-                            title="Delete السلسلة من Library"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-
-                          {/* Lower Liquid Glass layer - overlay cover bottom */}
-                          <div className="absolute bottom-0 left-0 right-0 p-4 bg-black/60 backdrop-blur-md border-t border-accent/15 flex flex-col gap-1 transition-all group-hover:bg-black/85 z-10 text-left">
-                            <span className="text-[10px] text-accent tracking-wider uppercase font-mono font-bold">{manga.type}</span>
-                            <h3 className="text-base font-display font-bold text-white tracking-tight truncate leading-tight">{manga.title}</h3>
-                            <p className="text-[11px] text-ink-muted leading-normal line-clamp-2 h-8 font-sans">{manga.description || 'لم يتم كتابة وصف مخصص لهذه السلسلة بعد.'}</p>
-                            <div className="flex items-center justify-between text-[10px] text-accent font-mono mt-1 w-full pt-2 border-t border-accent/10">
-                              <span>📚 الVolumeات: {manga.volumes.length}</span>
-                              <span>📖 فصول: {totalChaptersCount}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
+                    </GlassCard>
                   )}
                 </div>
               )}
 
-              {/* STATE B: VOLUMES GRID LIST */}
-              {activeMangaId && !activeVolumeId && (
-                (() => {
-                  const currentManga = mangas.find(m => m.id === activeMangaId);
-                  if (!currentManga) return null;
-                  return (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                      {currentManga.volumes.length === 0 ? (
-                        <div className="col-span-full py-16 text-center">
-                          <div className="w-16 h-16 bg-accent-soft border border-accent/20 rounded-2xl flex items-center justify-center text-accent mx-auto mb-4">
-                            <Plus size={28} />
-                          </div>
-                          <h3 className="text-lg font-bold text-ink">لا توجد Volumeات حالياً</h3>
-                          <p className="text-xs text-ink-muted max-w-sm mx-auto mt-2 leading-relaxed">
-                            Volumeات المانجا تستخدم لتنظيم وتقسيم فئات فصول الTranslation الكبيرة (مثال: Volume 20، Volume 1).
-                          </p>
-                          <button
-                            onClick={handleAddVolumePrompt}
-                            className="mt-5 bg-accent hover:brightness-110 text-white font-bold text-xs py-2.5 px-6 rounded-xl transition-all"
-                          >
-                            + Add أول Volume جديد (Create Volume)
-                          </button>
-                        </div>
-                      ) : (
-                        currentManga.volumes.map(vol => (
-                          <div
-                            key={vol.id}
-                            onClick={() => setActiveVolumeId(vol.id)}
-                            className="relative aspect-[3/4] bg-elevated rounded-2xl overflow-hidden border border-hairline hover:border-accent/35 transition-all duration-300 cursor-pointer flex flex-col justify-end p-6 group text-left"
-                          >
-                            {/* Inherited Cover backdrop or pattern */}
-                            {currentManga.coverUrl && (
-                              <img 
-                                src={currentManga.coverUrl} 
-                                alt={vol.name} 
-                                className="absolute inset-0 w-full h-full object-cover opacity-15"
-                              />
-                            )}
-
-                            {/* Vol Download top-left */}
-                            <button
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const allImages = vol.chapters.flatMap(c => c.images);
-                                if (allImages.length === 0) return swal({ title: 'Empty', text: 'No images to compress', icon: 'info' });
-                                swal({ title: 'Compressing...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-                                try {
-                                  await downloadProcessedZip(allImages, undefined, `${vol.name}.zip`);
-                                } catch (err: any) {
-                                  swal({ title: 'Error', text: err?.message || 'Failed to generate ZIP', icon: 'error' });
-                                } finally {
-                                  Swal.close();
-                                }
-                              }}
-                              className="absolute top-4 left-4 bg-accent-soft hover:bg-accent text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 shadow-md border border-accent/20"
-                              title="Download all volume chapters as ZIP"
-                            >
-                              <Download size={13} />
-                            </button>
-
-                            {/* Vol delete top-right */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteVolume(vol.id);
-                              }}
-                              className="absolute top-4 right-4 bg-danger/80 hover:bg-danger text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 shadow-md border border-danger/20"
-                              title="Delete هذا الVolume كلياً"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-
-                            <div className="absolute inset-0 bg-radial-gradient from-transparent to-black pointer-events-none" />
-
-                            {/* Bottom Liquid Glass display inside the Volume Card */}
-                            <div className="absolute bottom-0 left-0 right-0 p-5 bg-black/80 backdrop-blur-md border-t border-accent/15 flex flex-col gap-1.5 transition-all group-hover:bg-black/95 z-10 text-left">
-                              <span className="text-[10px] text-accent tracking-wider font-mono font-bold">VOLUME CONTAINER</span>
-                              <h3 className="text-xl font-display font-bold text-accent tracking-tight leading-none mb-1">{vol.name}</h3>
-                              <p className="text-xs text-ink-muted line-clamp-2 h-8 font-sans leading-relaxed text-left">
-                                {vol.chapters.length > 0
-                                  ? `يحتوي على: ${vol.chapters.map(c => c.name).join(', ')}`
-                                  : 'Volume Empty حالياً، انقر لAdd فصول Translation جديدة بداخل هذا الVolume.'}
-                              </p>
-                              <div className="flex justify-between items-center text-[10px] text-ink-muted font-mono mt-1 pt-2 border-t border-accent/10 w-full">
-                                <span>📖 الفصول: {vol.chapters.length} </span>
-                                <span className="text-success font-bold font-mono">✔ نشط</span>
-                              </div>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  );
-                })()
-              )}
-
-              {/* STATE C: CHAPTER REPOSITORY GRID */}
-              {activeMangaId && activeVolumeId && (
-                (() => {
-                  const currentManga = mangas.find(m => m.id === activeMangaId);
-                  const currentVolume = currentManga?.volumes.find(v => v.id === activeVolumeId);
-                  if (!currentVolume) return null;
-                  return (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                      {currentVolume.chapters.length === 0 ? (
-                        <div className="col-span-full py-16 text-center">
-                          <div className="w-16 h-16 bg-accent-soft border border-accent/20 rounded-2xl flex items-center justify-center text-accent mx-auto mb-4">
-                            <Plus size={28} />
-                          </div>
-                          <h3 className="text-lg font-bold text-ink">لا توجد فصول حالياً</h3>
-                          <p className="text-xs text-ink-muted max-w-sm mx-auto mt-2 leading-relaxed">
-                            أنشئ فصولاً لهذا الVolume للبدء فوراً في إرفاق صفحات المانجا وCleaning وملاءمة الفقاعات عبر الاستوديو الأساسي.
-                          </p>
-                          <button
-                            onClick={handleAddChapterPrompt}
-                            className="mt-5 bg-accent hover:brightness-110 text-white font-bold text-xs py-2.5 px-6 rounded-xl transition-all"
-                          >
-                            + Add Chapter جديد للTranslation (Add Chapter)
-                          </button>
-                        </div>
-                      ) : (
-                        currentVolume.chapters.map(chap => {
-                          const coverPage = chap.images[0]?.dataUrl;
-                          return (
-                            <div
-                              key={chap.id}
-                              onClick={() => handleOpenChapter(chap)}
-                              className="relative aspect-[3/4] bg-elevated rounded-2xl overflow-hidden border border-hairline hover:border-accent/35 transition-all duration-300 cursor-pointer flex flex-col justify-end p-6 group text-left"
-                            >
-                              {coverPage ? (
-                                <img
-                                  src={coverPage}
-                                  alt={chap.name}
-                                  className="absolute inset-0 w-full h-full object-cover opacity-45 group-hover:scale-105 transition-all duration-300"
-                                />
-                              ) : (
-                                <div className="absolute inset-0 bg-elevated flex flex-col items-center justify-center p-6 text-center opacity-30">
-                                  <svg className="w-12 h-12 text-ink-faint mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1}>
-                                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                                  </svg>
-                                </div>
-                              )}
-
-                              {/* Chapter Download top-left */}
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  if (chap.images.length === 0) return swal({ title: 'Empty', text: 'No images to compress', icon: 'info' });
-                                  swal({ title: 'Compressing...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-                                  try {
-                                    await downloadProcessedZip(chap.images, undefined, `${chap.name}.zip`);
-                                  } catch (err: any) {
-                                    swal({ title: 'Error', text: err?.message || 'Failed to generate ZIP', icon: 'error' });
-                                  } finally {
-                                    Swal.close();
-                                  }
-                                }}
-                                className="absolute top-4 left-4 bg-accent-soft hover:bg-accent text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 shadow-md border border-accent/20"
-                                title="Download all chapter images as ZIP"
-                              >
-                                <Download size={13} />
-                              </button>
-
-                              {/* Chapter Delete top-right */}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteChapter(chap.id);
-                                }}
-                                className="absolute top-4 right-4 bg-danger/85 hover:bg-danger text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all z-20 shadow-md border border-danger/20"
-                                title="Delete هذا الChapter كلياً"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-
-                              {/* Bottom Liquid Glass display inside the Chapter Card */}
-                              <div className="absolute bottom-0 left-0 right-0 p-5 bg-black/85 backdrop-blur-md border-t border-accent/15 flex flex-col gap-1 transition-all group-hover:bg-black/90 z-10 text-left">
-                                <span className="text-[10px] text-accent tracking-wider font-mono font-bold">MANGA CHAPTER</span>
-                                <h3 className="text-base font-display font-bold text-white tracking-tight leading-none mb-1">{chap.name}</h3>
-                                <p className="text-[11px] text-ink-muted leading-normal line-clamp-1 font-sans">
-                                  {chap.images.length > 0 ? `يحتوي على ${chap.images.length} صفحة مجهزة.` : 'Chapter Empty. انقر للدخول وUpload الImages.'}
-                                </p>
-                                <div className="flex justify-between items-center text-[10px] text-accent font-mono mt-1.5 pt-1.5 border-t border-accent/10 w-full">
-                                  <span>🚀 فتح بالاستوديو</span>
-                                  <span>{chap.images.length} Pages</span>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  );
-                })()
-              )}
-            </div>
-          </div>
-        )}
-
-        {activeNavigationTab === 'library' && activeChapterId !== null && images.length === 0 && (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-base relative">
-            {/* Ambient spotlights */}
-            <div className="absolute top-1/4 left-1/3 w-80 h-80 bg-accent/5 rounded-full blur-[140px] pointer-events-none" />
-            <div className="absolute bottom-1/4 right-1/3 w-80 h-80 bg-accent/5 rounded-full blur-[140px] pointer-events-none" />
-
-            <div className="liquid-glass p-12 rounded-3xl max-w-xl w-full flex flex-col items-center gap-6 shadow-[0_15px_40px_var(--color-accent-soft)] text-ink text-center border border-hairline relative z-10">
-              <div className="w-20 h-20 bg-accent-soft rounded-2xl border border-accent/25 flex items-center justify-center text-accent shadow-inner">
-                <svg className="w-10 h-10 animate-bounce" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                </svg>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <h3 className="text-2xl font-display font-bold text-ink tracking-tight">هذا الفصل Empty حالياً (Chapter is Empty)</h3>
-                <p className="text-sm text-ink-muted max-w-md mt-1 mx-auto leading-relaxed font-sans">
-                  قم بإنشاء مساحتك داخل هدا الفصل عن طريق سحب وإسقاط ملف ZIP، أو Upload الصفحات واحدة تلو الأخرى، أو Loading Project تجريبي لتجربته فوراً.
-                </p>
-              </div>
-              <div className="flex flex-col sm:flex-row items-center gap-3 w-full mt-2">
-                <button
-                  onClick={() => setShowCreateProjectModal(true)}
-                  className="w-full sm:w-auto flex-1 bg-accent hover:brightness-110 text-white font-bold py-3.5 px-6 rounded-xl shadow-lg shadow-[0_0_20px_var(--color-accent-soft)] transition-all active:scale-95 cursor-pointer text-sm"
-                >
-                  + Upload وتجهيز الImages (Load Media)
-                </button>
-                <button
-                  onClick={loadDemoProject}
-                  className="w-full sm:w-auto flex-1 bg-elevated hover:bg-ink/10 border border-hairline hover:border-accent/40 text-ink-muted font-bold py-3.5 px-6 rounded-xl transition-all active:scale-95 cursor-pointer text-sm"
-                >
-                  Loading الصفحات النموذجية (Load Sample)
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeNavigationTab === 'library' && activeChapterId !== null && images.length > 0 && (
-          <>
-            {/* Backdrop for off-canvas panels on narrow screens */}
-            {(showLeftPanel || showRightPanel) && (
-              <div
-                className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden"
-                onClick={() => { setShowLeftPanel(false); setShowRightPanel(false); }}
-              />
-            )}
-
-            {/* Left Sidebar (Thumbnails): static column on desktop, off-canvas drawer below lg */}
-            <aside className={`fixed inset-y-0 left-0 z-40 w-64 border-r border-hairline bg-elevated lg:bg-surface/30 backdrop-blur-md flex flex-col overflow-y-auto glass-noise transition-transform duration-300 lg:static lg:translate-x-0 ${showLeftPanel ? 'translate-x-0' : '-translate-x-full'}`}>
-              <button
-                onClick={() => setShowLeftPanel(false)}
-                className="lg:hidden flex items-center gap-1.5 m-2 self-end bg-ink/5 border border-hairline text-ink-muted text-xs px-2.5 py-1.5 rounded-lg"
-              >
-                ✕ Close
-              </button>
-              {images.length === 0 && (
-                <div className="p-8 text-center text-ink-faint text-sm">
-                  Upload a ZIP file to get started.
-                </div>
-              )}
-          {images.map((img, i) => (
-            <div
-              key={img.id}
-              className={`relative flex flex-col gap-2 p-3 border-b border-hairline/50 text-left transition-colors cursor-pointer group ${selectedImageId === img.id ? 'bg-accent-soft' : 'hover:bg-ink/5'}`}
-              onClick={() => setSelectedImageId(img.id)}
-            >
-              <div className="relative aspect-[3/4] w-full bg-elevated rounded overflow-hidden flex">
-                {img.originalDataUrl && (
-                  <img src={img.originalDataUrl} alt={`${img.filename} original`} loading="lazy" className="w-1/2 h-full object-cover opacity-80 border-r border-hairline" />
-                )}
-                <img src={img.dataUrl} alt={img.filename} loading="lazy" className={`${img.originalDataUrl ? 'w-1/2' : 'w-full'} h-full object-cover opacity-80`} />
-                {img.status === 'processing' && (
-                  <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                    <Loader2 className="animate-spin text-accent" />
-                  </div>
-                )}
-                {img.status === 'done' && (
-                  <div className="absolute top-2 right-2 flex gap-1">
-                    <span className="bg-success text-white text-[10px] uppercase font-bold px-1.5 py-0.5 rounded">Done</span>
-                  </div>
-                )}
-
-                {img.status !== 'done' && (
-                  <div className="absolute top-2 right-2" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={selectedForProcess.has(img.id)}
-                      onChange={(e) => toggleSelectForProcess(img.id, e as any)}
-                      className="w-4 h-4 rounded border-hairline bg-elevated text-accent focus:ring-accent"
-                      title="Select for batch processing (Max 5)"
-                    />
-                  </div>
-                )}
-
-                {/* Overlays for ordering and deletion */}
-                <div className="absolute top-2 left-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                   <button
-                     onClick={(e) => { e.stopPropagation(); moveImageUp(i); }}
-                     className="bg-black/80 hover:bg-black text-white p-1 rounded"
-                     title="Move Up"
-                   >
-                     <ChevronUp size={14} />
-                   </button>
-                   <button
-                     onClick={(e) => { e.stopPropagation(); moveImageDown(i); }}
-                     className="bg-black/80 hover:bg-black text-white p-1 rounded"
-                     title="Move Down"
-                   >
-                     <ChevronDown size={14} />
-                   </button>
-                </div>
-
-                <button
-                   onClick={(e) => deleteImage(img.id, e)}
-                   className="absolute bottom-2 right-2 bg-danger/80 hover:bg-danger text-white p-1.5 rounded opacity-0 group-hover:opacity-100 transition-opacity"
-                   title="Delete Image"
-                >
-                   <Trash2 size={14} />
-                </button>
-              </div>
-              <span className="text-xs truncate w-full" title={img.filename}>{img.filename}</span>
-            </div>
-          ))}
-        </aside>
-
-        {/* Editor Area */}
-        <main className="flex-1 p-6 flex flex-col items-center justify-center relative overflow-hidden">
-          {selectedImage ? (
-            <div className="w-full h-full flex flex-col gap-4">
-              <div className="flex justify-between items-center shrink-0">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={() => setShowLeftPanel(true)}
-                    className="lg:hidden flex items-center gap-1.5 bg-elevated border border-accent/25 text-accent text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-                    title="Show page thumbnails"
-                  >
-                    <LayoutGrid size={13} /> Pages
-                  </button>
-                  <h2 className="font-medium text-ink-muted text-sm max-w-[200px] truncate">{selectedImage.filename}</h2>
-                  <button
-                    onClick={() => setShowRightPanel(true)}
-                    className="lg:hidden flex items-center gap-1.5 bg-elevated border border-accent/25 text-accent text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-                    title="Show properties panel"
-                  >
-                    <Settings size={13} /> Properties
-                  </button>
-                  <button
-                    onClick={() => setShowExternalAIModal(true)}
-                    className="flex items-center gap-1.5 bg-accent-soft hover:opacity-80 border border-accent/30 text-accent text-xs font-semibold px-3 py-1.5 rounded-xl transition-all shadow-[0_4px_12px_var(--color-accent-soft)]"
-                    title="Loading وطرح الTranslation عبر الذكاء الاصطناعي الخارجي المساعد"
-                  >
-                    <Sparkles size={13} className="text-accent animate-bounce" /> كوكتيل الذكاء الاصطناعي الخارجي ✦
-                  </button>
-
-                  {/* Tool selection */}
-                  <div className="flex bg-elevated rounded-lg p-1 border border-hairline ml-4">
-                    <button
-                      onClick={() => setActiveTool('select')}
-                      className={`p-1.5 rounded-md ${activeTool === 'select' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Select/Move"
-                    >
-                      <MousePointer2 size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('draw')}
-                      className={`p-1.5 rounded-md ${activeTool === 'draw' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Draw"
-                    >
-                      <Brush size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('erase')}
-                      className={`p-1.5 rounded-md ${activeTool === 'erase' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Erase (White Brush)"
-                    >
-                      <Eraser size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('fill_poly')}
-                      className={`p-1.5 rounded-md ${activeTool === 'fill_poly' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Fill Polygon (4 points)"
-                    >
-                      <Palette size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('bg_erase')}
-                      className={`p-1.5 rounded-md ${activeTool === 'bg_erase' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Remove Text Box Background"
-                    >
-                      <Scissors size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('smart_sfx')}
-                      className={`p-1.5 rounded-md ${activeTool === 'smart_sfx' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="Smart Auto-Color (SFX Whitening)"
-                    >
-                      <Sparkles size={16} />
-                     </button>
-                     <button
-                      onClick={() => setActiveTool('gen_erase')}
-                      className={`p-1.5 rounded-md ${activeTool === 'gen_erase' ? 'bg-accent text-white' : 'text-ink-faint hover:text-ink-muted'}`}
-                      title="AI Generative Inpaint (Smart Whitening)"
-                    >
-                      <Wand2 size={16} />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('crop')}
-                      className={`p-1.5 rounded-md ${activeTool === 'crop' ? 'bg-accent text-white font-bold' : 'text-ink-faint hover:text-ink-muted hover:text-accent'}`}
-                      title="اقتصاص جزء للTranslation (AI Crop & Translate Panel)"
-                    >
-                      <Scissors size={16} className="-rotate-90 text-accent" />
-                    </button>
-                    <button
-                      onClick={() => setActiveTool('scribble_bubble')}
-                      className={`p-1.5 rounded-md ${activeTool === 'scribble_bubble' ? 'bg-accent text-white' : 'text-accent hover:text-accent hover:bg-accent-soft'}`}
-                      title="Select الفقاعة بالشخبطة الذكية (Scribble Bubble)"
-                    >
-                      <PenTool size={16} />
-                    </button>
-                    <div className="w-px bg-hairline mx-1 my-1"></div>
-                    <button
-                      onClick={() => undo(selectedImage.id)}
-                      disabled={!(selectedImage.history && selectedImage.history.length > 0)}
-                      className="p-1.5 rounded-md text-ink-faint hover:text-ink-muted disabled:opacity-50 disabled:cursor-not-allowed"
-                      title="Undo Action"
-                    >
-                      <Undo size={16} />
-                    </button>
-                  </div>
-
-                  {/* Zoom controls */}
-                  <div className="flex bg-elevated rounded-lg p-1 border border-hairline">
-                    <button onClick={() => setZoom(z => Math.max(0.2, z - 0.2))} className="p-1.5 text-ink-faint hover:text-ink-muted">
-                      <ZoomOut size={16} />
-                    </button>
-                    <span className="text-xs font-mono w-10 text-center flex items-center justify-center text-ink-faint">
-                      {Math.round(zoom * 100)}%
-                    </span>
-                    <button onClick={() => setZoom(z => Math.min(3, z + 0.2))} className="p-1.5 text-ink-faint hover:text-ink-muted">
-                      <ZoomIn size={16} />
-                    </button>
-                  </div>
-
-                  {/* Manhwa Mode Toggle */}
-                  <button
-                    onClick={() => {
-                      const next = !manhwaMode;
-                      setManhwaMode(next);
-                      localStorage.setItem('manhwa_mode', String(next));
-                    }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold border transition-all ${manhwaMode ? 'bg-accent-soft border-accent text-accent shadow-lg font-bold' : 'bg-elevated border-hairline text-ink-faint hover:text-ink-muted hover:bg-ink/5'}`}
-                    title="Adapt layout height to render stacked long strip Manhwa webtoons with scrolling support"
-                  >
-                    <span className="relative flex h-2 w-2">
-                      {manhwaMode && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-accent opacity-75"></span>}
-                      <span className={`relative inline flex rounded-full h-2 w-2 ${manhwaMode ? 'bg-accent' : 'bg-ink-faint'}`}></span>
-                    </span>
-                    Manhwa Mode
-                  </button>
-                  
-                  {selectedImage.status !== 'processing' && (
-                    <div className="flex items-center gap-2 ml-4 animate-fade-in">
-                      {isGeneratingPreviews ? (
-                        <div className="flex items-center gap-1.5 bg-accent-soft border border-accent/40 text-accent px-3 py-1.5 rounded text-xs font-medium">
-                          <Loader2 size={12} className="animate-spin" /> Detecting bubble boxes...
-                        </div>
-                      ) : showBubblePreviews ? (
-                        <div className="flex items-center gap-1.5 bg-accent-soft border border-accent/30 px-2 py-1 rounded">
-                          <button
-                            onClick={() => applyBubblePreviews(selectedImage.id)}
-                            className="bg-success hover:opacity-90 text-white text-xs px-3 py-1 rounded font-medium transition-colors"
-                            title="Apply the safe centered alignment to all detected bubbles"
-                          >
-                            Apply Centering
-                          </button>
-                          <button
-                            onClick={() => setShowBubblePreviews(false)}
-                            className="bg-ink/10 hover:bg-ink/15 text-ink-muted text-xs px-3 py-1 rounded font-medium transition-colors"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => generateBubblePreviews(selectedImage.id)}
-                          className="flex items-center gap-1.5 bg-accent hover:opacity-90 text-white px-3 py-1.5 rounded text-xs font-medium transition-colors"
-                          title="Generate interactive bounds previews highlighted in blue to inspect before alignment"
-                        >
-                          <Wand2 size={14} /> Preview Bounds
-                        </button>
-                      )}
-
-                      <button
-                        onClick={() => handleSmartBubbleFillAll(selectedImage.id)}
-                        className="flex items-center gap-1.5 bg-accent hover:opacity-90 px-3 py-1.5 rounded text-xs font-medium transition-colors text-white"
-                        title="Smart Center All Text Bubbles"
-                      >
-                        <Wand2 size={14} /> Center All Bubbles
-                      </button>
-                      <button
-                        onClick={handleDownloadCurrentPage}
-                        className="flex items-center gap-1.5 bg-elevated hover:bg-ink/10 px-3 py-1.5 rounded text-xs font-medium transition-colors"
-                        title="Download this page as PNG"
-                      >
-                        <Download size={14} /> Download Page
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (confirm("Are you sure you want to remove all texts and paint strokes from this page?")) {
-                            saveHistory(selectedImage.id);
-                            updateImage(selectedImage.id, { regions: [], paintStrokes: [] });
-                            setSelectedRegionId(null);
-                          }
-                        }}
-                        className="flex items-center gap-1.5 bg-danger/20 hover:bg-danger/30 px-3 py-1.5 rounded text-xs font-medium transition-colors text-danger"
-                        title="Clear all generated texts and paint strokes"
-                      >
-                        <Trash2 size={14} /> Clear All
-                      </button>
-                      <button 
-                        onClick={() => {
-                          saveHistory(selectedImage.id);
-                          const newRegion: Region = {
-                            id: Math.random().toString(36).substr(2, 9),
-                            type: 'bubble',
-                            originalText: '',
-                            translatedText: 'New Text',
-                            x: selectedImage.width / 2 - 100,
-                            y: selectedImage.height / 2 - 50,
-                            width: 200,
-                            height: 100,
-                            angle: 0,
-                            textColor: '#000000',
-                            strokeColor: 'transparent',
-                            strokeWidth: 0,
-                            bgColor: '#ffffff',
-                            fontFamily: 'Marhey',
-                            fontSize: 24,
-                            fontWeight: 'normal',
-                            fontStyle: 'normal',
-                            textAlign: 'center',
-                            lineHeight: 1.2,
-                            letterSpacing: 0,
-                            opacity: 1,
-                            shadowBlur: 0,
-                            shadowColor: 'transparent',
-                            autoFitText: true
-                          };
-                          updateImage(selectedImage.id, { regions: [...selectedImage.regions, newRegion] });
-                          setSelectedRegionId(newRegion.id);
-                        }}
-                        className="flex items-center gap-1.5 bg-elevated hover:bg-ink/10 px-3 py-1.5 rounded text-xs font-medium transition-colors"
-                      >
-                        <Plus size={14} /> Add Text
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (selectedForProcess.size > 0) {
-                            processSelectedImages();
-                          } else {
-                            processImage(selectedImage);
-                          }
-                        }}
-                        className="flex items-center gap-1.5 bg-accent hover:opacity-90 px-3 py-1.5 rounded text-xs font-medium transition-colors text-white"
-                      >
-                        <Play size={14} /> {selectedForProcess.size > 0 ? `Process Selected (${selectedForProcess.size})` : 'Process Image'}
-                      </button>
-                    </div>
+              {/* Chapter list within volume */}
+              {activeVolume && !activeChapter && activeManga && (
+                <div className="space-y-3">
+                  {activeVolume.chapters.length === 0 && (
+                    <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
+                      <FileStack className="text-ink-faint" size={26} />
+                      <p className="text-sm text-ink-muted">No chapters yet. Create one to start building this volume.</p>
+                      <Button size="sm" onClick={handleAddChapterPrompt}><Plus size={14} /> Add Chapter</Button>
+                    </GlassCard>
                   )}
-                </div>
-              </div>
-              {isProcessingCrop && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-                  <div className="bg-elevated border border-hairline rounded-xl p-8 flex flex-col items-center gap-4 max-w-sm w-full shadow-2xl animate-fade-in text-center">
-                    <Loader2 size={42} className="animate-spin text-accent" />
-                    <h3 className="text-sm font-bold text-ink tracking-tight">Translating and Processing Manga with AI...</h3>
-                    <p className="text-[11px] text-ink-muted leading-relaxed">يقوم Gemini الآن بتحليل وCleaning ومحاذاة القطاع المقتطع تلقائياً ومطابقته على الImagesة الكاملة بدقة فائقة.</p>
-                  </div>
-                </div>
-              )}
-              <Suspense fallback={<div className="w-full h-full flex items-center justify-center text-ink-faint"><Loader2 className="animate-spin mr-2"/> Loading Editor...</div>}>
-                <ImageEditor
-                  image={selectedImage}
-                  selectedRegionId={selectedRegionId}
-                  onSelectRegion={setSelectedRegionId}
-                  onUpdateRegion={updateRegion}
-                  stageRef={React.createRef()}
-                  activeTool={activeTool}
-                  brushSize={brushSize}
-                  brushColor={brushColor}
-                  zoom={zoom}
-                  showOriginal={showOriginal}
-                  showText={showText}
-                  onAddStroke={(stroke) => {
-                    saveHistory(selectedImage.id);
-                    updateImage(selectedImage.id, {
-                      paintStrokes: [...selectedImage.paintStrokes, stroke]
-                    });
-                  }}
-                  onGenerateInpaint={async (base64) => generateInpaint(base64, selectedImage.mimeType, customApiKey)}
-                  bubblePreviews={bubblePreviews[selectedImage.id] || []}
-                  showBubblePreviews={showBubblePreviews && !showOriginal}
-                  manhwaMode={manhwaMode}
-                  onProcessCropSection={handleProcessCropSection}
-                  onQueueCropSection={handleQueueCropSection}
-                  onScribbleBubble={handleScribbleBubble}
-                />
-              </Suspense>
-
-              {cropsQueue.length > 0 && (
-                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[90%] max-w-2xl bg-elevated/85 backdrop-blur-xl border border-accent/30 rounded-2xl shadow-2xl shadow-accent/30 p-3.5 z-40 flex items-center justify-between gap-4 animate-fade-in">
-                  <div className="flex flex-col gap-1 max-w-[45%]">
-                    <span className="text-xs font-bold text-ink flex items-center gap-1.5 leading-none">
-                      <span className="w-2.5 h-2.5 rounded-full bg-success animate-pulse"></span>
-                      AI Batch Crop Queue ({cropsQueue.length} segments)
-                    </span>
-                    <span className="text-[10px] text-ink-muted leading-tight">
-                      Selected segments will be stitched together, translated at once, and mapped back to their original coordinates.
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2 overflow-x-auto max-w-[35%] py-1 border-x border-hairline px-3 scrollbar-none">
-                    {cropsQueue.map((crop) => (
-                      <div key={crop.id} className="relative group shrink-0 w-11 h-11 rounded bg-elevated/50 border border-hairline overflow-hidden shadow-md">
-                        <img src={crop.cropUrl} className="w-full h-full object-cover" />
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {activeVolume.chapters.map(chap => (
+                      <button
+                        key={chap.id}
+                        onClick={() => setActiveChapterId(chap.id)}
+                        className="group relative text-left"
+                      >
+                        <GlassCard className="p-4 flex flex-col gap-2 h-full transition-transform group-hover:-translate-y-0.5">
+                          <FileStack className="text-accent" size={20} />
+                          <span className="text-sm font-semibold text-ink truncate">{chap.name}</span>
+                          <span className="text-[11px] text-ink-faint">{chap.images.length} page(s)</span>
+                        </GlassCard>
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setCropsQueue(prev => prev.filter(c => c.id !== crop.id));
-                          }}
-                          className="absolute top-0 right-0 bg-danger hover:opacity-90 text-white p-0.5 rounded-bl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center w-4.5 h-4.5 text-[9px] font-bold"
+                          onClick={(e) => { e.stopPropagation(); handleDeleteChapter(chap); }}
+                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label="Delete chapter"
                         >
-                          ✕
+                          <Trash2 size={12} />
                         </button>
-                      </div>
+                      </button>
                     ))}
                   </div>
+                </div>
+              )}
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={() => setCropsQueue([])}
-                      className="text-xs text-ink-faint hover:text-ink-muted px-2 py-1.5 rounded transition-all cursor-pointer font-medium"
-                    >
-                      Clear
-                    </button>
-                    <button
-                      onClick={handleTranslateCropQueue}
-                      className="flex items-center gap-1.5 bg-accent hover:opacity-90 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-lg transition-all active:scale-95 cursor-pointer"
-                    >
-                      <Sparkles size={12} className="text-white shrink-0 animate-pulse" /> Translation مجمعة
-                    </button>
+              {/* Volume list within manga */}
+              {activeManga && !activeVolume && (
+                <div className="space-y-3">
+                  {activeManga.volumes.length === 0 && (
+                    <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
+                      <Layers className="text-ink-faint" size={26} />
+                      <p className="text-sm text-ink-muted">No volumes yet. Create one to start organizing this series.</p>
+                      <Button size="sm" onClick={handleAddVolumePrompt}><Plus size={14} /> Add Volume</Button>
+                    </GlassCard>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                    {activeManga.volumes.map(vol => (
+                      <button key={vol.id} onClick={() => setActiveVolumeId(vol.id)} className="group relative text-left">
+                        <GlassCard className="p-4 flex flex-col gap-2 h-full transition-transform group-hover:-translate-y-0.5">
+                          <Layers className="text-accent" size={20} />
+                          <span className="text-sm font-semibold text-ink truncate">{vol.name}</span>
+                          <span className="text-[11px] text-ink-faint">{vol.chapters.length} chapter(s)</span>
+                        </GlassCard>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteVolume(vol); }}
+                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label="Delete volume"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
-            </div>
-          ) : (
-            <div className="text-ink-faint flex flex-col items-center gap-4">
-              <ImageIcon size={48} className="opacity-50" />
-              <p>Select an image to edit</p>
+
+              {/* Series list (root) */}
+              {!activeManga && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg font-display font-semibold text-ink">My Library</h2>
+                    <Button size="sm" onClick={() => setShowCreateSeriesModal(true)}><Plus size={14} /> New Series</Button>
+                  </div>
+                  {mangas.length === 0 && (
+                    <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
+                      <BookOpen className="text-ink-faint" size={30} />
+                      <p className="text-sm text-ink-muted max-w-sm">Your library is empty. Add your first manga or manhwa series to get started.</p>
+                      <Button onClick={() => setShowCreateSeriesModal(true)}><Plus size={14} /> Create Series</Button>
+                    </GlassCard>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                    {mangas.map(manga => (
+                      <button key={manga.id} onClick={() => setActiveMangaId(manga.id)} className="group relative text-left">
+                        <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
+                          <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
+                            {manga.coverUrl ? (
+                              <img src={manga.coverUrl} alt={manga.title} className="w-full h-full object-cover" />
+                            ) : (
+                              <BookOpen className="text-accent/60" size={32} />
+                            )}
+                          </div>
+                          <div className="p-3">
+                            <p className="text-sm font-semibold text-ink truncate">{manga.title}</p>
+                            <p className="text-[11px] text-ink-faint uppercase tracking-wide">{manga.type} · {manga.volumes.length} vol(s)</p>
+                          </div>
+                        </GlassCard>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteManga(manga); }}
+                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          aria-label="Delete series"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </main>
-
-        {/* Right Sidebar (Properties): static column on desktop, off-canvas drawer below lg */}
-        <aside className={`fixed inset-y-0 right-0 z-40 w-80 max-w-[85vw] border-l border-hairline bg-elevated flex flex-col overflow-y-auto transition-transform duration-300 lg:static lg:max-w-none lg:translate-x-0 ${showRightPanel ? 'translate-x-0' : 'translate-x-full'}`}>
-          <button
-            onClick={() => setShowRightPanel(false)}
-            className="lg:hidden flex items-center gap-1.5 m-2 self-start bg-ink/5 border border-hairline text-ink-muted text-xs px-2.5 py-1.5 rounded-lg"
-          >
-            ✕ Close
-          </button>
-          {selectedImage && selectedRegion ? (
-            <div className="p-5 flex flex-col gap-6">
-              <div>
-                <div className="flex justify-between items-center mb-1">
-                  <h3 className="font-semibold text-ink-muted flex items-center gap-2">
-                    Edit Text <span className="text-[10px] bg-elevated px-1.5 py-0.5 rounded uppercase tracking-wider text-ink-muted">{selectedRegion.type}</span>
-                  </h3>
-                  <button
-                    onClick={() => {
-                      saveHistory(selectedImage.id);
-                      updateImage(selectedImage.id, {
-                        regions: selectedImage.regions.filter(r => r.id !== selectedRegion.id)
-                      });
-                      setSelectedRegionId(null);
-                    }}
-                    className="text-danger hover:opacity-80 bg-danger/15 p-1.5 rounded transition-colors"
-                    title="Delete Region"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-                <p className="text-xs text-ink-faint mb-4">{selectedRegion.originalText}</p>
-                <textarea
-                  value={selectedRegion.translatedText}
-                  onChange={(e) => updateRegion(selectedRegion.id, { translatedText: e.target.value })}
-                  className="w-full h-24 bg-ink/5 border border-hairline rounded-md p-3 text-sm focus:border-accent focus:ring-1 focus:ring-accent outline-none resize-none"
-                  dir="ltr"
-                />
-              </div>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5 col-span-2">
-                    <div className="flex justify-between items-center">
-                      <label className="text-xs font-semibold text-accent">الخط المستخدم (Font Family)</label>
-                      <button
-                        onClick={() => fontInputRef.current?.click()}
-                        className="text-[10px] text-accent hover:opacity-80 transition-colors flex items-center gap-1 font-sans bg-accent-soft px-1.5 py-0.5 rounded border border-accent/30"
-                        title="Upload خط مخصص (.ttf, .otf, .zip)"
-                      >
-                        <Plus size={10} /> Upload خطوط مخصصة
-                      </button>
-                      <input
-                        type="file"
-                        ref={fontInputRef}
-                        onChange={handleFontUpload}
-                        accept=".zip,.ttf,.otf"
-                        className="hidden"
-                        multiple
-                      />
-                    </div>
-
-                    <select
-                      value={selectedRegion.fontFamily}
-                      onChange={(e) => updateRegion(selectedRegion.id, { fontFamily: e.target.value })}
-                      className="w-full bg-ink/5 border border-hairline rounded-md p-2 text-sm outline-none font-sans"
-                    >
-                      {customFonts.map(font => (
-                        <option key={font} value={font} style={{ fontFamily: font }}>{font.replace('MET-', '')} (مرفوع) ✦</option>
-                      ))}
-                      {["Cairo", "Tajawal", "Marhey", "Aref Ruqaa", "Almarai", "El Messiri", "Amiri", "Changa", "Harmattan", "Katibeh", "Lalezar", "Lemonada", "Mada", "Markazi Text", "Reem Kufi", "Rakkas"].map(font => (
-                        <option key={font} value={font} style={{ fontFamily: font }}>{font}</option>
-                      ))}
-                    </select>
-
-                    {/* Highly Elegant Visual Font Live Preview List */}
-                    <div className="bg-elevated/80 border border-accent/20 rounded-xl p-2.5 mt-2 max-h-40 overflow-y-auto space-y-1.5 scrollbar-thin">
-                      <p className="text-[10px] text-ink-muted font-sans tracking-tight mb-2 border-b border-hairline pb-1 flex justify-between">
-                        <span>قائمة المعاينة المباشرة للخطوط</span>
-                        <span className="text-accent">اسم الخط بمظهره ✦</span>
-                      </p>
-                      {customFonts.concat(["Cairo", "Tajawal", "Marhey", "Aref Ruqaa", "Almarai", "El Messiri", "Amiri", "Changa", "Harmattan", "Katibeh", "Lalezar", "Lemonada", "Mada", "Reem Kufi", "Rakkas"]).map((font) => (
-                        <button
-                          key={font}
-                          onClick={() => updateRegion(selectedRegion.id, { fontFamily: font })}
-                          style={{ fontFamily: font }}
-                          className={`w-full text-left hover:bg-accent-soft p-2 rounded-lg text-xs transition-all flex justify-between items-center ${selectedRegion.fontFamily === font ? 'bg-accent-soft text-accent border border-accent/50' : 'text-ink-muted'}`}
-                        >
-                          <span className="text-[9px] text-ink-faint font-mono select-none">{font.replace('MET-', '')}</span>
-                          <span className="text-sm tracking-wide truncate max-w-[70%] text-left font-semibold">تصفيف: مانجا {font.replace('MET-', '')}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Font Size</label>
-                    <input
-                      type="number"
-                      value={Math.round(selectedRegion.fontSize)}
-                      onChange={(e) => updateRegion(selectedRegion.id, { fontSize: Number(e.target.value), autoFitText: false })}
-                      className="w-full bg-ink/5 border border-hairline rounded-md p-2 text-sm outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Text Align</label>
-                    <select
-                      value={selectedRegion.textAlign}
-                      onChange={(e) => updateRegion(selectedRegion.id, { textAlign: e.target.value })}
-                      className="w-full bg-ink/5 border border-hairline rounded-md p-2 text-sm outline-none"
-                    >
-                      <option value="center">Center</option>
-                      <option value="right">Right</option>
-                      <option value="left">Left</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Style</label>
-                    <div className="flex gap-2">
-                       <button onClick={() => updateRegion(selectedRegion.id, { fontWeight: selectedRegion.fontWeight === 'bold' ? 'normal' : 'bold' })} className={`flex-1 p-2 border rounded-md text-sm font-bold ${selectedRegion.fontWeight === 'bold' ? 'bg-accent border-accent text-white' : 'bg-ink/5 border-hairline'}`}>B</button>
-                       <button onClick={() => updateRegion(selectedRegion.id, { fontStyle: selectedRegion.fontStyle === 'italic' ? 'normal' : 'italic' })} className={`flex-1 p-2 border rounded-md text-sm italic ${selectedRegion.fontStyle === 'italic' ? 'bg-accent border-accent text-white' : 'bg-ink/5 border-hairline'}`}>I</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Text Color</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="color"
-                        value={selectedRegion.textColor}
-                        onChange={(e) => updateRegion(selectedRegion.id, { textColor: e.target.value })}
-                        className="w-8 h-8 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
-                      />
-                      <input
-                        type="text"
-                        value={selectedRegion.textColor}
-                        onChange={(e) => updateRegion(selectedRegion.id, { textColor: e.target.value })}
-                        className="w-full bg-ink/5 border border-hairline rounded-md p-1.5 text-xs outline-none uppercase"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Outline (Stroke)</label>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="color"
-                        value={selectedRegion.strokeColor === 'transparent' ? '#ffffff' : selectedRegion.strokeColor}
-                        onChange={(e) => updateRegion(selectedRegion.id, { strokeColor: e.target.value })}
-                        className="w-8 h-8 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
-                        disabled={selectedRegion.strokeColor === 'transparent'}
-                      />
-                      <div className="flex items-center gap-2 flex-1">
-                        <input
-                          type="range"
-                          min="0"
-                          max="20"
-                          value={selectedRegion.strokeColor === 'transparent' ? 0 : selectedRegion.strokeWidth}
-                          onChange={(e) => {
-                            const val = Number(e.target.value);
-                            if (val === 0) updateRegion(selectedRegion.id, { strokeColor: 'transparent', strokeWidth: 0 });
-                            else updateRegion(selectedRegion.id, { strokeColor: selectedRegion.strokeColor === 'transparent' ? '#ffffff' : selectedRegion.strokeColor, strokeWidth: val });
-                          }}
-                          className="w-full accent-accent"
-                        />
-                        <span className="text-xs font-mono">{selectedRegion.strokeColor === 'transparent' ? 0 : selectedRegion.strokeWidth}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-ink-muted">Background Color</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="color"
-                      value={selectedRegion.bgColor === 'transparent' ? '#ffffff' : selectedRegion.bgColor}
-                      onChange={(e) => updateRegion(selectedRegion.id, { bgColor: e.target.value })}
-                      className="w-8 h-8 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
-                      disabled={selectedRegion.bgColor === 'transparent'}
-                    />
-                    <button
-                      onClick={() => updateRegion(selectedRegion.id, { bgColor: selectedRegion.bgColor === 'transparent' ? '#ffffff' : 'transparent' })}
-                      className="text-[10px] bg-elevated px-2 py-1.5 rounded text-ink-muted w-full"
-                    >
-                      {selectedRegion.bgColor === 'transparent' ? 'No BG' : 'Clear BG'}
-                    </button>
-                    {selectedRegion.bgColor !== 'transparent' && ('EyeDropper' in window) && (
-                      <button
-                        onClick={async () => {
-                          try {
-                            const eyeDropper = new (window as any).EyeDropper();
-                            const result = await eyeDropper.open();
-                            updateRegion(selectedRegion.id, { bgColor: result.sRGBHex });
-                          } catch (e) {}
-                        }}
-                        className="p-1 px-2 bg-elevated hover:bg-ink/10 rounded-md text-ink-muted shrink-0 h-[28px]"
-                        title="Pick Color from Screen"
-                      >
-                        <Pipette size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-ink-muted">Angle (Rotation)</label>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min="-180"
-                      max="180"
-                      value={Math.round(selectedRegion.angle)}
-                      onChange={(e) => updateRegion(selectedRegion.id, { angle: Number(e.target.value) })}
-                      className="flex-1 accent-accent"
-                    />
-                    <span className="text-xs w-8 text-left font-mono">{Math.round(selectedRegion.angle)}°</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 mt-2">
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Letter Spacing</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="-5"
-                        max="20"
-                        step="0.5"
-                        value={selectedRegion.letterSpacing || 0}
-                        onChange={(e) => updateRegion(selectedRegion.id, { letterSpacing: Number(e.target.value) })}
-                        className="flex-1 accent-accent"
-                      />
-                      <span className="text-xs w-6 text-left font-mono">{selectedRegion.letterSpacing || 0}</span>
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Opacity (All)</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={selectedRegion.opacity ?? 1}
-                        onChange={(e) => updateRegion(selectedRegion.id, { opacity: Number(e.target.value) })}
-                        className="flex-1 accent-accent"
-                      />
-                      <span className="text-xs w-8 text-left font-mono">{Math.round((selectedRegion.opacity ?? 1) * 100)}%</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 mt-2">
-                  <div className="space-y-1.5 flex flex-col justify-end">
-                    <label className="flex items-center gap-2 text-xs font-medium text-ink-muted cursor-pointer mb-2">
-                      <input
-                        type="checkbox"
-                        checked={!!selectedRegion.autoFitText}
-                        onChange={(e) => updateRegion(selectedRegion.id, { autoFitText: e.target.checked })}
-                        className="rounded border-hairline bg-elevated accent-accent"
-                      />
-                      Auto-fit Text
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs font-medium text-ink-muted">Shadow Color</label>
-                      <input
-                        type="color"
-                        value={selectedRegion.shadowColor === 'transparent' ? '#000000' : (selectedRegion.shadowColor || '#000000')}
-                        onChange={(e) => updateRegion(selectedRegion.id, { shadowColor: e.target.value })}
-                        className="w-6 h-6 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-ink-muted">Shadow Blur ({selectedRegion.shadowBlur || 0})</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="20"
-                      value={selectedRegion.shadowBlur || 0}
-                      onChange={(e) => updateRegion(selectedRegion.id, { shadowBlur: Number(e.target.value) })}
-                      className="w-full accent-accent"
-                    />
-                  </div>
-                </div>
-
-                {/* Dimensions and Coordinates manual inputs in Arabic/English */}
-                <div className="space-y-2 border-t border-hairline pt-4 mt-2">
-                  <h4 className="text-xs font-semibold text-ink-muted uppercase tracking-wider mb-2">الإحداثيات والأبعاد (Dimensions)</h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-ink-faint">X (موضع أفقي)</label>
-                      <input
-                        type="number"
-                        value={Math.round(selectedRegion.x)}
-                        onChange={(e) => updateRegion(selectedRegion.id, { x: Number(e.target.value) })}
-                        className="w-full bg-ink/5 border border-hairline rounded-md p-1.5 text-xs text-ink outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-ink-faint">Y (موضع رأسي)</label>
-                      <input
-                        type="number"
-                        value={Math.round(selectedRegion.y)}
-                        onChange={(e) => updateRegion(selectedRegion.id, { y: Number(e.target.value) })}
-                        className="w-full bg-ink/5 border border-hairline rounded-md p-1.5 text-xs text-ink outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-ink-faint">Width (العرض)</label>
-                      <input
-                        type="number"
-                        value={Math.round(selectedRegion.width)}
-                        onChange={(e) => updateRegion(selectedRegion.id, { width: Number(e.target.value) })}
-                        className="w-full bg-ink/5 border border-hairline rounded-md p-1.5 text-xs text-ink outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-ink-faint">Height (الارتفاع)</label>
-                      <input
-                        type="number"
-                        value={Math.round(selectedRegion.height)}
-                        onChange={(e) => updateRegion(selectedRegion.id, { height: Number(e.target.value) })}
-                        className="w-full bg-ink/5 border border-hairline rounded-md p-1.5 text-xs text-ink outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-1 mt-2">
-                    <label className="text-[10px] text-ink-faint">Angle (الزاوية: {selectedRegion.angle || 0}°)</label>
-                    <input
-                      type="range"
-                      min="-180"
-                      max="180"
-                      value={selectedRegion.angle || 0}
-                      onChange={(e) => updateRegion(selectedRegion.id, { angle: Number(e.target.value) })}
-                      className="w-full accent-accent"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5 mt-2">
-                  <label className="text-xs font-medium text-ink-muted">Layer Order</label>
-                  <div className="flex gap-2">
-                    <button
-                      className="flex-1 bg-elevated hover:bg-ink/10 py-1 rounded text-xs text-ink-muted flex items-center justify-center gap-1"
-                      onClick={() => {
-                        saveHistory(selectedImage.id);
-                        const arr = [...selectedImage.regions];
-                        const idx = arr.findIndex(r => r.id === selectedRegion.id);
-                        if (idx < arr.length - 1) {
-                          [arr[idx], arr[idx + 1]] = [arr[idx + 1], arr[idx]];
-                          updateImage(selectedImage.id, { regions: arr });
-                        }
-                      }}
-                    >
-                      <ChevronUp size={14} /> Bring Forward
-                    </button>
-                    <button
-                      className="flex-1 bg-elevated hover:bg-ink/10 py-1 rounded text-xs text-ink-muted flex items-center justify-center gap-1"
-                      onClick={() => {
-                        saveHistory(selectedImage.id);
-                        const arr = [...selectedImage.regions];
-                        const idx = arr.findIndex(r => r.id === selectedRegion.id);
-                        if (idx > 0) {
-                          [arr[idx], arr[idx - 1]] = [arr[idx - 1], arr[idx]];
-                          updateImage(selectedImage.id, { regions: arr });
-                        }
-                      }}
-                    >
-                      <ChevronDown size={14} /> Send Backward
-                    </button>
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-hairline space-y-3 mt-4">
-                  <div className="flex gap-2">
-                    <button
-                      className="flex-1 bg-accent hover:opacity-90 text-white text-xs py-2 rounded transition-colors flex items-center justify-center gap-2 font-medium"
-                      onClick={() => handleSmartBubbleFill(selectedImage.id, selectedRegion)}
-                    >
-                      <Wand2 size={14} /> Smart Detect
-                    </button>
-                    <button
-                      className="bg-accent-soft hover:opacity-80 text-accent border border-accent/40 text-xs py-2 px-3 rounded transition-colors flex items-center justify-center gap-1.5"
-                      onClick={handleSplitBubble}
-                      title="فصل هندسي لفقاعتين دائرية مدمجة"
-                    >
-                      <Scissors size={13} /> فصل الفقاعة
-                    </button>
-                  </div>
-
-                  {/* Kashida layouts */}
-                  <div className="bg-accent-soft p-2 text-left rounded-lg border border-accent/20 space-y-1.5">
-                    <label className="text-[10px] font-semibold text-accent flex items-center justify-between">
-                      <span>كشيدة تمديد السطور العربية (Kashida)</span>
-                      <span>✦</span>
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => applyKashidaHarmony('oval')}
-                        className="flex-1 bg-accent-soft hover:opacity-80 border border-accent/40 text-[9px] py-1 px-1.5 rounded transition-all text-ink-muted font-sans"
-                        title="تمديد الخط للملاءمة الدائرية بالمنتصف"
-                      >
-                        كشيدة دائرية (ـ)
-                      </button>
-                      <button
-                        onClick={() => applyKashidaHarmony('rectangular')}
-                        className="flex-1 bg-elevated hover:bg-ink/10 border border-hairline text-[9px] py-1 px-1.5 rounded transition-all text-ink-muted font-sans"
-                      >
-                        مستطيل عادي
-                      </button>
-                    </div>
-                  </div>
-                   <button
-                     className="w-full bg-elevated hover:bg-ink/10 text-ink-muted text-xs py-2 rounded transition-colors flex items-center justify-center gap-2"
-                     onClick={() => {
-                       saveHistory(selectedImage.id);
-                       updateImage(selectedImage.id, {
-                         regions: [...selectedImage.regions, {
-                           ...selectedRegion,
-                           id: crypto.randomUUID(),
-                           y: selectedRegion.y + 40
-                         }]
-                       });
-                     }}
-                   >
-                     <Plus size={14} /> Duplicate text region
-                   </button>
-                   <button 
-                     className="w-full bg-elevated hover:bg-ink/10 text-ink-muted text-xs py-2 rounded transition-colors flex items-center justify-center gap-2"
-                     onClick={() => {
-                       saveHistory(selectedImage.id);
-                       updateImage(selectedImage.id, {
-                         regions: selectedImage.regions.map(r => ({
-                           ...r, 
-                           fontFamily: selectedRegion.fontFamily,
-                           fontSize: selectedRegion.fontSize,
-                           fontWeight: selectedRegion.fontWeight,
-                           fontStyle: selectedRegion.fontStyle,
-                           textColor: selectedRegion.textColor,
-                           strokeColor: selectedRegion.strokeColor,
-                           strokeWidth: selectedRegion.strokeWidth,
-                           textAlign: selectedRegion.textAlign
-                         }))
-                       });
-                     }}
-                   >
-                     <TypeIcon size={14} /> Apply text styles to this page
-                   </button>
-                   <button 
-                     className="w-full bg-elevated hover:bg-ink/10 text-ink-muted text-xs py-2 rounded transition-colors flex items-center justify-center gap-2"
-                     onClick={() => {
-                       if (confirm('Apply these font settings to all text regions across ALL pages?')) {
-                         setImages(prev => prev.map(img => ({
-                           ...img,
-                           regions: img.regions.map(r => ({
-                             ...r, 
-                             fontFamily: selectedRegion.fontFamily,
-                             fontSize: selectedRegion.fontSize,
-                             fontWeight: selectedRegion.fontWeight,
-                             fontStyle: selectedRegion.fontStyle,
-                             textColor: selectedRegion.textColor,
-                             strokeColor: selectedRegion.strokeColor,
-                             strokeWidth: selectedRegion.strokeWidth,
-                             textAlign: selectedRegion.textAlign
-                           }))
-                         })));
-                       }
-                     }}
-                   >
-                     <TypeIcon size={14} /> Apply text styles to ALL pages
-                   </button>
-                </div>
-              </div>
-            </div>
-          ) : activeTool !== 'select' ? (
-             <div className="p-5 flex flex-col gap-6">
-                <div>
-                  <h3 className="font-semibold text-ink-muted mb-4 flex items-center gap-2">
-                    Brush Settings
-                  </h3>
-
-                  <div className="space-y-6">
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-ink-muted flex justify-between">
-                        <span>Size</span>
-                        <span>{brushSize}px</span>
-                      </label>
-                      <input
-                        type="range"
-                        min="1"
-                        max="100"
-                        value={brushSize}
-                        onChange={(e) => setBrushSize(Number(e.target.value))}
-                        className="w-full accent-accent"
-                      />
-                    </div>
-
-                    {(activeTool === 'draw' || activeTool === 'fill_poly') && (
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-ink-muted">Color</label>
-                        <div className="flex items-center gap-2">
-                           <input
-                            type="color"
-                            value={brushColor}
-                            onChange={(e) => setBrushColor(e.target.value)}
-                            className="w-10 h-10 rounded shrink-0 bg-transparent border-0 p-0 cursor-pointer"
-                           />
-                           <input
-                            type="text"
-                            value={brushColor}
-                            onChange={(e) => setBrushColor(e.target.value)}
-                            className="w-full bg-ink/5 border border-hairline rounded-md p-2 text-sm outline-none uppercase"
-                           />
-                           {('EyeDropper' in window) && (
-                             <button
-                               onClick={async () => {
-                                 try {
-                                   const eyeDropper = new (window as any).EyeDropper();
-                                   const result = await eyeDropper.open();
-                                   setBrushColor(result.sRGBHex);
-                                 } catch (e) {}
-                               }}
-                               className="p-2 bg-elevated hover:bg-ink/10 rounded-md text-ink-muted shrink-0"
-                               title="Pick Color from Screen"
-                             >
-                               <Pipette size={16} />
-                             </button>
-                           )}
-                        </div>
-                      </div>
-                    )}
-
-                    {activeTool === 'erase' && (
-                      <div className="p-3 bg-elevated rounded border border-hairline text-xs text-ink-muted text-center">
-                        Eraser paints with white color to match manga background.
-                      </div>
-                    )}
-                    {activeTool === 'bg_erase' && (
-                      <div className="p-3 bg-elevated rounded border border-hairline text-xs text-ink-muted text-center">
-                        Erase parts of a Text's Background square without affecting the text or background image.
-                      </div>
-                    )}
-                    {activeTool === 'smart_sfx' && (
-                      <div className="p-3 bg-elevated rounded border border-hairline text-xs text-ink-muted text-center">
-                        Click on the image. It will automatically pick the background color below the cursor and paint with it! Great for whitening SFX.
-                      </div>
-                    )}
-                    {activeTool === 'gen_erase' && (
-                      <div className="p-3 bg-success/10 rounded border border-success/30 text-xs text-success text-center">
-                        AI Generative Inpaint: Draw over a region. The AI algorithm will automatically analyze the surrounding background and cleanly remove text.
-                      </div>
-                    )}
-
-                    <button
-                      onClick={() => {
-                        saveHistory(selectedImage!.id);
-                        updateImage(selectedImage!.id, { paintStrokes: [] });
-                      }}
-                      className="w-full mt-4 bg-danger/15 hover:bg-danger/25 border border-danger/40 text-danger py-2 rounded text-sm transition-colors"
-                      disabled={!selectedImage || selectedImage.paintStrokes.length === 0}
-                    >
-                      Clear All Strokes
-                    </button>
-                  </div>
-                </div>
-             </div>
-          ) : (
-             <div className="p-8 text-center text-ink-faint flex flex-col items-center gap-4">
-               {selectedImage && <p className="text-sm">Click on any text or bubble in the editor to modify it, or select a drawing tool from the top toolbar.</p>}
-             </div>
-          )}
-        </aside>
-          </>
-        )}
       </div>
 
-      {/* iOS-style bottom tab bar (mobile/tablet) */}
-      {activeChapterId === null && (
-        <BottomTabBar
-          activeTab={activeNavigationTab}
-          onTabChange={setActiveNavigationTab}
-          onCreatePress={() => {
-            if (activeMangaId) {
-              if (activeVolumeId) {
-                handleAddChapterPrompt();
-              } else {
-                handleAddVolumePrompt();
-              }
-            } else {
-              setShowCreateSeriesModal(true);
-            }
-          }}
-        />
-      )}
+      <div className="lg:hidden fixed bottom-[6.5rem] left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1.5rem)] max-w-sm">
+        <AdSlot placement="bottom-nav" />
+      </div>
+      <BottomTabBar activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />
 
-      {/* Stunning Create Project Modular popup */}
-      {showCreateProjectModal && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/85 backdrop-blur-md animate-fade-in">
-          <div className="liquid-glass p-8 rounded-3xl max-w-xl w-full mx-4 shadow-[0_20px_50px_var(--color-accent-soft)] border border-accent/25 relative text-ink flex flex-col gap-6">
+      {/* Create Series Modal */}
+      <Modal
+        open={showCreateSeriesModal}
+        onClose={() => setShowCreateSeriesModal(false)}
+        title="New Series"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowCreateSeriesModal(false)}>Cancel</Button>
+            <Button onClick={handleCreateSeries}><Sparkles size={14} /> Create Series</Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="flex items-center gap-4">
             <button
-              onClick={() => setShowCreateProjectModal(false)}
-              className="absolute top-4 right-4 text-ink-muted hover:text-ink p-2 rounded-full hover:bg-ink/5 transition-all text-sm font-bold"
+              onClick={() => coverFileInputRef.current?.click()}
+              className="w-20 h-28 rounded-xl border border-dashed border-hairline bg-ink/5 flex items-center justify-center overflow-hidden shrink-0 hover:border-accent transition-colors"
             >
-              ✕
+              {newSeriesCoverUrl ? (
+                <img src={newSeriesCoverUrl} alt="Cover" className="w-full h-full object-cover" />
+              ) : (
+                <ImagePlus size={20} className="text-ink-faint" />
+              )}
             </button>
-            <div className="flex flex-col gap-1.5 text-left">
-              <h2 className="text-2xl font-display font-bold text-ink flex items-center gap-2">
-                <span className="text-accent">✧</span> Create Translation Project
-              </h2>
-              <p className="text-xs text-ink-muted leading-normal">
-                Kickstart a new translation stream from local folders, archived chapters, or restore previous sessions.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
-              <button
-                onClick={() => {
-                  setShowCreateProjectModal(false);
-                  fileInputRef.current?.click();
-                }}
-                className="p-5 rounded-2xl bg-elevated hover:bg-accent-soft border border-hairline hover:border-accent/45 transition-all flex flex-col gap-2.5 text-left group cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-xl bg-accent-soft flex items-center justify-center border border-accent/20 text-accent">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-                  </svg>
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-ink group-hover:text-accent">Upload ZIP Chapter</h4>
-                  <p className="text-[11px] text-ink-muted mt-1">Accepts raw comic image files inside any ZIP.</p>
-                </div>
-              </button>
-
-              <button
-                onClick={() => {
-                  setShowCreateProjectModal(false);
-                  cleanZipInputRef.current?.click();
-                }}
-                className="p-5 rounded-2xl bg-elevated hover:bg-accent-soft border border-hairline hover:border-accent/40 transition-all flex flex-col gap-2.5 text-left group cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-xl bg-accent-soft flex items-center justify-center border border-accent/20 text-accent">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  </svg>
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-ink group-hover:text-accent">Cleaned Plates ZIP</h4>
-                  <p className="text-[11px] text-ink-muted mt-1">Superimpose text directly on white-cleaned pages.</p>
-                </div>
-              </button>
-
-              <button
-                onClick={() => {
-                  setShowCreateProjectModal(false);
-                  appendImagesInputRef.current?.click();
-                }}
-                className="p-5 rounded-2xl bg-elevated hover:bg-accent-soft border border-hairline hover:border-accent/40 transition-all flex flex-col gap-2.5 text-left group cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-xl bg-accent-soft flex items-center justify-center border border-accent/20 text-accent">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <rect x={3} y={3} width={18} height={18} rx={2} ry={2} />
-                    <circle cx={8.5} cy={8.5} r={1.5} />
-                    <polyline points="21 15 16 10 5 21" />
-                  </svg>
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-ink group-hover:text-accent">Add Raw Pages</h4>
-                  <p className="text-[11px] text-ink-muted mt-1">Select and append raw comic files individually.</p>
-                </div>
-              </button>
-
-              <button
-                onClick={() => {
-                  setShowCreateProjectModal(false);
-                  projectInputRef.current?.click();
-                }}
-                className="p-5 rounded-2xl bg-elevated hover:bg-accent-soft border border-hairline hover:border-accent/45 transition-all flex flex-col gap-2.5 text-left group cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-xl bg-accent-soft flex items-center justify-center border border-accent/20 text-accent">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                    <line x1={16} y1={13} x2={8} y2={13} />
-                    <line x1={16} y1={17} x2={8} y2={17} />
-                  </svg>
-                </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-ink group-hover:text-accent">Restore Session State</h4>
-                  <p className="text-[11px] text-ink-muted mt-1">Re-import previous workspace state (.json).</p>
-                </div>
-              </button>
-            </div>
-
-            <div className="border-t border-hairline pt-4 flex items-center justify-between gap-4 flex-col sm:flex-row mt-2 text-left animate-fade-in">
-              <span className="text-[11px] text-ink-muted font-mono">💡 No chapters offline? Try the interactive playground.</span>
-              <button
-                onClick={() => {
-                  setShowCreateProjectModal(false);
-                  loadDemoProject();
-                }}
-                className="px-4 py-2 text-xs font-bold text-white rounded-xl bg-accent hover:brightness-110 shadow-lg shadow-[0_0_20px_var(--color-accent-soft)] transition-all active:scale-95 cursor-pointer"
-              >
-                Load Sample Demo Project
-              </button>
+            <input ref={coverFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleCoverUpload} />
+            <div className="flex-1 space-y-2">
+              <Input placeholder="Series title" value={newSeriesTitle} onChange={(e) => setNewSeriesTitle(e.target.value)} />
+              <div className="grid grid-cols-2 gap-2">
+                {(['manga', 'manhwa'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setNewSeriesType(t)}
+                    className={`py-2 rounded-xl border text-xs font-medium capitalize transition-colors ${newSeriesType === t ? 'bg-accent-soft border-accent text-accent' : 'bg-ink/5 border-hairline text-ink-muted'}`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
+          <Textarea placeholder="Short description (optional)" value={newSeriesDesc} onChange={(e) => setNewSeriesDesc(e.target.value)} className="h-20" />
         </div>
-      )}
+      </Modal>
 
-      {/* Stunning Create Series Modal */}
-      {showCreateSeriesModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/90 backdrop-blur-md animate-fade-in text-left" dir="ltr">
-          <div className="liquid-glass p-8 rounded-3xl max-w-lg w-full mx-4 shadow-[0_20px_50px_var(--color-accent-soft)] border border-accent/25 relative text-ink flex flex-col gap-5">
-            <button
-              onClick={() => setShowCreateSeriesModal(false)}
-              className="absolute top-4 left-4 text-ink-muted hover:text-ink p-2 rounded-full hover:bg-ink/5 transition-all text-sm font-bold"
-            >
-              ✕
-            </button>
-
-            <div className="flex flex-col gap-1.5 text-left border-b border-hairline pb-4">
-              <h2 className="text-2xl font-display font-bold text-ink flex items-center gap-2 justify-start">
-                <span className="text-accent">✧</span> Add سلسلة جديدة لمكتبتك
-              </h2>
-              <p className="text-xs text-ink-muted">
-                أنشئ عملاً أو سلسلة مانجا/مانهوا جديدة لتنظيم وإتباع الVolumeات وفصول الTranslation بداخلها.
-              </p>
-            </div>
-
-            <div className="space-y-4 text-left">
-              {/* Cover Upload / URL Preview inline */}
-              <div className="space-y-1.5 text-start">
-                <label className="text-xs font-semibold text-accent block text-left">Imagesة غلاف السلسلة (PNG أو JPG):</label>
-                <div className="flex items-center gap-4 flex-row-reverse">
-                  <div className="w-20 h-24 rounded-lg border border-hairline bg-elevated overflow-hidden flex items-center justify-center shrink-0">
-                    {newSeriesCoverUrl ? (
-                      <img src={newSeriesCoverUrl} alt="Cover Preview" className="w-full h-full object-cover" />
-                    ) : (
-                      <ImageIcon size={20} className="text-accent/40" />
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-2 w-full text-left">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleCoverUpload}
-                      id="series-cover-file"
-                      className="hidden"
-                    />
-                    <label
-                      htmlFor="series-cover-file"
-                      className="cursor-pointer bg-accent-soft hover:bg-accent/30 border border-accent/30 text-accent px-4 py-2 rounded-xl text-xs font-bold text-center transition-all block"
-                    >
-                      اختر Imagesة من جهازك
-                    </label>
-                    <span className="text-[10px] text-ink-faint text-center font-mono block">(الموصى به: نسبة طول إلى عرض 4:3)</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Series Title */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-accent block text-left">عنوان السلسلة:</label>
-                <input
-                  type="text"
-                  placeholder="مثال: Solo Leveling أو مانهوا سولو ليفنج..."
-                  value={newSeriesTitle}
-                  onChange={(e) => setNewSeriesTitle(e.target.value)}
-                  className="w-full bg-elevated border border-hairline hover:border-accent/40 focus:border-accent rounded-xl p-3 text-sm text-ink outline-none font-sans text-left"
-                />
-              </div>
-
-              {/* Series Type */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-accent block text-left">النوع (Classification):</label>
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => setNewSeriesType('manga')}
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${newSeriesType === 'manga' ? 'bg-warning/35 border-warning text-warning' : 'bg-elevated border-hairline text-ink-faint'}`}
-                  >
-                    Manga (مانجا صفراء)
-                  </button>
-                  <button
-                    onClick={() => setNewSeriesType('manhwa')}
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${newSeriesType === 'manhwa' ? 'bg-accent/35 border-accent text-accent' : 'bg-elevated border-hairline text-ink-faint'}`}
-                  >
-                    Manhwa (مانهوا ملونة)
-                  </button>
-                </div>
-              </div>
-
-              {/* Series Description */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-accent block text-left">نبذة أو وصف مختصر:</label>
-                <textarea
-                  rows={3}
-                  placeholder="اكتب وصفاً مختصراً لقصة المانجا أو Details المترجمين..."
-                  value={newSeriesDesc}
-                  onChange={(e) => setNewSeriesDesc(e.target.value)}
-                  className="w-full bg-elevated border border-hairline hover:border-accent/40 focus:border-accent rounded-xl p-3 text-sm text-ink outline-none resize-none font-sans text-left"
-                />
-              </div>
-            </div>
-
-            <div className="border-t border-hairline pt-4 flex justify-end gap-3 mt-2">
-              <button
-                onClick={() => setShowCreateSeriesModal(false)}
-                className="bg-elevated hover:bg-ink/10 border border-hairline hover:border-accent/30 text-ink-muted font-bold py-2.5 px-6 rounded-xl text-xs transition-all cursor-pointer"
-              >
-                Cancel (Cancel)
-              </button>
-              <button
-                onClick={handleCreateSeries}
-                className="bg-accent hover:brightness-110 text-white font-bold py-2.5 px-7 rounded-xl text-xs transition-all shadow-lg shadow-[0_0_20px_var(--color-accent-soft)] cursor-pointer"
-              >
-                ✓ إنشاء وAdd السلسلة
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Stunning External AI Prompt & Paste Modal */}
-      {showExternalAIModal && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/95 backdrop-blur-md animate-fade-in text-left" dir="ltr">
-          <div className="liquid-glass p-8 rounded-3xl max-w-2xl w-full mx-4 shadow-[0_20px_50px_var(--color-accent-soft)] border border-accent/25 relative text-ink flex flex-col gap-6 max-h-[90vh] overflow-y-auto">
-            <button
-              onClick={() => setShowExternalAIModal(false)}
-              className="absolute top-4 left-4 text-ink-muted hover:text-ink p-2 rounded-full hover:bg-ink/5 transition-all text-sm font-bold"
-            >
-              ✕
-            </button>
-
-            <div className="flex flex-col gap-1.5 text-left border-b border-hairline pb-4">
-              <h2 className="text-2xl font-display font-bold text-ink flex items-center gap-2 justify-start">
-                <span className="text-accent">✧</span> معالج الTranslation المساعد عبر الذكاء الاصطناعي الخارجي
-              </h2>
-              <p className="text-xs text-ink-muted">
-                إذا لم تكن تمتلك مفاتيح API خاصة داخل التطبيق، يمكنك تزويد أي نموذج ذكاء اصطناعي خارجي (مثل Claude 3.5 Sonnet أو Gemini 1.5 Pro) بImagesة الصفحة والطلب التفصيلي أدناه ليعود لك بملف الTranslation وتطبيقه بلحظة واحدة!
-              </p>
-            </div>
-
-            <div className="space-y-4">
-              {/* Step 1 */}
-              <div className="space-y-2 border border-hairline p-4 rounded-2xl bg-accent-soft">
-                <h3 className="text-sm font-bold text-ink flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-accent text-white text-[10px] flex items-center justify-center">١</span>
-                  الخطوة الأولى: نسخ باقة الطلب (AI Request Cocktail)
-                </h3>
-                <p className="text-xs text-ink-muted">
-                  انسخ المطالبة التفصيلية الجاهزة وأرسلها للـ AI الخارجي مع Imagesة الصفحة المفتوحة حالياً للCleaning بالذكاء الاصطناعي:
-                </p>
-                <div className="relative">
-                  <textarea
-                    readOnly
-                    value={`You are a professional manga & manhwa typesetting and translation assistant. We need you to segment the speech bubbles of the attached page image and translate them into natural, high-quality, typeset Arabic.
-Please locate speech balloons and output exactly in this JSON format ONLY (No other conversation or thoughts):
-[
-  {
-    "xmin": 150,
-    "ymin": 250,
-    "xmax": 320,
-    "ymax": 380,
-    "type": "bubble",
-    "originalText": "Original English balloon text",
-    "translatedText": "الTranslation العربية البديلة والمحاذاة للوسط"
-  }
-]`}
-                    className="w-full h-28 bg-elevated border border-hairline rounded-xl p-3 text-xs text-ink-muted font-mono resize-none text-left"
-                    dir="ltr"
-                  />
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(`You are a professional manga & manhwa typesetting and translation assistant. We need you to segment the speech bubbles of the attached page image and translate them into natural, high-quality, typeset Arabic.
-Please locate speech balloons and output exactly in this JSON format ONLY (No other conversation or thoughts):
-[
-  {
-    "xmin": 150,
-    "ymin": 250,
-    "xmax": 320,
-    "ymax": 380,
-    "type": "bubble",
-    "originalText": "Original English balloon text",
-    "translatedText": "الTranslation العربية البديلة والمحاذاة للوسط"
-  }
-]`);
-                      swal({
-                        icon: 'success',
-                        title: 'تم نسخ برومبت الكوكتيل!',
-                        text: 'يمكنك الآن لصقه وتزويد كلاود أو جيمناي به بالخارج.',
-                        timer: 1500,
-                        showConfirmButton: false
-                      });
-                    }}
-                    className="absolute bottom-3 left-3 bg-accent hover:brightness-110 text-white text-[10px] font-bold py-1.5 px-3 rounded-lg transition-all"
-                  >
-                    نسخ الطلب (Copy)
-                  </button>
-                </div>
-              </div>
-
-              {/* Step 2 */}
-              <div className="space-y-2 border border-hairline p-4 rounded-2xl bg-accent-soft">
-                <h3 className="text-sm font-bold text-ink flex items-center gap-2">
-                  <span className="w-5 h-5 rounded-full bg-accent text-white text-[10px] flex items-center justify-center">٢</span>
-                  الخطوة الثانية: لصق الاستجابة المسترجعة (Pasted Response JSON)
-                </h3>
-                <p className="text-xs text-ink-muted">
-                  الصق الاستجابة التي صاغها لك الذكاء الاصطناعي الخارجي وسنقوم بتوزيع الTranslation على إحداثيات الصفحة فوراً:
-                </p>
-                <textarea
-                  placeholder="[ ... مصفوفة الـ JSON المسترجعة ... ]"
-                  value={externalAIPasteData}
-                  onChange={(e) => setExternalAIPasteData(e.target.value)}
-                  className="w-full h-32 bg-elevated border border-hairline focus:border-accent rounded-xl p-3 text-xs text-ink outline-none resize-none font-mono text-left"
-                  dir="ltr"
-                />
-              </div>
-            </div>
-
-            <div className="border-t border-hairline pt-4 flex justify-end gap-3 mt-2">
-              <button
-                onClick={() => setShowExternalAIModal(false)}
-                className="bg-elevated hover:bg-ink/10 border border-hairline hover:border-accent/30 text-ink-muted font-bold py-2.5 px-6 rounded-xl text-xs transition-all cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleApplyExternalAICocktail}
-                className="bg-accent hover:brightness-110 text-white font-bold py-2.5 px-7 rounded-xl text-xs transition-all shadow-lg shadow-[0_0_20px_var(--color-accent-soft)] cursor-pointer"
-              >
-                ✓ تطبيق الTranslation الذكي على الصفحة
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Legal Modals */}
+      <Modal open={showPrivacyModal} onClose={() => setShowPrivacyModal(false)} title="Privacy Policy" size="lg">
+        <PrivacyPolicy />
+      </Modal>
+      <Modal open={showTermsModal} onClose={() => setShowTermsModal(false)} title="User Agreement" size="lg">
+        <UserAgreement />
+      </Modal>
     </div>
   );
 }

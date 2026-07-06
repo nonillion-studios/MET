@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Clock, Bell, User, Search, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { IconButton } from './ui';
+import logo from '../assets/logo.jpg';
 
 export function TopBar() {
   const [time, setTime] = useState(new Date());
@@ -35,8 +36,16 @@ export function TopBar() {
 
   return (
     <div className="relative w-full h-14 sm:h-16 bg-surface/70 backdrop-blur-xl border-b border-hairline px-2.5 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-40 sticky top-0">
+      {/* Brand */}
+      <div className={`flex items-center gap-2.5 min-w-0 shrink-0 ${searchOpen ? 'hidden sm:flex' : 'flex'}`}>
+        <img src={logo} alt="MET" className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl object-cover shrink-0 ring-1 ring-hairline" draggable={false} />
+        <span className="hidden md:inline font-display text-sm font-bold text-ink tracking-tight truncate">
+          Manga<span className="text-accent">AI</span>
+        </span>
+      </div>
+
       {/* Search & Utility */}
-      <div className="flex items-center gap-4 min-w-0">
+      <div className="flex items-center gap-4 min-w-0 flex-1 justify-end sm:justify-start">
         {/* Compact icon-only trigger on narrow screens */}
         <IconButton
           onClick={() => setSearchOpen(v => !v)}
@@ -60,7 +69,7 @@ export function TopBar() {
       </div>
 
       {/* Right Side: Theme toggle, Profile & Time */}
-      <div className={`items-center gap-2 sm:gap-6 ${searchOpen ? 'hidden sm:flex' : 'flex'}`}>
+      <div className={`items-center gap-1.5 xs:gap-2 sm:gap-4 md:gap-6 shrink-0 ${searchOpen ? 'hidden sm:flex' : 'flex'}`}>
         {/* Theme toggle */}
         <IconButton
           onClick={toggleTheme}
