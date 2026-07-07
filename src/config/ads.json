@@ -6,7 +6,7 @@
       "enabled": true,
       "title": "Your Ad Here",
       "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
-      "imageUrl": "assets/adssss.png",
+      "imageUrl": "src/assets/adssss.png",
       "linkUrl": "www.facebook.com"
     },
     {
@@ -15,7 +15,7 @@
       "enabled": true,
       "title": "Your Ad Here",
       "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
-      "imageUrl": "assets/adssss.png",
+      "imageUrl": "src/assets/adssss.png",
       "linkUrl": "www.facebook.com"
     },
     {
@@ -24,7 +24,7 @@
       "enabled": true,
       "title": "Your Ad Here",
       "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
-      "imageUrl": "assets/adssss.png",
+      "imageUrl": "src/assets/adssss.png",
       "linkUrl": "www.facebook.com"
     },
     {
@@ -33,7 +33,7 @@
       "enabled": true,
       "title": "Your Ad Here",
       "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
-      "imageUrl": "assets/adssss.png",
+      "imageUrl": "src/assets/adssss.png",
       "linkUrl": "www.facebook.com"
     },
     {
@@ -42,7 +42,7 @@
       "enabled": true,
       "title": "Your Ad Here",
       "subtitle": "Sponsored placement — edit src/config/ads.json to configure",
-      "imageUrl": "assets/adssss.png",
+      "imageUrl": "src/assets/adssss.png",
       "linkUrl": "www.facebook.com"
     }
   ]
