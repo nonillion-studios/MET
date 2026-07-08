@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Cloud, Upload as UploadIcon, File, Link2, RefreshCw, Key, MessageSquare, Download, CheckCircle, Smartphone, Lock, HardDrive, HelpCircle, User, Plus, Trash2 } from 'lucide-react';
+import { Settings, Cloud, Upload as UploadIcon, File, Link2, RefreshCw, Key, MessageSquare, Download, CheckCircle, Smartphone, Lock, HardDrive, HelpCircle, User, Plus, Trash2, ChevronDown } from 'lucide-react';
 import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { swal, swalToast, Swal } from '../lib/swalTheme';
@@ -11,6 +11,16 @@ import { Input, Button, GlassCard } from './ui';
 
 interface CloudStorageProps {
   onBack?: () => void;
+}
+
+function timeAgo(ms: number): string {
+  const seconds = Math.floor((Date.now() - ms) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 export function CloudStorage({ onBack }: CloudStorageProps) {
@@ -39,6 +49,8 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [showUploadPanel, setShowUploadPanel] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -152,6 +164,7 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
       }).filter(Boolean);
       
       setFiles(cloudFiles);
+      setLastSyncedAt(Date.now());
 
       // Async fetch covers
       cloudFiles.forEach(async (f: any) => {
@@ -364,30 +377,33 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
               <Cloud className="text-accent" size={32} />
               Central Cloud Storage
             </h1>
-            <p className="text-ink-muted text-sm mt-1">
-              Connected via GramJS (Telegram) and Google Drive to upload and sync files (up to 2GB).
-            </p>
+            <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2">
+              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${isConnected ? 'bg-success/10 text-success border border-success/30' : 'bg-ink/5 text-ink-muted border border-hairline'}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-success animate-pulse' : 'bg-ink-faint'}`} />
+                {isConnected ? 'Connected via Telegram' : 'Not connected'}
+              </span>
+              {isConnected && (
+                <span className="text-xs text-ink-faint font-mono">
+                  {files.length} file{files.length === 1 ? '' : 's'} · {lastSyncedAt ? `synced ${timeAgo(lastSyncedAt)}` : 'not synced yet'}
+                </span>
+              )}
+            </div>
           </div>
           {isConnected && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => setActiveTab('files')}
-                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'files' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
-              >
-                Uploaded Files
-              </button>
-              <button
-                onClick={() => setActiveTab('chat')}
-                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'chat' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
-              >
-                Discussions
-              </button>
-              <button
-                onClick={() => setActiveTab('config')}
-                className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'config' ? 'bg-accent text-white shadow-lg shadow-accent/25' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
-              >
-                Settings
-              </button>
+            <div className="flex items-center gap-1 bg-ink/5 border border-hairline rounded-full p-1 shrink-0">
+              {([
+                { id: 'files', label: 'Files' },
+                { id: 'chat', label: 'Discussions' },
+                { id: 'config', label: 'Settings' },
+              ] as const).map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`px-4 py-1.5 rounded-full text-sm font-semibold transition-all ${activeTab === t.id ? 'bg-accent text-white shadow-md shadow-accent/25' : 'text-ink-muted hover:text-ink'}`}
+                >
+                  {t.label}
+                </button>
+              ))}
             </div>
           )}
         </div>
@@ -550,15 +566,25 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
 
               {/* Help & Guide Section */}
               <GlassCard className="md:col-span-2 p-6">
-                <h3 className="text-lg font-bold text-ink mb-3 flex items-center gap-2">
+                <h3 className="text-lg font-bold text-ink mb-4 flex items-center gap-2">
                   <HelpCircle className="text-ink-muted" size={18} /> How does client-side cloud storage work?
                 </h3>
-                <ul className="text-sm text-ink-muted space-y-2 list-disc list-inside">
-                  <li><strong>Get your API Keys:</strong> You'll need an <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_ID</code> and <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_HASH</code> from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-accent hover:underline">my.telegram.org</a>.</li>
-                  <li><strong>Security:</strong> The app uses your web browser purely as a client. Your Telegram session is stored encrypted in your browser (localStorage).</li>
-                  <li><strong>Storage channel:</strong> Create a Telegram channel or group and copy its ID (forward a message to a bot like @userinfobot) into the Chat ID field.</li>
-                  <li><strong>JSON metadata:</strong> When you upload a file (like a Photoshop archive or translated chapter), a JSON structure with project details and status is attached so the app can read and display it on the dashboard.</li>
-                </ul>
+                <div className="space-y-4">
+                  {[
+                    { title: 'Get your API keys', desc: <>You'll need an <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_ID</code> and <code className="bg-ink/10 px-1 py-0.5 rounded text-accent">API_HASH</code> from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-accent hover:underline">my.telegram.org</a>.</> },
+                    { title: 'It stays encrypted, on your device', desc: 'The app uses your browser purely as a client. Your Telegram session is stored encrypted in your browser (localStorage) — nothing touches an intermediary server.' },
+                    { title: 'Point it at a storage channel', desc: 'Create a Telegram channel or group and copy its ID (forward a message to a bot like @userinfobot) into the Chat ID field.' },
+                    { title: 'Metadata rides along with each upload', desc: 'When you upload a file (like a Photoshop archive or translated chapter), a JSON structure with project details and status is attached so the app can read and display it on the dashboard.' },
+                  ].map((step, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <span className="w-6 h-6 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
+                      <div>
+                        <p className="text-sm font-semibold text-ink">{step.title}</p>
+                        <p className="text-xs text-ink-muted mt-0.5 leading-relaxed">{step.desc}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </GlassCard>
             </motion.div>
           )}
@@ -571,11 +597,20 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
               exit={{ opacity: 0, y: -10 }}
               className="space-y-6"
             >
-              {/* Upload Dropzone */}
-              <GlassCard className="rounded-2xl p-6">
-                <h3 className="text-lg font-bold text-ink mb-4 flex items-center gap-2">
-                  <UploadIcon className="text-accent" /> Add File to Storage
-                </h3>
+              {/* Upload Dropzone, collapsed by default so the table stays the focal point */}
+              <GlassCard className="rounded-2xl overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowUploadPanel(v => !v)}
+                  className="w-full flex items-center justify-between gap-3 p-5 text-left"
+                >
+                  <h3 className="text-base font-bold text-ink flex items-center gap-2">
+                    <UploadIcon className="text-accent" size={18} /> Add File to Storage
+                  </h3>
+                  <ChevronDown className={`text-ink-faint transition-transform duration-200 ${showUploadPanel ? 'rotate-180' : ''}`} size={18} />
+                </button>
+              {showUploadPanel && (
+                <div className="px-6 pb-6 border-t border-hairline pt-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-3">
                     <Input
@@ -658,6 +693,8 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                 >
                   {isUploading ? 'Uploading to Telegram...' : 'Upload File to Cloud'}
                 </Button>
+                </div>
+              )}
               </GlassCard>
 
               {/* Grid/List Files */}
@@ -690,9 +727,9 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                 </div>
 
                 {isLoading && files.length === 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="space-y-2">
                     {[1,2,3].map(i => (
-                      <div key={i} className="h-48 rounded-xl bg-ink/5 animate-pulse border border-hairline"></div>
+                      <div key={i} className="h-14 rounded-xl bg-ink/5 animate-pulse border border-hairline"></div>
                     ))}
                   </div>
                 ) : files.length === 0 ? (
@@ -702,74 +739,88 @@ export function CloudStorage({ onBack }: CloudStorageProps) {
                      <p className="text-xs text-ink-faint mt-1">Upload the first file to see the magic!</p>
                    </GlassCard>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                    {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.sender.toLowerCase().includes(searchQuery.toLowerCase())).sort((a,b) => {
-                       if (sortOrder === 'oldest') return new Date(a.date).getTime() - new Date(b.date).getTime();
-                       if (sortOrder === 'alphabetical') return a.name.localeCompare(b.name);
-                       return new Date(b.date).getTime() - new Date(a.date).getTime();
-                    }).map((file, idx) => (
-                      <GlassCard key={idx} radius="xl" className="overflow-hidden hover:border-accent/50 transition-colors group relative">
-                        {coverUrls[file.id] ? (
-                           <div className="h-40 w-full bg-ink/10 relative">
-                             <img src={coverUrls[file.id]} alt="Cover" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity blur-up-loading loaded" />
-                             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
-                           </div>
-                        ) : (
-                          <div className="h-40 w-full bg-accent-soft flex flex-col items-center justify-center border-b border-hairline">
-                            {file.coverMsgId ? <span className="text-[10px] text-accent font-mono mb-2 animate-pulse">Loading Cover...</span> : null}
-                            <File size={32} className="text-accent/50" />
-                          </div>
-                        )}
-                        <div className="p-4 relative">
-                          <h4 className="font-bold text-ink text-base mb-1 truncate">{file.name}</h4>
-                          <span className="inline-block px-2 py-0.5 rounded bg-accent-soft border border-accent/30 text-[10px] text-accent font-bold mb-3">{file.status}</span>
+                  <GlassCard className="overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-hairline text-left text-[11px] uppercase tracking-wide text-ink-faint">
+                            <th className="px-4 py-3 font-semibold">File</th>
+                            <th className="px-4 py-3 font-semibold">Status</th>
+                            <th className="px-4 py-3 font-semibold">Uploaded By</th>
+                            <th className="px-4 py-3 font-semibold">Date</th>
+                            <th className="px-4 py-3 font-semibold text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {files.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.sender.toLowerCase().includes(searchQuery.toLowerCase())).sort((a,b) => {
+                             if (sortOrder === 'oldest') return new Date(a.date).getTime() - new Date(b.date).getTime();
+                             if (sortOrder === 'alphabetical') return a.name.localeCompare(b.name);
+                             return new Date(b.date).getTime() - new Date(a.date).getTime();
+                          }).map((file, idx) => (
+                            <tr key={idx} className="border-b border-hairline last:border-0 hover:bg-ink/[0.03] transition-colors">
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-lg overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
+                                    {coverUrls[file.id] ? (
+                                      <img src={coverUrls[file.id]} alt="Cover" className="w-full h-full object-cover" />
+                                    ) : (
+                                      <File size={16} className="text-accent/60" />
+                                    )}
+                                  </div>
+                                  <span className="font-semibold text-ink truncate max-w-[220px]">{file.name}</span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="inline-block px-2 py-0.5 rounded bg-accent-soft border border-accent/30 text-[10px] text-accent font-bold whitespace-nowrap">{file.status}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-5 h-5 rounded-full overflow-hidden bg-accent-soft border border-accent/30 shrink-0">
+                                     {file.avatar ? <img src={file.avatar} alt="Sender" className="w-full h-full object-cover" /> : <User size={10} className="m-auto mt-1 text-accent" />}
+                                  </div>
+                                  <span className="text-xs text-ink-muted truncate max-w-[120px]">{file.sender || 'Anonymous user'}</span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 text-ink-faint font-mono text-[11px] whitespace-nowrap">{new Date(file.date).toLocaleDateString()}</td>
+                              <td className="px-4 py-3 text-right">
+                                <button
+                                  onClick={async () => {
+                                     try {
+                                       swal({ title: 'Downloading from Cloud...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+                                       const buffer = await client?.downloadMedia(file.msg);
+                                       if (buffer) {
+                                         const blob = new Blob([buffer]);
+                                         const url = window.URL.createObjectURL(blob);
+                                         const a = document.createElement('a');
+                                         a.style.display = 'none';
+                                         a.href = url;
 
-                          {/* Sender Info for File */}
-                          <div className="flex items-center gap-2 mb-3 bg-ink/5 p-2 rounded-lg border border-hairline">
-                            <div className="w-6 h-6 rounded-full overflow-hidden bg-accent-soft border border-accent/30 shrink-0">
-                               {file.avatar ? <img src={file.avatar} alt="Sender" className="w-full h-full object-cover" /> : <User size={12} className="m-auto mt-1 text-accent" />}
-                            </div>
-                            <span className="text-xs text-ink-muted truncate">{file.sender || 'Anonymous user'}</span>
-                          </div>
+                                         // The uploaded file already had `.zip` usually, but we fallback gracefully
+                                         const ext = (file.msg as any)?.file?.name?.split('.').pop() || 'zip';
+                                         a.download = `${file.name || 'project'}.${ext}`;
 
-                          <div className="flex justify-between items-center text-xs text-ink-muted font-mono border-t border-hairline pt-2 mt-2">
-                             <span>{new Date(file.date).toLocaleDateString()}</span>
-                             <button
-                               onClick={async () => {
-                                  try {
-                                    swal({ title: 'Downloading from Cloud...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-                                    const buffer = await client?.downloadMedia(file.msg);
-                                    if (buffer) {
-                                      const blob = new Blob([buffer]);
-                                      const url = window.URL.createObjectURL(blob);
-                                      const a = document.createElement('a');
-                                      a.style.display = 'none';
-                                      a.href = url;
-
-                                      // The uploaded file already had `.zip` usually, but we fallback gracefully
-                                      const ext = (file.msg as any)?.file?.name?.split('.').pop() || 'zip';
-                                      a.download = `${file.name || 'project'}.${ext}`;
-
-                                      document.body.appendChild(a);
-                                      a.click();
-                                      window.URL.revokeObjectURL(url);
-                                      Swal.close();
-                                    } else {
-                                      swal({ title: 'Error', text: 'Empty file buffer received', icon: 'error' });
-                                    }
-                                  } catch (e: any) {
-                                    swal({ title: 'Error', text: e?.message || 'Download failed', icon: 'error' });
-                                  }
-                               }}
-                               className="text-accent hover:text-ink flex items-center gap-1 font-sans font-bold bg-accent-soft hover:opacity-80 px-2 py-1 rounded transition-colors block"
-                             >
-                                <Download size={14} /> Download
-                             </button>
-                          </div>
-                        </div>
-                      </GlassCard>
-                    ))}
-                  </div>
+                                         document.body.appendChild(a);
+                                         a.click();
+                                         window.URL.revokeObjectURL(url);
+                                         Swal.close();
+                                       } else {
+                                         swal({ title: 'Error', text: 'Empty file buffer received', icon: 'error' });
+                                       }
+                                     } catch (e: any) {
+                                       swal({ title: 'Error', text: e?.message || 'Download failed', icon: 'error' });
+                                     }
+                                  }}
+                                  className="text-accent hover:text-ink inline-flex items-center gap-1 font-sans font-bold bg-accent-soft hover:opacity-80 px-2.5 py-1.5 rounded-lg transition-colors"
+                                >
+                                   <Download size={14} /> Download
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </GlassCard>
                 )}
               </div>
             </motion.div>

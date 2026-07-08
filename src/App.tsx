@@ -8,16 +8,17 @@ import { MangaSeries, Volume, Chapter, Workspace } from './types';
 import { swal, swalToast } from './lib/swalTheme';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import { TopBar } from './components/TopBar';
-import { FloatingMusicPlayer } from './components/FloatingMusicPlayer';
 import { SplashScreen } from './components/SplashScreen';
 import { SettingsPanel } from './components/SettingsPanel';
 import { BottomTabBar } from './components/BottomTabBar';
 import { SidebarRail } from './components/SidebarRail';
 import { CloudStorage } from './components/CloudStorage';
 import { AdSlot } from './components/AdSlot';
+import { AutomationPanel } from './components/AutomationPanel';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
+import { useAutomationEngine } from './lib/automationEngine';
 import type { NavTabId } from './config/navTabs';
 
 const genId = (prefix: string) => `${prefix}-${Math.random().toString(36).substr(2, 9)}`;
@@ -34,6 +35,7 @@ function readImageFile(file: File, onLoaded: (dataUrl: string) => void) {
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
+  const automationEngine = useAutomationEngine();
 
   // Workspaces > Series > Volumes > Chapters
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -340,7 +342,6 @@ export default function App() {
       </div>
 
       <TopBar />
-      <FloatingMusicPlayer />
 
       <SidebarRail activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />
 
@@ -358,11 +359,14 @@ export default function App() {
           )}
 
           {activeNavigationTab === 'scheduler' && (
-            <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
-              <Sparkles className="text-accent" size={28} />
-              <h2 className="text-lg font-display font-semibold text-ink">Automation — Coming Soon</h2>
-              <p className="text-sm text-ink-muted max-w-md">Scheduled scans, batch translation runs, and recurring pipelines will land here in a future update.</p>
-            </GlassCard>
+            <AutomationPanel
+              automations={automationEngine.automations}
+              createAutomation={automationEngine.createAutomation}
+              updateAutomation={automationEngine.updateAutomation}
+              deleteAutomation={automationEngine.deleteAutomation}
+              toggleAutomation={automationEngine.toggleAutomation}
+              runNow={automationEngine.runNow}
+            />
           )}
 
           {activeNavigationTab === 'library' && (

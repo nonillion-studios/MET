@@ -35,7 +35,7 @@ export function TopBar() {
   }, []);
 
   return (
-    <div className="liquid-glass-bar relative w-full h-14 sm:h-16 rounded-b-[22px] lg:rounded-none border border-hairline border-t-0 lg:border-x-0 px-2.5 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-40 sticky top-0">
+    <div className="liquid-glass-bar w-full h-14 sm:h-16 rounded-b-[22px] lg:rounded-none border border-hairline border-t-0 lg:border-x-0 px-2.5 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-40 sticky top-0">
       {/* Brand */}
       <div className={`flex items-center gap-2.5 min-w-0 shrink-0 ${searchOpen ? 'hidden sm:flex' : 'flex'}`}>
         <img
@@ -45,7 +45,7 @@ export function TopBar() {
           draggable={false}
         />
         <span className="hidden md:inline font-display text-sm font-bold text-ink tracking-tight truncate">
-          Manga<span className="text-accent">AI</span>
+          Manga<span className="text-accent">Editing Tool</span>
         </span>
       </div>
 

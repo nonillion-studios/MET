@@ -83,7 +83,6 @@
   /* iOS-style "Liquid Glass" tab bar material: brighter specular top edge and
      a soft traveling sheen, tuned for a floating pill nav rather than a modal. */
   .liquid-glass-nav {
-    position: relative;
     background:
       linear-gradient(180deg, color-mix(in srgb, white 12%, transparent), color-mix(in srgb, white 3%, transparent) 40%, color-mix(in srgb, black 15%, transparent)),
       color-mix(in srgb, var(--color-surface) 65%, transparent);
@@ -109,7 +108,6 @@
      and other full-width chrome. Same specular language as .liquid-glass-nav
      but flattened for a bar rather than a floating pill. */
   .liquid-glass-bar {
-    position: relative;
     background:
       linear-gradient(180deg, color-mix(in srgb, white 12%, transparent), color-mix(in srgb, white 3%, transparent) 45%, color-mix(in srgb, black 12%, transparent)),
       color-mix(in srgb, var(--color-surface) 62%, transparent);
