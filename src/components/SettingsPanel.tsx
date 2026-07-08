@@ -1,9 +1,12 @@
-import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText } from 'lucide-react';
+import { useState } from 'react';
+import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, User } from 'lucide-react';
 import { clear } from 'idb-keyval';
 import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
-import { GlassCard, Button } from './ui';
+import { GlassCard, Button, Input } from './ui';
+import { AvatarPicker } from './AvatarPicker';
 import { AdSlot } from './AdSlot';
-import { swal } from '../lib/swalTheme';
+import { swal, swalToast } from '../lib/swalTheme';
+import { getProfile, saveProfile } from '../lib/profile';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -20,6 +23,13 @@ const APP_VERSION = '0.1.0';
 
 export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps) {
   const { mode, setMode } = useTheme();
+  const [profile, setProfile] = useState(getProfile());
+
+  const updateProfile = (updates: Partial<ReturnType<typeof getProfile>>) => {
+    const next = { ...profile, ...updates };
+    setProfile(next);
+    saveProfile(next);
+  };
 
   const handleClearData = async () => {
     const result = await swal({
@@ -38,6 +48,27 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
 
   return (
     <div className="flex flex-col gap-6">
+      <GlassCard className="p-6 space-y-4">
+        <h3 className="text-base font-semibold text-ink font-display flex items-center gap-2">
+          <User size={16} className="text-accent" /> Profile
+        </h3>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold">Your Name</label>
+          <Input placeholder="e.g. Alex" value={profile.name} onChange={(e) => updateProfile({ name: e.target.value })} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold">Team Name</label>
+          <Input placeholder="e.g. Midnight Scans" value={profile.teamName} onChange={(e) => updateProfile({ teamName: e.target.value })} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold block">Avatar</label>
+          <AvatarPicker
+            value={profile.avatar}
+            onChange={(avatar) => { updateProfile({ avatar }); swalToast({ icon: 'success', title: 'Avatar updated', timer: 1800 }); }}
+          />
+        </div>
+      </GlassCard>
+
       <GlassCard className="p-6 space-y-4">
         <h3 className="text-base font-semibold text-ink font-display">Appearance</h3>
         <div className="grid grid-cols-3 gap-2">

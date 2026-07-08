@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get, set } from 'idb-keyval';
-import type { Automation, AutomationAction, AutomationTrigger } from '../types';
+import type { Automation, AutomationAction, AutomationTrigger, Workspace } from '../types';
 import { swalToast } from './swalTheme';
+import { genId } from './id';
+import { getProfile } from './profile';
+import type { CloudClient } from './cloudClient';
+import logo from '../assets/logo.jpg';
 
 const STORAGE_KEY = 'automations';
 const CHECK_INTERVAL_MS = 30_000;
 
-const genId = () => `automation-${Math.random().toString(36).substr(2, 9)}`;
+export function requestNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
+  if (typeof Notification === 'undefined') return Promise.resolve('unsupported');
+  return Notification.requestPermission();
+}
 
-function describeAction(action: AutomationAction): { title: string; text: string } {
-  switch (action.type) {
-    case 'reminder':
-      return { title: 'Reminder', text: action.message };
-    case 'staleChapterCheck':
-      return { title: 'Stale Chapter Check', text: `Take a look at chapters that haven't been touched in ${action.days}+ days.` };
-    case 'cloudBackupReminder':
-      return { title: 'Cloud Backup Reminder', text: 'Consider backing up your workspaces to Cloud Storage.' };
+function notify(title: string, text: string) {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try {
+      new Notification(title, { body: text, icon: logo });
+      return;
+    } catch (e) {
+      console.error(e);
+    }
   }
+  swalToast({ icon: 'info', title, text });
 }
 
 function computeNextRunAt(trigger: AutomationTrigger, from: number): string | null {
@@ -24,11 +32,15 @@ function computeNextRunAt(trigger: AutomationTrigger, from: number): string | nu
   return null; // 'onOpen' automations only re-arm on the next app session
 }
 
-export function useAutomationEngine() {
+export function useAutomationEngine(cloudClient: CloudClient, workspaces: Workspace[]) {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loaded, setLoaded] = useState(false);
   const automationsRef = useRef(automations);
   automationsRef.current = automations;
+  const workspacesRef = useRef(workspaces);
+  workspacesRef.current = workspaces;
+  const cloudClientRef = useRef(cloudClient);
+  cloudClientRef.current = cloudClient;
 
   useEffect(() => {
     get(STORAGE_KEY).then((saved) => {
@@ -56,19 +68,44 @@ export function useAutomationEngine() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
-  const runAutomation = useCallback((id: string) => {
-    setAutomations(prev => prev.map(a => {
-      if (a.id !== id) return a;
-      const { title, text } = describeAction(a.action);
-      swalToast({ icon: 'info', title, text });
-      const now = Date.now();
-      return {
-        ...a,
-        lastRunAt: new Date(now).toISOString(),
-        nextRunAt: a.enabled ? computeNextRunAt(a.trigger, now) : null,
-      };
-    }));
+  const executeAction = useCallback((name: string, action: AutomationAction) => {
+    switch (action.type) {
+      case 'reminder':
+        notify('Reminder', action.message);
+        return;
+      case 'staleChapterCheck':
+        notify('Stale Chapter Check', `Take a look at chapters that haven't been touched in ${action.days}+ days.`);
+        return;
+      case 'cloudBackup': {
+        const workspace = workspacesRef.current.find(w => w.id === action.workspaceId);
+        const cc = cloudClientRef.current;
+        if (!workspace) {
+          swalToast({ icon: 'error', title: 'Automation skipped', text: `"${name}" couldn't find its workspace — it may have been deleted.` });
+          return;
+        }
+        if (!cc.isConnected) {
+          swalToast({ icon: 'error', title: 'Automation skipped', text: `Connect Cloud Storage to let "${name}" back up "${workspace.name}".` });
+          return;
+        }
+        cc.uploadWorkspaceBackup(workspace, { notes: `Automated backup via "${name}"`, tags: ['auto-backup'], profile: getProfile() })
+          .then(() => notify('Cloud Backup', `"${workspace.name}" backed up to Cloud Storage.`))
+          .catch(() => {});
+        return;
+      }
+    }
   }, []);
+
+  const runAutomation = useCallback((id: string) => {
+    const automation = automationsRef.current.find(a => a.id === id);
+    if (!automation) return;
+    const now = Date.now();
+    setAutomations(prev => prev.map(a => a.id === id ? {
+      ...a,
+      lastRunAt: new Date(now).toISOString(),
+      nextRunAt: a.enabled ? computeNextRunAt(a.trigger, now) : null,
+    } : a));
+    executeAction(automation.name, automation.action);
+  }, [executeAction]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -88,7 +125,7 @@ export function useAutomationEngine() {
   const createAutomation = useCallback((input: { name: string; description: string; trigger: AutomationTrigger; action: AutomationAction }) => {
     const now = Date.now();
     const automation: Automation = {
-      id: genId(),
+      id: genId('automation'),
       name: input.name,
       description: input.description,
       trigger: input.trigger,

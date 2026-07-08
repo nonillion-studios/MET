@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Clock, Bell, User, Search, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { IconButton } from './ui';
+import { getProfile } from '../lib/profile';
 import logo from '../assets/logo.jpg';
 
 export function TopBar() {
   const [time, setTime] = useState(new Date());
   const [searchOpen, setSearchOpen] = useState(false);
-  const [profile, setProfile] = useState<{name: string, avatar: string}>({ name: '', avatar: '' });
+  const [profile, setProfile] = useState(getProfile());
   const { resolvedTheme, toggleTheme } = useTheme();
 
   useEffect(() => {
@@ -16,20 +17,7 @@ export function TopBar() {
   }, []);
 
   useEffect(() => {
-    try {
-      const p = JSON.parse(localStorage.getItem('team_profile') || '{}');
-      if (p.name || p.avatar) {
-        setProfile({ name: p.name || 'Anonymous User', avatar: p.avatar || '' });
-      }
-    } catch {}
-    
-    // Listen to changes from localstorage
-    const handleStorage = () => {
-      try {
-        const p = JSON.parse(localStorage.getItem('team_profile') || '{}');
-        setProfile({ name: p.name || 'User', avatar: p.avatar || '' });
-      } catch {}
-    };
+    const handleStorage = () => setProfile(getProfile());
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);

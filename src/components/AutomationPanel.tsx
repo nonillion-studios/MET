@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import { Plus, Trash2, Play, Pencil, Zap, Clock, Bell, Cloud as CloudIcon, AlarmClock } from 'lucide-react';
-import type { Automation, AutomationAction, AutomationTrigger } from '../types';
+import { Plus, Trash2, Play, Pencil, Zap, Clock, Bell, Cloud as CloudIcon, AlarmClock, BellRing } from 'lucide-react';
+import type { Automation, AutomationAction, AutomationTrigger, Workspace } from '../types';
 import { Modal, Button, Input, Textarea, GlassCard, Switch } from './ui';
 import { AdSlot } from './AdSlot';
 import { swal } from '../lib/swalTheme';
+import { requestNotificationPermission } from '../lib/automationEngine';
 
 interface AutomationPanelProps {
   automations: Automation[];
+  workspaces: Workspace[];
   createAutomation: (input: { name: string; description: string; trigger: AutomationTrigger; action: AutomationAction }) => void;
   updateAutomation: (id: string, updates: { name: string; description: string; trigger: AutomationTrigger; action: AutomationAction }) => void;
   deleteAutomation: (id: string) => void;
@@ -23,7 +25,7 @@ const INTERVAL_PRESETS = [
 const ACTION_TYPES: { type: AutomationAction['type']; label: string; icon: typeof Bell }[] = [
   { type: 'reminder', label: 'Reminder', icon: Bell },
   { type: 'staleChapterCheck', label: 'Stale Chapter Check', icon: AlarmClock },
-  { type: 'cloudBackupReminder', label: 'Cloud Backup Reminder', icon: CloudIcon },
+  { type: 'cloudBackup', label: 'Cloud Backup', icon: CloudIcon },
 ];
 
 function describeTrigger(trigger: AutomationTrigger): string {
@@ -32,11 +34,14 @@ function describeTrigger(trigger: AutomationTrigger): string {
   return preset ? preset.label : `Every ${Math.round(trigger.everyMs / 60000)}m`;
 }
 
-function describeAction(action: AutomationAction): string {
+function describeAction(action: AutomationAction, workspaces: Workspace[]): string {
   switch (action.type) {
     case 'reminder': return action.message ? `Remind: ${action.message}` : 'Reminder';
     case 'staleChapterCheck': return `Stale check (${action.days}d)`;
-    case 'cloudBackupReminder': return 'Cloud backup reminder';
+    case 'cloudBackup': {
+      const ws = workspaces.find(w => w.id === action.workspaceId);
+      return `Back up "${ws ? ws.name : 'deleted workspace'}"`;
+    }
   }
 }
 
@@ -53,26 +58,31 @@ interface FormState {
   actionType: AutomationAction['type'];
   reminderMessage: string;
   staleDays: number;
+  workspaceId: string;
 }
 
-const DEFAULT_FORM: FormState = {
-  name: '',
-  description: '',
-  triggerType: 'interval',
-  everyMs: INTERVAL_PRESETS[1].ms,
-  actionType: 'reminder',
-  reminderMessage: '',
-  staleDays: 14,
-};
+function defaultForm(workspaces: Workspace[]): FormState {
+  return {
+    name: '',
+    description: '',
+    triggerType: 'interval',
+    everyMs: INTERVAL_PRESETS[1].ms,
+    actionType: 'reminder',
+    reminderMessage: '',
+    staleDays: 14,
+    workspaceId: workspaces[0]?.id || '',
+  };
+}
 
-export function AutomationPanel({ automations, createAutomation, updateAutomation, deleteAutomation, toggleAutomation, runNow }: AutomationPanelProps) {
+export function AutomationPanel({ automations, workspaces, createAutomation, updateAutomation, deleteAutomation, toggleAutomation, runNow }: AutomationPanelProps) {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+  const [form, setForm] = useState<FormState>(() => defaultForm(workspaces));
+  const [notifPermission, setNotifPermission] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported' as const);
 
   const openCreate = () => {
     setEditingId(null);
-    setForm(DEFAULT_FORM);
+    setForm(defaultForm(workspaces));
     setShowModal(true);
   };
 
@@ -86,13 +96,28 @@ export function AutomationPanel({ automations, createAutomation, updateAutomatio
       actionType: a.action.type,
       reminderMessage: a.action.type === 'reminder' ? a.action.message : '',
       staleDays: a.action.type === 'staleChapterCheck' ? a.action.days : 14,
+      workspaceId: a.action.type === 'cloudBackup' ? a.action.workspaceId : (workspaces[0]?.id || ''),
     });
     setShowModal(true);
+  };
+
+  const handleEnableNotifications = async () => {
+    const result = await requestNotificationPermission();
+    if (result === 'unsupported') {
+      swal({ icon: 'info', title: 'Not Supported', text: "This browser doesn't support notifications — automations will still show in-app toasts." });
+      return;
+    }
+    setNotifPermission(result as NotificationPermission);
+    if (result === 'granted') swal({ icon: 'success', title: 'Notifications Enabled', text: 'Automations can now show real browser notifications.' });
   };
 
   const handleSave = () => {
     if (!form.name.trim()) {
       swal({ icon: 'error', title: 'Name Required', text: 'Please give this automation a name.' });
+      return;
+    }
+    if (form.actionType === 'cloudBackup' && !form.workspaceId) {
+      swal({ icon: 'error', title: 'Workspace Required', text: 'Create a workspace first, then pick it here.' });
       return;
     }
     const trigger: AutomationTrigger = form.triggerType === 'onOpen'
@@ -101,7 +126,7 @@ export function AutomationPanel({ automations, createAutomation, updateAutomatio
     const action: AutomationAction =
       form.actionType === 'reminder' ? { type: 'reminder', message: form.reminderMessage.trim() || 'Take a look at your library.' } :
       form.actionType === 'staleChapterCheck' ? { type: 'staleChapterCheck', days: form.staleDays } :
-      { type: 'cloudBackupReminder' };
+      { type: 'cloudBackup', workspaceId: form.workspaceId };
 
     const payload = { name: form.name.trim(), description: form.description.trim(), trigger, action };
     if (editingId) updateAutomation(editingId, payload);
@@ -125,14 +150,21 @@ export function AutomationPanel({ automations, createAutomation, updateAutomatio
     <div className="space-y-5">
       <AdSlot placement="scheduler-top" />
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-lg font-display font-semibold text-ink flex items-center gap-2">
             <Zap className="text-accent" size={20} /> Automation
           </h2>
-          <p className="text-xs text-ink-muted mt-0.5">Local rules that run while this tab is open — reminders, checks, and backup nudges.</p>
+          <p className="text-xs text-ink-muted mt-0.5">Local rules that run while this tab is open — reminders, checks, and real cloud backups.</p>
         </div>
-        <Button size="sm" onClick={openCreate}><Plus size={14} /> New Automation</Button>
+        <div className="flex items-center gap-2">
+          {notifPermission !== 'granted' && (
+            <Button variant="secondary" size="sm" onClick={handleEnableNotifications}>
+              <BellRing size={14} /> Enable Notifications
+            </Button>
+          )}
+          <Button size="sm" onClick={openCreate}><Plus size={14} /> New Automation</Button>
+        </div>
       </div>
 
       {automations.length === 0 ? (
@@ -164,7 +196,7 @@ export function AutomationPanel({ automations, createAutomation, updateAutomatio
                       {a.description && <p className="text-[11px] text-ink-faint truncate max-w-[220px]">{a.description}</p>}
                     </td>
                     <td className="px-4 py-3 text-ink-muted whitespace-nowrap">{describeTrigger(a.trigger)}</td>
-                    <td className="px-4 py-3 text-ink-muted whitespace-nowrap">{describeAction(a.action)}</td>
+                    <td className="px-4 py-3 text-ink-muted whitespace-nowrap">{describeAction(a.action, workspaces)}</td>
                     <td className="px-4 py-3">
                       <Switch checked={a.enabled} onChange={() => toggleAutomation(a.id)} aria-label={`Toggle ${a.name}`} />
                     </td>
@@ -264,6 +296,19 @@ export function AutomationPanel({ automations, createAutomation, updateAutomatio
                 />
                 <span className="text-xs text-ink-muted">days of inactivity</span>
               </div>
+            )}
+            {form.actionType === 'cloudBackup' && (
+              workspaces.length === 0 ? (
+                <p className="text-xs text-ink-faint">Create a workspace in Library first to back it up.</p>
+              ) : (
+                <select
+                  value={form.workspaceId}
+                  onChange={(e) => setForm(f => ({ ...f, workspaceId: e.target.value }))}
+                  className="w-full bg-ink/5 border border-hairline rounded-xl px-4 py-2.5 text-ink text-sm outline-none focus:border-accent"
+                >
+                  {workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                </select>
+              )
             )}
           </div>
         </div>

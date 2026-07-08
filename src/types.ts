@@ -38,6 +38,12 @@ export interface Workspace {
   mangas: MangaSeries[];
 }
 
+export interface Profile {
+  name: string;
+  teamName: string;
+  avatar: string;
+}
+
 export type AutomationTrigger =
   | { type: 'interval'; everyMs: number }
   | { type: 'onOpen' };
@@ -45,7 +51,7 @@ export type AutomationTrigger =
 export type AutomationAction =
   | { type: 'reminder'; message: string }
   | { type: 'staleChapterCheck'; days: number }
-  | { type: 'cloudBackupReminder' };
+  | { type: 'cloudBackup'; workspaceId: string };
 
 export interface Automation {
   id: string;

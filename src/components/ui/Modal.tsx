@@ -12,6 +12,8 @@ interface ModalProps {
   footer?: ReactNode;
   size?: 'sm' | 'md' | 'lg';
   className?: string;
+  /** When false, hides the close button and ignores backdrop clicks — for modals that must run to completion. */
+  dismissible?: boolean;
 }
 
 const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
@@ -20,13 +22,13 @@ const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
   lg: 'max-w-2xl',
 };
 
-export function Modal({ open, onClose, title, children, footer, size = 'md', className }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, size = 'md', className, dismissible = true }: ModalProps) {
   if (!open) return null;
 
   return (
     <div
       className="animate-modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
-      onClick={onClose}
+      onClick={dismissible ? onClose : undefined}
     >
       <GlassCard
         variant="heavy"
@@ -37,9 +39,11 @@ export function Modal({ open, onClose, title, children, footer, size = 'md', cla
         {title && (
           <div className="flex items-center justify-between px-6 py-4 border-b border-hairline shrink-0">
             <h2 className="font-display text-lg font-semibold text-ink">{title}</h2>
-            <IconButton aria-label="Close" size="sm" onClick={onClose}>
-              <X size={16} />
-            </IconButton>
+            {dismissible && (
+              <IconButton aria-label="Close" size="sm" onClick={onClose}>
+                <X size={16} />
+              </IconButton>
+            )}
           </div>
         )}
         <div className="px-6 py-4 overflow-y-auto">{children}</div>
