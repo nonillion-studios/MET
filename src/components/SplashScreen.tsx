@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import splashVideo from '../assets/splash-intro.mp4';
+import splashVideoWebm from '../assets/splash-intro.webm';
+import splashVideoMp4 from '../assets/splash-intro.mp4';
 
 export function SplashScreen({ onFinish }: { onFinish: () => void }) {
   const [leaving, setLeaving] = useState(false);
@@ -24,13 +25,15 @@ export function SplashScreen({ onFinish }: { onFinish: () => void }) {
         }`}
       >
         <video
-          src={splashVideo}
           autoPlay
           muted
           playsInline
           onEnded={finish}
           className="absolute inset-x-0 top-0 w-full h-[200%] object-cover"
-        />
+        >
+          <source src={splashVideoWebm} type="video/webm" />
+          <source src={splashVideoMp4} type="video/mp4" />
+        </video>
       </div>
 
       {/* Bottom half of video, slides down and off-screen */}
@@ -40,12 +43,14 @@ export function SplashScreen({ onFinish }: { onFinish: () => void }) {
         }`}
       >
         <video
-          src={splashVideo}
           autoPlay
           muted
           playsInline
           className="absolute inset-x-0 bottom-0 w-full h-[200%] object-cover"
-        />
+        >
+          <source src={splashVideoWebm} type="video/webm" />
+          <source src={splashVideoMp4} type="video/mp4" />
+        </video>
       </div>
     </div>
   );
