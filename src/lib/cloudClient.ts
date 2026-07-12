@@ -442,6 +442,66 @@ export function useCloudClient() {
     }
   };
 
+  const uploadTaskAttachment = async (channelId: string, file: File, onProgress?: (pct: number) => void): Promise<{ msgId: number; name: string; size: number } | null> => {
+    if (!client || !channelId) {
+      swal({ title: 'Error', text: 'Connect Telegram and make sure the team has a channel set first', icon: 'error' });
+      return null;
+    }
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBuffer: any = Buffer.from(arrayBuffer);
+      fileBuffer.name = file.name;
+      const msg = await client.sendFile(channelId, {
+        file: fileBuffer,
+        caption: file.name,
+        forceDocument: true,
+        fileSize: file.size,
+        progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
+      });
+      if (!msg || !msg.id) return null;
+      return { msgId: msg.id, name: file.name, size: file.size };
+    } catch (err: any) {
+      console.error(err);
+      swal({ title: 'Upload Error', text: err.message || 'An error occurred during upload', icon: 'error' });
+      return null;
+    }
+  };
+
+  const downloadTaskAttachment = async (channelId: string, msgId: number, fileName: string, onProgress?: (pct: number) => void): Promise<void> => {
+    if (!client || !channelId) {
+      swal({ title: 'Error', text: 'Connect Telegram first', icon: 'error' });
+      return;
+    }
+    try {
+      const msgs = await client.getMessages(channelId, { ids: [msgId] });
+      const msg = msgs[0];
+      if (!msg) {
+        swal({ title: 'Error', text: 'Attachment message not found', icon: 'error' });
+        return;
+      }
+      const buffer = await client.downloadMedia(msg, {
+        progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
+      } as any);
+      if (!buffer) {
+        swal({ title: 'Error', text: 'Empty file buffer received', icon: 'error' });
+        return;
+      }
+      const blob = new Blob([buffer]);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(err);
+      swal({ title: 'Error', text: err.message || 'Download failed', icon: 'error' });
+    }
+  };
+
   const saveConfig = () => {
     if (chatId) {
       localStorage.setItem('tg_chat_id', chatId);
@@ -490,6 +550,9 @@ export function useCloudClient() {
     downloadTotalBytes,
     downloadCloudFile,
     restoreWorkspaceFromCloud,
+
+    uploadTaskAttachment,
+    downloadTaskAttachment,
 
     formatSize,
   };

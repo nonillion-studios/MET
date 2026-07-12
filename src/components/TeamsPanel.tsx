@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus } from 'lucide-react';
+import { Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus, Send, ListTodo, Paperclip, CalendarClock, Trash2 } from 'lucide-react';
 import { GlassCard, Button, Input } from './ui';
 import { swal, swalToast } from '../lib/swalTheme';
 import { readAvatarFile } from '../lib/image';
@@ -10,8 +10,12 @@ import {
   inviteMember, acceptInvite, declineInvite, listTeamMembers,
   promoteToLeader, demoteToMember, removeMember,
 } from '../lib/teams';
+import {
+  Task, createTask, listTeamTasks, listMyTasks, markTaskDone, deleteTask, attachFileToTask, setTeamTelegramChannel,
+} from '../lib/tasks';
+import type { CloudClient } from '../lib/cloudClient';
 
-export function TeamsPanel() {
+export function TeamsPanel({ cc }: { cc: CloudClient }) {
   const { session, isAdmin } = useTeamAuth();
 
   return (
@@ -23,7 +27,7 @@ export function TeamsPanel() {
         <p className="text-xs text-ink-muted mt-0.5">Signed in as {session?.user.email}</p>
       </div>
 
-      {isAdmin ? <AdminTeamSection /> : <MemberTeamSection />}
+      {isAdmin ? <AdminTeamSection cc={cc} /> : <MemberTeamSection cc={cc} />}
     </div>
   );
 }
@@ -40,6 +44,17 @@ function TeamRoster({
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviting, setInviting] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [channelId, setChannelId] = useState(team.telegram_channel_id || '');
+  const [savingChannel, setSavingChannel] = useState(false);
+
+  const handleSaveChannel = async () => {
+    setSavingChannel(true);
+    const error = await setTeamTelegramChannel(team.id, channelId.trim());
+    setSavingChannel(false);
+    if (error) { swal({ icon: 'error', title: 'Could not save channel', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Telegram channel saved' });
+    onChanged();
+  };
 
   const handleInvite = async () => {
     if (!inviteEmail.trim()) {
@@ -109,12 +124,21 @@ function TeamRoster({
 
       <div className="p-6 space-y-4">
         {canManageMembers && (
-          <div className="flex gap-2">
-            <Input placeholder="member@email.com" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className="flex-1" />
-            <Button onClick={handleInvite} disabled={inviting}>
-              <Mail size={14} /> Invite
-            </Button>
-          </div>
+          <>
+            <div className="flex gap-2">
+              <Input placeholder="member@email.com" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className="flex-1" />
+              <Button onClick={handleInvite} disabled={inviting}>
+                <Mail size={14} /> Invite
+              </Button>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-accent font-semibold flex items-center gap-1"><Send size={12} /> Telegram Channel (for task attachments)</label>
+              <div className="flex gap-2">
+                <Input placeholder="@teamchannel or -100..." value={channelId} onChange={(e) => setChannelId(e.target.value)} className="flex-1" />
+                <Button variant="secondary" onClick={handleSaveChannel} disabled={savingChannel}>Save</Button>
+              </div>
+            </div>
+          </>
         )}
 
         <div className="space-y-2">
@@ -162,7 +186,7 @@ function TeamRoster({
   );
 }
 
-function AdminTeamSection() {
+function AdminTeamSection({ cc }: { cc: CloudClient }) {
   const [loading, setLoading] = useState(true);
   const [team, setTeam] = useState<Team | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -234,10 +258,15 @@ function AdminTeamSection() {
     );
   }
 
-  return <TeamRoster team={team} members={members} isOwner canManageMembers onChanged={refresh} />;
+  return (
+    <div className="space-y-5">
+      <TeamRoster team={team} members={members} isOwner canManageMembers onChanged={refresh} />
+      <TasksSection team={team} members={members} canManageTasks cc={cc} />
+    </div>
+  );
 }
 
-function MemberTeamSection() {
+function MemberTeamSection({ cc }: { cc: CloudClient }) {
   const [loading, setLoading] = useState(true);
   const [membership, setMembership] = useState<(TeamMember & { team: Team }) | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -285,13 +314,16 @@ function MemberTeamSection() {
 
   if (membership) {
     return (
-      <TeamRoster
-        team={membership.team}
-        members={members}
-        isOwner={false}
-        canManageMembers={membership.role === 'leader'}
-        onChanged={refresh}
-      />
+      <div className="space-y-5">
+        <TeamRoster
+          team={membership.team}
+          members={members}
+          isOwner={false}
+          canManageMembers={membership.role === 'leader'}
+          onChanged={refresh}
+        />
+        <TasksSection team={membership.team} members={members} canManageTasks={membership.role === 'leader'} cc={cc} />
+      </div>
     );
   }
 
@@ -330,6 +362,184 @@ function MemberTeamSection() {
       </div>
       <p className="text-sm font-semibold text-ink">No team yet</p>
       <p className="text-xs text-ink-muted mt-1">Ask your leader to sign you up.</p>
+    </GlassCard>
+  );
+}
+
+function formatDue(iso: string | null): string {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team: Team; cc: CloudClient; onChanged: () => void }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+
+  const handleAttach = async (file: File) => {
+    if (!team.telegram_channel_id) {
+      swal({ icon: 'error', title: 'No Channel Set', text: 'Ask your leader to set the team Telegram channel first.' });
+      return;
+    }
+    setBusy(true);
+    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    if (result) await attachFileToTask(task.id, result);
+    setBusy(false);
+    if (result) { swalToast({ icon: 'success', title: 'File attached' }); onChanged(); }
+  };
+
+  const handleDownload = async () => {
+    if (!team.telegram_channel_id || task.attachment_msg_id === null) return;
+    setBusy(true);
+    await cc.downloadTaskAttachment(team.telegram_channel_id, task.attachment_msg_id, task.attachment_name || 'attachment');
+    setBusy(false);
+  };
+
+  if (task.attachment_msg_id) {
+    return (
+      <button onClick={handleDownload} disabled={busy} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold">
+        <Paperclip size={11} /> {task.attachment_name || 'Attachment'}
+      </button>
+    );
+  }
+
+  return (
+    <>
+      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
+      <button
+        onClick={() => cc.isConnected ? fileInputRef.current?.click() : swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect your Telegram account in Cloud Storage to attach files.' })}
+        disabled={busy}
+        className="text-[11px] text-ink-faint hover:text-accent flex items-center gap-1 font-semibold"
+        title={cc.isConnected ? 'Attach a file' : 'Connect Telegram in Cloud Storage first'}
+      >
+        <Paperclip size={11} /> {busy ? 'Uploading...' : 'Attach file'}
+      </button>
+    </>
+  );
+}
+
+function TasksSection({ team, members, canManageTasks, cc }: { team: Team; members: TeamMember[]; canManageTasks: boolean; cc: CloudClient }) {
+  const [loading, setLoading] = useState(true);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [assigneeId, setAssigneeId] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    setTasks(canManageTasks ? await listTeamTasks(team.id) : await listMyTasks(team.id));
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, [team.id, canManageTasks]);
+
+  const activeMembers = members.filter(m => m.status === 'active');
+
+  const handleCreate = async () => {
+    if (!title.trim() || !assigneeId) {
+      swal({ icon: 'error', title: 'Missing details', text: 'Give the task a title and pick an assignee.' });
+      return;
+    }
+    setCreating(true);
+    const error = await createTask({ teamId: team.id, assigneeId, title: title.trim(), description: description.trim(), dueDate: dueDate || null });
+    setCreating(false);
+    if (error) { swal({ icon: 'error', title: 'Could not create task', text: error }); return; }
+    setTitle(''); setDescription(''); setAssigneeId(''); setDueDate('');
+    swalToast({ icon: 'success', title: 'Task created' });
+    refresh();
+  };
+
+  const handleMarkDone = async (id: string) => {
+    setBusyId(id);
+    const error = await markTaskDone(id);
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not update task', text: error }); return; }
+    refresh();
+  };
+
+  const handleDelete = async (id: string) => {
+    const result = await swal({ icon: 'warning', title: 'Delete this task?', showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
+    if (!result.isConfirmed) return;
+    setBusyId(id);
+    const error = await deleteTask(id);
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not delete task', text: error }); return; }
+    refresh();
+  };
+
+  if (loading) return null;
+
+  return (
+    <GlassCard className="overflow-hidden max-w-md">
+      <div className="p-6 border-b border-hairline bg-ink/[0.02] flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-accent-soft border border-accent/20 flex items-center justify-center shrink-0">
+          <ListTodo size={18} className="text-accent" />
+        </div>
+        <div>
+          <h3 className="text-base font-semibold text-ink font-display">{canManageTasks ? 'Tasks' : 'My Tasks'}</h3>
+          <p className="text-xs text-ink-muted mt-0.5">{canManageTasks ? 'Assign and track work across the team' : 'Tasks assigned to you'}</p>
+        </div>
+      </div>
+
+      <div className="p-6 space-y-4">
+        {canManageTasks && (
+          <div className="space-y-2 pb-4 border-b border-hairline">
+            <Input placeholder="Task title" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={assigneeId}
+                onChange={(e) => setAssigneeId(e.target.value)}
+                className="w-full bg-ink/5 border border-hairline rounded-xl px-3 py-2.5 text-ink text-sm outline-none focus:border-accent"
+              >
+                <option value="">Assign to...</option>
+                {activeMembers.map(m => <option key={m.id} value={m.user_id ?? ''}>{m.profile?.name || m.invited_email}</option>)}
+              </select>
+              <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </div>
+            <Button onClick={handleCreate} disabled={creating} className="w-full">
+              <Plus size={14} /> {creating ? 'Creating...' : 'Create Task'}
+            </Button>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {tasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3">{canManageTasks ? 'No tasks yet.' : 'No tasks assigned to you.'}</p>}
+          {tasks.map(t => (
+            <div key={t.id} className={`p-3 rounded-xl border transition-colors ${t.status === 'done' ? 'border-hairline bg-ink/[0.02]' : 'border-hairline hover:border-accent/20'}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className={`text-sm font-semibold truncate ${t.status === 'done' ? 'text-ink-faint line-through' : 'text-ink'}`}>{t.title}</p>
+                  {t.description && <p className="text-xs text-ink-muted mt-0.5">{t.description}</p>}
+                  {canManageTasks && <p className="text-[10px] text-ink-faint mt-1">{t.assignee?.name || 'Unassigned'}</p>}
+                </div>
+                {canManageTasks && (
+                  <button onClick={() => handleDelete(t.id)} disabled={busyId === t.id} aria-label="Delete task" className="p-1.5 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors shrink-0">
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-hairline">
+                <div className="flex items-center gap-3">
+                  {t.due_date && (
+                    <span className="text-[10px] text-ink-faint flex items-center gap-1"><CalendarClock size={11} /> {formatDue(t.due_date)}</span>
+                  )}
+                  <TaskAttachmentControl task={t} team={team} cc={cc} onChanged={refresh} />
+                </div>
+                {t.status === 'done' ? (
+                  <span className="text-[10px] font-semibold text-success flex items-center gap-1"><Check size={11} /> Done</span>
+                ) : (
+                  !canManageTasks && (
+                    <Button size="sm" onClick={() => handleMarkDone(t.id)} disabled={busyId === t.id}>Mark Done</Button>
+                  )
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </GlassCard>
   );
 }

@@ -6,6 +6,7 @@ export interface Team {
   name: string;
   logo: string;
   owner_id: string;
+  telegram_channel_id: string;
   created_at: string;
 }
 

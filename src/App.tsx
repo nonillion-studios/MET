@@ -352,7 +352,7 @@ export default function App() {
             </div>
           )}
 
-          {activeNavigationTab === 'teams' && <TeamsPanel />}
+          {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} />}
 
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
