@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Stage, Layer, Image as KonvaImage, Rect } from 'react-konva';
 import type Konva from 'konva';
 import type { Page } from '../../types';
+import { BLEND_TO_COMPOSITE, type StudioLayer } from './studioTypes';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
@@ -12,9 +13,11 @@ interface StudioCanvasProps {
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
+  /** Non-background layers stacked above the page image, bottom to top. */
+  layers: StudioLayer[];
 }
 
-export function StudioCanvas({ page, showCleaned, activeTool, fitSignal }: StudioCanvasProps) {
+export function StudioCanvas({ page, showCleaned, activeTool, fitSignal, layers }: StudioCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -164,6 +167,18 @@ export function StudioCanvas({ page, showCleaned, activeTool, fitSignal }: Studi
               </>
             )}
           </Layer>
+
+          {/* Each Studio layer (clean patches, text, bubble masks...) gets its own Konva
+              layer so opacity and blend mode compose independently of the background. */}
+          {layers.filter(l => !l.isBackground).map(layer => (
+            <Layer
+              key={layer.id}
+              visible={layer.visible}
+              opacity={layer.opacity}
+              globalCompositeOperation={BLEND_TO_COMPOSITE[layer.blendMode]}
+              listening={layer.visible && !layer.locked}
+            />
+          ))}
         </Stage>
       )}
       {!page && (

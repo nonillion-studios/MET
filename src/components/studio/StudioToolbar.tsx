@@ -1,22 +1,19 @@
-import { ArrowLeft, Maximize2, Layers, PanelRight } from 'lucide-react';
+import { ArrowLeft, Maximize2, PanelRight } from 'lucide-react';
 import { IconButton } from '../ui';
-import { STUDIO_TOOLS } from './tools';
 
 interface StudioToolbarProps {
   chapterName: string;
-  activeTool: string;
-  onToolChange: (id: string) => void;
   showCleaned: boolean;
   onToggleCleaned: () => void;
   onFit: () => void;
   onBack: () => void;
-  onTogglePagesPanel: () => void;
+  onToggleDock: () => void;
   hasCleaned: boolean;
 }
 
 export function StudioToolbar({
-  chapterName, activeTool, onToolChange, showCleaned, onToggleCleaned,
-  onFit, onBack, onTogglePagesPanel, hasCleaned,
+  chapterName, showCleaned, onToggleCleaned,
+  onFit, onBack, onToggleDock, hasCleaned,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline overflow-x-auto">
@@ -27,29 +24,6 @@ export function StudioToolbar({
       <span className="hidden md:inline text-sm font-display font-semibold text-ink truncate max-w-[14rem] shrink-0">
         {chapterName}
       </span>
-
-      <div className="w-px h-6 bg-hairline mx-1 shrink-0 hidden sm:block" />
-
-      <div className="flex items-center gap-1 shrink-0">
-        {STUDIO_TOOLS.map(tool => {
-          const Icon = tool.icon;
-          const active = activeTool === tool.id;
-          return (
-            <IconButton
-              key={tool.id}
-              size="sm"
-              active={active}
-              disabled={!tool.enabled}
-              aria-label={tool.enabled ? tool.label : `${tool.label} (coming soon)`}
-              title={tool.enabled ? tool.label : `${tool.label} — coming soon`}
-              onClick={() => onToolChange(tool.id)}
-              className="!bg-transparent"
-            >
-              <Icon size={16} />
-            </IconButton>
-          );
-        })}
-      </div>
 
       <div className="w-px h-6 bg-hairline mx-1 shrink-0 hidden sm:block" />
 
@@ -68,10 +42,7 @@ export function StudioToolbar({
       <IconButton size="sm" aria-label="Fit to screen" onClick={onFit} className="!bg-transparent shrink-0">
         <Maximize2 size={15} />
       </IconButton>
-      <IconButton size="sm" aria-label="Toggle pages panel" onClick={onTogglePagesPanel} className="!bg-transparent shrink-0 lg:hidden">
-        <Layers size={15} />
-      </IconButton>
-      <IconButton size="sm" aria-label="Toggle pages panel" onClick={onTogglePagesPanel} className="!bg-transparent shrink-0 hidden lg:inline-flex">
+      <IconButton size="sm" aria-label="Toggle layers & pages panel" onClick={onToggleDock} className="!bg-transparent shrink-0">
         <PanelRight size={15} />
       </IconButton>
     </div>
