@@ -1,26 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { Clock, Bell, User, Search, Sun, Moon } from 'lucide-react';
+import { useState } from 'react';
+import { Bell, User, Search, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { IconButton } from './ui';
-import { getProfile } from '../lib/profile';
+import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
 import logo from '../assets/logo-new.jpg';
 
 export function TopBar() {
-  const [time, setTime] = useState(new Date());
   const [searchOpen, setSearchOpen] = useState(false);
-  const [profile, setProfile] = useState(getProfile());
   const { resolvedTheme, toggleTheme } = useTheme();
-
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleStorage = () => setProfile(getProfile());
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
-  }, []);
+  const { session } = useTeamAuth();
+  const profile = profileFromSession(session);
 
   return (
     <div className="liquid-glass-bar w-full h-14 sm:h-16 rounded-b-[22px] lg:rounded-none border border-hairline border-t-0 lg:border-x-0 px-2.5 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-40 sticky top-0">
@@ -61,7 +50,7 @@ export function TopBar() {
         </div>
       </div>
 
-      {/* Right Side: Theme toggle, Notifications & Time grouped in one capsule + Profile */}
+      {/* Right Side: Theme toggle, Notifications + Profile */}
       <div className={`items-center gap-1.5 xs:gap-2 sm:gap-3 shrink-0 ${searchOpen ? 'hidden sm:flex' : 'flex'}`}>
         <div className="flex items-center gap-0.5 xs:gap-1 bg-ink/5 border border-hairline rounded-full p-1">
           {/* Theme toggle */}
@@ -73,12 +62,6 @@ export function TopBar() {
           >
             {resolvedTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
           </IconButton>
-
-          {/* Clock */}
-          <div className="hidden xs:flex items-center gap-1.5 text-ink-muted px-2.5 sm:px-3 py-1.5">
-            <Clock size={14} className="text-accent" />
-            <span className="hidden sm:inline font-mono text-xs tracking-widest">{time.toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute:'2-digit' })}</span>
-          </div>
 
           {/* Notifications */}
           <IconButton
@@ -94,8 +77,7 @@ export function TopBar() {
         {/* Profile */}
         <div className="flex items-center gap-2.5 bg-ink/5 border border-hairline rounded-full pl-1 pr-1 sm:pr-3.5 py-1">
           <div className="hidden md:flex flex-col text-right items-start">
-            <span className="text-sm font-bold text-ink leading-none mb-1">{profile.name || "New User"}</span>
-            <span className="text-[10px] text-accent font-mono leading-none">Manga Team</span>
+            <span className="text-sm font-bold text-ink leading-none mb-1">{profile.name || 'Team Member'}</span>
           </div>
           <div className="w-8 h-8 sm:w-9 sm:h-9 shrink-0 rounded-full border-2 border-accent/30 overflow-hidden bg-accent-soft flex items-center justify-center p-0.5">
             {profile.avatar ? (

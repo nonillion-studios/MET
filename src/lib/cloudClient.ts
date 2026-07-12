@@ -4,7 +4,7 @@ import { StringSession } from 'telegram/sessions';
 import { swal, swalToast, Swal } from './swalTheme';
 import { genId } from './id';
 import { migrateWorkspace } from './migrate';
-import type { Profile, Workspace } from '../types';
+import type { Workspace } from '../types';
 
 export interface CloudFile {
   id: number;
@@ -14,22 +14,16 @@ export interface CloudFile {
   description: string;
   tags: string[];
   sender: string;
-  avatar: string;
+  folderId: number | null;
   coverMsgId: number;
   sizeBytes: number;
   date: string;
 }
 
-export interface CloudChatMessage {
+export interface CloudFolder {
   id: number;
-  text: string;
-  date: string;
-  timestamp: number;
-  sender: string;
-  avatar: string | null;
-  hasMedia: boolean;
-  msgObj: any;
-  fileName?: string;
+  name: string;
+  parentId: number | null;
 }
 
 function formatSize(bytes: number): string {
@@ -47,17 +41,27 @@ export function useCloudClient() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [client, setClient] = useState<TelegramClient | null>(null);
+  const [meName, setMeName] = useState('');
 
   const [files, setFiles] = useState<CloudFile[]>([]);
+  const [folders, setFolders] = useState<CloudFolder[]>([]);
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({});
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-
-  const [chatMessages, setChatMessages] = useState<CloudChatMessage[]>([]);
 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadLabel, setUploadLabel] = useState('');
   const [uploadTotalBytes, setUploadTotalBytes] = useState(0);
+
+  const loadMe = useCallback(async (newClient: TelegramClient) => {
+    try {
+      const me = await newClient.getMe();
+      const name = [(me as any)?.firstName, (me as any)?.lastName].filter(Boolean).join(' ') || (me as any)?.username || 'Team Member';
+      setMeName(name);
+    } catch {
+      setMeName('Team Member');
+    }
+  }, []);
 
   const initClient = useCallback(async (id: string, hash: string, session: string) => {
     try {
@@ -70,6 +74,7 @@ export function useCloudClient() {
       await newClient.connect();
       setClient(newClient);
       setIsConnected(true);
+      await loadMe(newClient);
       swalToast({ icon: 'success', title: 'Connected to Telegram successfully' });
     } catch (error) {
       console.error(error);
@@ -77,7 +82,7 @@ export function useCloudClient() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [loadMe]);
 
   useEffect(() => {
     const savedApiId = localStorage.getItem('tg_api_id');
@@ -133,6 +138,7 @@ export function useCloudClient() {
         localStorage.setItem('tg_session', sessionString);
         setClient(newClient);
         setIsConnected(true);
+        await loadMe(newClient);
 
         swal({ title: 'Success', text: 'Logged in successfully!', icon: 'success' });
       }
@@ -148,20 +154,44 @@ export function useCloudClient() {
     if (!client || !chatId) return;
     setIsLoading(true);
     try {
-      const msgs = await client.getMessages(chatId, { limit: 50 });
-      const cloudFiles: CloudFile[] = msgs.filter(m => m.media && m.message).map(m => {
+      const msgs = await client.getMessages(chatId, { limit: 100 });
+
+      const cloudFiles: CloudFile[] = [];
+      const cloudFolders: CloudFolder[] = [];
+
+      msgs.forEach(m => {
+        if (!m.message) return;
         try {
           const data = JSON.parse(m.message);
-          if (data && (data.type === 'manga_project' || data.type === 'workspace_backup')) {
-            return { id: m.id, msg: m, ...data, tags: Array.isArray(data.tags) ? data.tags : [] } as CloudFile;
+          if (!data || typeof data !== 'object') return;
+          if (m.media && (data.type === 'manga_project' || data.type === 'workspace_backup')) {
+            cloudFiles.push({
+              id: m.id,
+              msg: m,
+              type: data.type,
+              name: data.name || 'Untitled',
+              description: data.description || '',
+              tags: Array.isArray(data.tags) ? data.tags : [],
+              sender: data.sender || 'Team Member',
+              folderId: typeof data.folderId === 'number' ? data.folderId : null,
+              coverMsgId: data.coverMsgId || 0,
+              sizeBytes: data.sizeBytes || 0,
+              date: data.date || new Date(m.date * 1000).toISOString(),
+            });
+          } else if (!m.media && data.type === 'folder') {
+            cloudFolders.push({
+              id: m.id,
+              name: data.name || 'Untitled Folder',
+              parentId: typeof data.parentId === 'number' ? data.parentId : null,
+            });
           }
-          return null;
         } catch {
-          return null;
+          // not one of ours, ignore
         }
-      }).filter((f): f is CloudFile => f !== null);
+      });
 
       setFiles(cloudFiles);
+      setFolders(cloudFolders);
       setLastSyncedAt(Date.now());
 
       cloudFiles.forEach(async (f) => {
@@ -190,64 +220,57 @@ export function useCloudClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, chatId]);
 
-  const fetchChatMessages = useCallback(async () => {
+  const createFolder = async (name: string, parentId: number | null) => {
     if (!client || !chatId) return;
     try {
-      const msgs = await client.getMessages(chatId, { limit: 50 });
-      const formattedChats = msgs.map(m => {
-        if (!m.message && !m.media) return null;
-        try {
-          const data = JSON.parse(m.message || '{}');
-          if (data && data.type === 'chat') {
-            return { id: m.id, text: data.text || '', date: new Date(m.date * 1000).toLocaleString(), timestamp: m.date * 1000, sender: data.sender || 'Anonymous', avatar: data.avatar || null, hasMedia: !!m.media, msgObj: m, fileName: data.fileName };
-          }
-          return null;
-        } catch {
-          return { id: m.id, text: m.message || '', date: new Date(m.date * 1000).toLocaleString(), timestamp: m.date * 1000, sender: 'Team Member', avatar: null, hasMedia: !!m.media, msgObj: m, fileName: (m.media as any)?.document?.attributes?.find((a: any) => a.fileName)?.fileName || 'attachment' };
-        }
-      }).filter((m): m is NonNullable<typeof m> => m !== null);
-      setChatMessages(formattedChats);
-    } catch {
-      console.error('Failed to load chat');
-    }
-  }, [client, chatId]);
-
-  const sendChatMessage = async (text: string, file: File | null, profile: Profile) => {
-    if (!client || !chatId || (!text.trim() && !file)) return;
-    try {
-      const payload = {
-        type: 'chat',
-        text,
-        sender: profile.name || 'Anonymous',
-        avatar: profile.avatar || null,
-        fileName: file?.name || null,
-        timestamp: Date.now()
-      };
-
-      if (file) {
-        swal({ title: 'Uploading...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-        const arrayBuffer = await file.arrayBuffer();
-        const fileBuffer: any = Buffer.from(arrayBuffer);
-        fileBuffer.name = file.name;
-
-        await client.sendFile(chatId, {
-          file: fileBuffer,
-          caption: JSON.stringify(payload),
-          forceDocument: true
-        });
-        Swal.close();
-      } else {
-        await client.sendMessage(chatId, { message: JSON.stringify(payload) });
-      }
-
-      fetchChatMessages();
-    } catch (e) {
-      console.error('Failed to send chat', e);
-      swal({ title: 'Error', text: 'Failed to send message', icon: 'error' });
+      await client.sendMessage(chatId, { message: JSON.stringify({ type: 'folder', name, parentId }) });
+      await fetchFiles();
+    } catch (err: any) {
+      swal({ title: 'Error', text: err.message || 'Failed to create folder', icon: 'error' });
     }
   };
 
-  const uploadFile = async (file: File, opts: { name: string; notes: string; tags: string[]; coverDataUrl: string | null; profile: Profile }) => {
+  const deleteFolder = async (folder: CloudFolder) => {
+    if (!client || !chatId) return;
+    const result = await swal({
+      icon: 'warning',
+      title: `Delete folder "${folder.name}"?`,
+      text: 'Files inside will remain in Cloud Storage, unfiled.',
+      showCancelButton: true,
+      confirmButtonText: 'Delete Folder',
+      confirmButtonColor: '#FF3B30',
+    });
+    if (!result.isConfirmed) return;
+    try {
+      await client.deleteMessages(chatId, [folder.id], { revoke: true });
+      await fetchFiles();
+    } catch (err: any) {
+      swal({ title: 'Error', text: err.message || 'Failed to delete folder', icon: 'error' });
+    }
+  };
+
+  const moveFile = async (file: CloudFile, folderId: number | null) => {
+    if (!client || !chatId) return;
+    try {
+      const metadata = {
+        type: file.type,
+        name: file.name,
+        description: file.description,
+        tags: file.tags,
+        sender: file.sender,
+        folderId,
+        coverMsgId: file.coverMsgId,
+        sizeBytes: file.sizeBytes,
+        date: file.date,
+      };
+      await client.editMessage(chatId, { message: file.id, text: JSON.stringify(metadata, null, 2) });
+      await fetchFiles();
+    } catch (err: any) {
+      swal({ title: 'Error', text: err.message || 'Failed to move file', icon: 'error' });
+    }
+  };
+
+  const uploadFile = async (file: File, opts: { name: string; notes: string; tags: string[]; coverDataUrl: string | null; folderId: number | null }) => {
     if (!client || !chatId) {
       swal({ title: 'Error', text: 'Connect to Telegram and set a Chat ID first', icon: 'error' });
       return;
@@ -282,8 +305,8 @@ export function useCloudClient() {
         name: opts.name || file.name,
         description: opts.notes || '',
         tags: opts.tags,
-        sender: opts.profile.name || 'Anonymous User',
-        avatar: opts.profile.avatar || '',
+        sender: meName || 'Team Member',
+        folderId: opts.folderId,
         coverMsgId,
         sizeBytes: file.size,
         date: new Date().toISOString()
@@ -308,7 +331,7 @@ export function useCloudClient() {
     }
   };
 
-  const uploadWorkspaceBackup = async (workspace: Workspace, opts: { notes: string; tags: string[]; profile: Profile }) => {
+  const uploadWorkspaceBackup = async (workspace: Workspace, opts: { notes: string; tags: string[]; folderId: number | null }) => {
     if (!client || !chatId) {
       swal({ title: 'Error', text: 'Connect to Telegram and set a Chat ID first', icon: 'error' });
       return;
@@ -345,8 +368,8 @@ export function useCloudClient() {
         name: workspace.name,
         description: opts.notes || workspace.description || '',
         tags: opts.tags,
-        sender: opts.profile.name || 'Anonymous User',
-        avatar: opts.profile.avatar || '',
+        sender: meName || 'Team Member',
+        folderId: opts.folderId,
         coverMsgId,
         sizeBytes,
         date: new Date().toISOString()
@@ -369,28 +392,6 @@ export function useCloudClient() {
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
-    }
-  };
-
-  const downloadAttachment = async (msgObj: any, filename: string) => {
-    try {
-      swal({ title: 'Downloading file...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-      const buffer = await client?.downloadMedia(msgObj);
-      if (buffer) {
-        const blob = new Blob([buffer]);
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.style.display = 'none';
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        Swal.close();
-      }
-    } catch (err: any) {
-      swal({ title: 'Error', text: err.message || 'Download failed', icon: 'error' });
     }
   };
 
@@ -493,15 +494,16 @@ export function useCloudClient() {
     handleLogin,
     handleDisconnect,
     saveConfig,
+    meName,
 
     files,
+    folders,
     coverUrls,
     lastSyncedAt,
     fetchFiles,
-
-    chatMessages,
-    fetchChatMessages,
-    sendChatMessage,
+    createFolder,
+    deleteFolder,
+    moveFile,
 
     isUploading,
     uploadProgress,
@@ -510,7 +512,6 @@ export function useCloudClient() {
     uploadFile,
     uploadWorkspaceBackup,
     downloadCloudFile,
-    downloadAttachment,
     restoreWorkspaceFromCloud,
 
     formatSize,

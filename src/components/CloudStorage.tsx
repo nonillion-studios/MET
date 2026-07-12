@@ -3,15 +3,15 @@ import { Cloud } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { CloudConfig } from './cloud/CloudConfig';
 import { CloudFiles } from './cloud/CloudFiles';
-import { CloudChat } from './cloud/CloudChat';
 import type { CloudClient } from '../lib/cloudClient';
-import type { Profile, Workspace } from '../types';
+import type { AutomationEngine } from '../lib/automationEngine';
+import type { Workspace } from '../types';
 
 interface CloudStorageProps {
   cc: CloudClient;
   workspaces: Workspace[];
-  profile: Profile;
   onImportWorkspace: (workspace: Workspace) => void;
+  automationEngine: AutomationEngine;
 }
 
 function timeAgo(ms: number): string {
@@ -24,18 +24,15 @@ function timeAgo(ms: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function CloudStorage({ cc, workspaces, profile, onImportWorkspace }: CloudStorageProps) {
-  const [activeTab, setActiveTab] = useState<'config' | 'files' | 'chat'>('config');
+export function CloudStorage({ cc, workspaces, onImportWorkspace, automationEngine }: CloudStorageProps) {
+  const [activeTab, setActiveTab] = useState<'config' | 'files'>('config');
 
   useEffect(() => {
     if (cc.isConnected) setActiveTab('files');
   }, [cc.isConnected]);
 
   useEffect(() => {
-    if (cc.isConnected && cc.chatId) {
-      if (activeTab === 'files') cc.fetchFiles();
-      if (activeTab === 'chat') cc.fetchChatMessages();
-    }
+    if (cc.isConnected && cc.chatId && activeTab === 'files') cc.fetchFiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cc.isConnected, cc.chatId, activeTab]);
 
@@ -54,7 +51,7 @@ export function CloudStorage({ cc, workspaces, profile, onImportWorkspace }: Clo
             <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2">
               <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${cc.isConnected ? 'bg-success/10 text-success border border-success/30' : 'bg-ink/5 text-ink-muted border border-hairline'}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${cc.isConnected ? 'bg-success animate-pulse' : 'bg-ink-faint'}`} />
-                {cc.isConnected ? 'Connected via Telegram' : 'Not connected'}
+                {cc.isConnected ? `Connected via Telegram${cc.meName ? ` as ${cc.meName}` : ''}` : 'Not connected'}
               </span>
               {cc.isConnected && (
                 <span className="text-xs text-ink-faint font-mono">
@@ -67,7 +64,6 @@ export function CloudStorage({ cc, workspaces, profile, onImportWorkspace }: Clo
             <div className="flex items-center gap-1 bg-ink/5 border border-hairline rounded-full p-1 shrink-0">
               {([
                 { id: 'files', label: 'Files' },
-                { id: 'chat', label: 'Discussions' },
                 { id: 'config', label: 'Settings' },
               ] as const).map(t => (
                 <button
@@ -85,9 +81,8 @@ export function CloudStorage({ cc, workspaces, profile, onImportWorkspace }: Clo
         <AnimatePresence mode="wait">
           {activeTab === 'config' && <CloudConfig key="config" cc={cc} />}
           {activeTab === 'files' && cc.isConnected && (
-            <CloudFiles key="files" cc={cc} workspaces={workspaces} profile={profile} onImportWorkspace={onImportWorkspace} />
+            <CloudFiles key="files" cc={cc} workspaces={workspaces} onImportWorkspace={onImportWorkspace} automationEngine={automationEngine} />
           )}
-          {activeTab === 'chat' && cc.isConnected && <CloudChat key="chat" cc={cc} profile={profile} />}
         </AnimatePresence>
       </div>
     </div>

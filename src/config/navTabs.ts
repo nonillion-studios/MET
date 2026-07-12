@@ -1,6 +1,6 @@
-import { Settings, CalendarClock, CloudCog, LayoutGrid, type LucideIcon } from 'lucide-react';
+import { Settings, Users, CloudCog, LayoutGrid, type LucideIcon } from 'lucide-react';
 
-export type NavTabId = 'settings' | 'scheduler' | 'cloud' | 'library';
+export type NavTabId = 'settings' | 'teams' | 'cloud' | 'library';
 
 export interface NavTab {
   id: NavTabId;
@@ -10,7 +10,7 @@ export interface NavTab {
 
 export const NAV_TABS: NavTab[] = [
   { id: 'settings', label: 'Settings', icon: Settings },
-  { id: 'scheduler', label: 'Scheduler', icon: CalendarClock },
+  { id: 'teams', label: 'Teams', icon: Users },
   { id: 'cloud', label: 'Cloud', icon: CloudCog },
-  { id: 'library', label: 'My Library', icon: LayoutGrid },
+  { id: 'library', label: 'Library', icon: LayoutGrid },
 ];

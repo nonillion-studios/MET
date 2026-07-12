@@ -1,44 +1,28 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { get, set } from 'idb-keyval';
-import type { Automation, AutomationAction, AutomationTrigger, Workspace } from '../types';
+import { get, set, del } from 'idb-keyval';
+import type { Automation, AutomationAction, AutomationTrigger } from '../types';
 import { swalToast } from './swalTheme';
 import { genId } from './id';
-import { getProfile } from './profile';
 import type { CloudClient } from './cloudClient';
-import logo from '../assets/logo-new.jpg';
 
-const STORAGE_KEY = 'automations';
-const CHECK_INTERVAL_MS = 30_000;
+const STORAGE_KEY = 'cloud_transfer_automations';
+const CHECK_INTERVAL_MS = 15_000;
 
-export function requestNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
-  if (typeof Notification === 'undefined') return Promise.resolve('unsupported');
-  return Notification.requestPermission();
-}
-
-function notify(title: string, text: string) {
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    try {
-      new Notification(title, { body: text, icon: logo });
-      return;
-    } catch (e) {
-      console.error(e);
-    }
-  }
-  swalToast({ icon: 'info', title, text });
+export function stashTransferBlob(blobKey: string, blob: Blob): Promise<void> {
+  return set(blobKey, blob);
 }
 
 function computeNextRunAt(trigger: AutomationTrigger, from: number): string | null {
   if (trigger.type === 'interval') return new Date(from + trigger.everyMs).toISOString();
+  if (trigger.type === 'once') return trigger.at;
   return null; // 'onOpen' automations only re-arm on the next app session
 }
 
-export function useAutomationEngine(cloudClient: CloudClient, workspaces: Workspace[]) {
+export function useAutomationEngine(cloudClient: CloudClient) {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loaded, setLoaded] = useState(false);
   const automationsRef = useRef(automations);
   automationsRef.current = automations;
-  const workspacesRef = useRef(workspaces);
-  workspacesRef.current = workspaces;
   const cloudClientRef = useRef(cloudClient);
   cloudClientRef.current = cloudClient;
 
@@ -57,54 +41,50 @@ export function useAutomationEngine(cloudClient: CloudClient, workspaces: Worksp
     return () => clearTimeout(timeout);
   }, [automations, loaded]);
 
-  // Arm any enabled 'onOpen' automations that haven't fired this session yet.
-  useEffect(() => {
-    if (!loaded) return;
-    setAutomations(prev => prev.map(a =>
-      a.enabled && a.trigger.type === 'onOpen' && !a.nextRunAt
-        ? { ...a, nextRunAt: new Date().toISOString() }
-        : a
-    ));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
-
-  const executeAction = useCallback((name: string, action: AutomationAction) => {
-    switch (action.type) {
-      case 'reminder':
-        notify('Reminder', action.message);
-        return;
-      case 'staleChapterCheck':
-        notify('Stale Chapter Check', `Take a look at chapters that haven't been touched in ${action.days}+ days.`);
-        return;
-      case 'cloudBackup': {
-        const workspace = workspacesRef.current.find(w => w.id === action.workspaceId);
-        const cc = cloudClientRef.current;
-        if (!workspace) {
-          swalToast({ icon: 'error', title: 'Automation skipped', text: `"${name}" couldn't find its workspace — it may have been deleted.` });
-          return;
-        }
-        if (!cc.isConnected) {
-          swalToast({ icon: 'error', title: 'Automation skipped', text: `Connect Cloud Storage to let "${name}" back up "${workspace.name}".` });
-          return;
-        }
-        cc.uploadWorkspaceBackup(workspace, { notes: `Automated backup via "${name}"`, tags: ['auto-backup'], profile: getProfile() })
-          .then(() => notify('Cloud Backup', `"${workspace.name}" backed up to Cloud Storage.`))
-          .catch(() => {});
-        return;
-      }
+  const executeAction = useCallback(async (name: string, action: AutomationAction) => {
+    const cc = cloudClientRef.current;
+    if (!cc.isConnected) {
+      swalToast({ icon: 'error', title: 'Transfer skipped', text: `Connect Cloud Storage to let "${name}" run.` });
+      return;
     }
+    if (action.direction === 'upload') {
+      try {
+        const blob = await get<Blob>(action.blobKey);
+        if (!blob) {
+          swalToast({ icon: 'error', title: 'Transfer skipped', text: `"${name}" couldn't find its cached file.` });
+          return;
+        }
+        const file = new File([blob], action.fileName, { type: blob.type });
+        await cc.uploadFile(file, { name: action.fileName, notes: `Scheduled transfer via "${name}"`, tags: ['scheduled'], coverDataUrl: null, folderId: action.folderId });
+      } catch (e) {
+        console.error(e);
+      }
+      return;
+    }
+    // download
+    const file = cc.files.find(f => f.id === action.cloudFileId);
+    if (!file) {
+      swalToast({ icon: 'error', title: 'Transfer skipped', text: `"${name}" couldn't find its cloud file — it may have been deleted.` });
+      return;
+    }
+    await cc.downloadCloudFile(file);
   }, []);
 
   const runAutomation = useCallback((id: string) => {
     const automation = automationsRef.current.find(a => a.id === id);
     if (!automation) return;
     const now = Date.now();
+    const isOneShot = automation.trigger.type === 'once';
     setAutomations(prev => prev.map(a => a.id === id ? {
       ...a,
       lastRunAt: new Date(now).toISOString(),
-      nextRunAt: a.enabled ? computeNextRunAt(a.trigger, now) : null,
+      enabled: isOneShot ? false : a.enabled,
+      nextRunAt: a.enabled && !isOneShot ? computeNextRunAt(a.trigger, now) : null,
     } : a));
     executeAction(automation.name, automation.action);
+    if (isOneShot && automation.action.direction === 'upload') {
+      del(automation.action.blobKey).catch(() => {});
+    }
   }, [executeAction]);
 
   useEffect(() => {
@@ -138,11 +118,9 @@ export function useAutomationEngine(cloudClient: CloudClient, workspaces: Worksp
     setAutomations(prev => [...prev, automation]);
   }, []);
 
-  const updateAutomation = useCallback((id: string, updates: { name: string; description: string; trigger: AutomationTrigger; action: AutomationAction }) => {
-    setAutomations(prev => prev.map(a => a.id === id ? { ...a, ...updates, nextRunAt: computeNextRunAt(updates.trigger, Date.now()) } : a));
-  }, []);
-
   const deleteAutomation = useCallback((id: string) => {
+    const automation = automationsRef.current.find(a => a.id === id);
+    if (automation?.action.direction === 'upload') del(automation.action.blobKey).catch(() => {});
     setAutomations(prev => prev.filter(a => a.id !== id));
   }, []);
 
@@ -154,5 +132,7 @@ export function useAutomationEngine(cloudClient: CloudClient, workspaces: Worksp
     }));
   }, []);
 
-  return { automations, createAutomation, updateAutomation, deleteAutomation, toggleAutomation, runNow: runAutomation };
+  return { automations, createAutomation, deleteAutomation, toggleAutomation, runNow: runAutomation };
 }
+
+export type AutomationEngine = ReturnType<typeof useAutomationEngine>;

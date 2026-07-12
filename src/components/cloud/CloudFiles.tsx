@@ -1,21 +1,24 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import { motion } from 'motion/react';
 import {
-  Upload as UploadIcon, File, RefreshCw, Download, User, ChevronDown, ImagePlus,
-  Tag, X, HardDrive, Boxes, FolderInput
+  Upload as UploadIcon, File, RefreshCw, Download, ChevronDown, ImagePlus,
+  Tag, X, HardDrive, Boxes, FolderInput, CalendarClock, Play, Trash2, FolderOutput
 } from 'lucide-react';
-import { Input, Button, GlassCard, Modal } from '../ui';
+import { Input, Button, GlassCard, Modal, Switch } from '../ui';
 import { AdSlot } from '../AdSlot';
+import { CloudFolders } from './CloudFolders';
+import { ScheduleTransferModal } from './ScheduleTransferModal';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { readImageFile } from '../../lib/image';
 import type { CloudClient, CloudFile } from '../../lib/cloudClient';
-import type { Profile, Workspace } from '../../types';
+import type { AutomationEngine } from '../../lib/automationEngine';
+import type { Workspace } from '../../types';
 
 interface CloudFilesProps {
   cc: CloudClient;
   workspaces: Workspace[];
-  profile: Profile;
   onImportWorkspace: (workspace: Workspace) => void;
+  automationEngine: AutomationEngine;
 }
 
 function TagChip({ tag, onRemove, onClick, active }: { tag: string; onRemove?: () => void; onClick?: () => void; active?: boolean }) {
@@ -36,7 +39,12 @@ function TagChip({ tag, onRemove, onClick, active }: { tag: string; onRemove?: (
   );
 }
 
-export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: CloudFilesProps) {
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine }: CloudFilesProps) {
   const [showUploadPanel, setShowUploadPanel] = useState(true);
   const [uploadSource, setUploadSource] = useState<'device' | 'workspace'>('device');
 
@@ -52,6 +60,9 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'alphabetical'>('newest');
   const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
+
+  const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
@@ -102,7 +113,7 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
         swal({ icon: 'error', title: 'No File', text: 'Choose a file to upload first.' });
         return;
       }
-      await cc.uploadFile(uploadFile, { name: uploadName, notes: uploadDesc, tags, coverDataUrl, profile });
+      await cc.uploadFile(uploadFile, { name: uploadName, notes: uploadDesc, tags, coverDataUrl, folderId: currentFolderId });
       resetUploadForm();
       if (fileInputRef.current) fileInputRef.current.value = '';
     } else {
@@ -111,7 +122,7 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
         swal({ icon: 'error', title: 'No Workspace', text: 'Pick a workspace to back up.' });
         return;
       }
-      await cc.uploadWorkspaceBackup(workspace, { notes: uploadDesc, tags, profile });
+      await cc.uploadWorkspaceBackup(workspace, { notes: uploadDesc, tags, folderId: currentFolderId });
       resetUploadForm();
     }
   };
@@ -132,7 +143,23 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
     }
   };
 
+  const handleMoveFile = async (file: CloudFile) => {
+    const options = [{ id: '', name: 'Root' }, ...cc.folders.map(f => ({ id: String(f.id), name: f.name }))];
+    const result = await swal({
+      title: `Move "${file.name}"`,
+      input: 'select',
+      inputOptions: Object.fromEntries(options.map(o => [o.id, o.name])),
+      inputValue: file.folderId !== null ? String(file.folderId) : '',
+      showCancelButton: true,
+      confirmButtonText: 'Move',
+    });
+    if (!result.isConfirmed) return;
+    const folderId = result.value === '' ? null : Number(result.value);
+    await cc.moveFile(file, folderId);
+  };
+
   const filteredFiles = cc.files
+    .filter(f => f.folderId === currentFolderId)
     .filter(f => {
       const q = searchQuery.toLowerCase();
       const matchesQuery = !q || f.name.toLowerCase().includes(q) || f.sender.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q));
@@ -149,6 +176,16 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-6">
+      {/* Folder navigation */}
+      <CloudFolders
+        folders={cc.folders}
+        currentFolderId={currentFolderId}
+        onNavigate={setCurrentFolderId}
+        onCreateFolder={cc.createFolder}
+        onDeleteFolder={cc.deleteFolder}
+        fileCountFor={(folderId) => cc.files.filter(f => f.folderId === folderId).length}
+      />
+
       {/* Upload panel */}
       <GlassCard className="rounded-2xl overflow-hidden">
         <button type="button" onClick={() => setShowUploadPanel(v => !v)} className="w-full flex items-center justify-between gap-3 p-5 text-left">
@@ -229,6 +266,8 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
               </div>
             )}
 
+            <p className="text-[11px] text-ink-faint">Uploads land in the current folder{currentFolderId !== null ? ` ("${cc.folders.find(f => f.id === currentFolderId)?.name || ''}")` : ' (Root)'}.</p>
+
             {/* Tags */}
             <div className="space-y-2">
               <label className="text-xs text-accent font-semibold flex items-center gap-1"><Tag size={12} /> Tags</label>
@@ -252,9 +291,14 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
               )}
             </div>
 
-            <Button onClick={handleUpload} disabled={cc.isUploading} className="w-full mt-2" size="lg">
-              {cc.isUploading ? 'Uploading...' : uploadSource === 'device' ? 'Upload File to Cloud' : 'Back Up Workspace to Cloud'}
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-2 mt-2">
+              <Button onClick={handleUpload} disabled={cc.isUploading} className="flex-1" size="lg">
+                {cc.isUploading ? 'Uploading...' : uploadSource === 'device' ? 'Upload File to Cloud' : 'Back Up Workspace to Cloud'}
+              </Button>
+              <Button variant="secondary" onClick={() => setShowScheduleModal(true)} size="lg">
+                <CalendarClock size={14} /> Schedule Transfer
+              </Button>
+            </div>
           </div>
         )}
       </GlassCard>
@@ -273,6 +317,57 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
           <AdSlot placement="upload-progress" />
         </div>
       </Modal>
+
+      <ScheduleTransferModal
+        open={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        cc={cc}
+        folders={cc.folders}
+        currentFolderId={currentFolderId}
+        createAutomation={automationEngine.createAutomation}
+      />
+
+      {/* Scheduled transfers */}
+      {automationEngine.automations.length > 0 && (
+        <GlassCard className="overflow-hidden">
+          <div className="p-4 border-b border-hairline">
+            <h3 className="text-sm font-bold text-ink flex items-center gap-2"><CalendarClock className="text-accent" size={16} /> Scheduled Transfers</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-hairline text-left text-[11px] uppercase tracking-wide text-ink-faint">
+                  <th className="px-4 py-2.5 font-semibold">Name</th>
+                  <th className="px-4 py-2.5 font-semibold">Size</th>
+                  <th className="px-4 py-2.5 font-semibold">Status</th>
+                  <th className="px-4 py-2.5 font-semibold">Next Run</th>
+                  <th className="px-4 py-2.5 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {automationEngine.automations.map(a => (
+                  <tr key={a.id} className="border-b border-hairline last:border-0 hover:bg-ink/[0.03] transition-colors">
+                    <td className="px-4 py-2.5 font-semibold text-ink">{a.name}</td>
+                    <td className="px-4 py-2.5 text-ink-muted font-mono text-xs">{cc.formatSize(a.action.sizeBytes)}</td>
+                    <td className="px-4 py-2.5"><Switch checked={a.enabled} onChange={() => automationEngine.toggleAutomation(a.id)} aria-label={`Toggle ${a.name}`} /></td>
+                    <td className="px-4 py-2.5 text-ink-faint font-mono text-[11px] whitespace-nowrap">{a.enabled ? formatDate(a.nextRunAt) : '—'}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => automationEngine.runNow(a.id)} className="p-1.5 rounded-lg text-ink-muted hover:text-accent hover:bg-accent-soft transition-colors" aria-label={`Run ${a.name} now`}>
+                          <Play size={14} />
+                        </button>
+                        <button onClick={() => automationEngine.deleteAutomation(a.id)} className="p-1.5 rounded-lg text-ink-muted hover:text-danger hover:bg-danger/10 transition-colors" aria-label={`Delete ${a.name}`}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </GlassCard>
+      )}
 
       {/* Files grid */}
       <div className="space-y-4">
@@ -312,8 +407,8 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
         ) : filteredFiles.length === 0 ? (
           <GlassCard className="text-center py-16">
             <File className="mx-auto text-ink-faint mb-3 opacity-50" size={48} />
-            <p className="text-ink-muted font-semibold">{cc.files.length === 0 ? 'Repository is empty.' : 'No files match your search.'}</p>
-            <p className="text-xs text-ink-faint mt-1">{cc.files.length === 0 ? 'Upload the first file to see the magic!' : 'Try a different search or tag.'}</p>
+            <p className="text-ink-muted font-semibold">{cc.files.length === 0 ? 'Repository is empty.' : 'No files in this folder.'}</p>
+            <p className="text-xs text-ink-faint mt-1">{cc.files.length === 0 ? 'Upload the first file to see the magic!' : 'Try a different folder, search, or tag.'}</p>
           </GlassCard>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -334,6 +429,13 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
                   <span className="absolute top-2 left-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-black/50 text-white backdrop-blur-sm">
                     {file.type === 'workspace_backup' ? <><Boxes size={10} /> Workspace</> : <><File size={10} /> File</>}
                   </span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleMoveFile(file); }}
+                    className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label={`Move ${file.name}`}
+                  >
+                    <FolderOutput size={12} />
+                  </button>
                 </div>
                 <div className="p-4 flex flex-col gap-2 flex-1">
                   <h4 className="font-bold text-ink text-base truncate">{file.name}</h4>
@@ -344,12 +446,7 @@ export function CloudFiles({ cc, workspaces, profile, onImportWorkspace }: Cloud
                     </div>
                   )}
 
-                  <div className="flex items-center gap-2 mt-1 bg-ink/5 p-2 rounded-lg border border-hairline">
-                    <div className="w-6 h-6 rounded-full overflow-hidden bg-accent-soft border border-accent/30 shrink-0">
-                      {file.avatar ? <img src={file.avatar} alt="Sender" className="w-full h-full object-cover" /> : <User size={12} className="m-auto mt-1 text-accent" />}
-                    </div>
-                    <span className="text-xs text-ink-muted truncate">{file.sender || 'Anonymous user'}</span>
-                  </div>
+                  <p className="text-xs text-ink-muted mt-1 bg-ink/5 px-2 py-1.5 rounded-lg border border-hairline truncate">{file.sender || 'Team Member'}</p>
 
                   <div className="flex justify-between items-center text-xs text-ink-muted font-mono border-t border-hairline pt-2 mt-auto">
                     <span>{new Date(file.date).toLocaleDateString()}</span>

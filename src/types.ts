@@ -46,20 +46,28 @@ export interface Workspace {
   mangas: MangaSeries[];
 }
 
-export interface Profile {
-  name: string;
-  teamName: string;
-  avatar: string;
-}
-
 export type AutomationTrigger =
   | { type: 'interval'; everyMs: number }
+  | { type: 'once'; at: string }
   | { type: 'onOpen' };
 
 export type AutomationAction =
-  | { type: 'reminder'; message: string }
-  | { type: 'staleChapterCheck'; days: number }
-  | { type: 'cloudBackup'; workspaceId: string };
+  | {
+      type: 'cloudTransfer';
+      direction: 'upload';
+      fileName: string;
+      sizeBytes: number;
+      folderId: number | null;
+      blobKey: string;
+    }
+  | {
+      type: 'cloudTransfer';
+      direction: 'download';
+      fileName: string;
+      sizeBytes: number;
+      folderId: number | null;
+      cloudFileId: number;
+    };
 
 export interface Automation {
   id: string;

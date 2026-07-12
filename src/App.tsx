@@ -10,13 +10,13 @@ import { genId } from './lib/id';
 import 'sweetalert2/dist/sweetalert2.min.css';
 import { TopBar } from './components/TopBar';
 import { SplashScreen } from './components/SplashScreen';
-import { OnboardingModal } from './components/OnboardingModal';
 import { SettingsPanel } from './components/SettingsPanel';
 import { BottomTabBar } from './components/BottomTabBar';
 import { SidebarRail } from './components/SidebarRail';
 import { CloudStorage } from './components/CloudStorage';
 import { AdSlot } from './components/AdSlot';
-import { AutomationPanel } from './components/AutomationPanel';
+import { TeamsPanel } from './components/TeamsPanel';
+import { AuthGate } from './components/AuthGate';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
@@ -24,25 +24,16 @@ import { PageManager } from './components/studio/PageManager';
 import { Studio } from './components/studio/Studio';
 import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
-import { hasProfile, getProfile } from './lib/profile';
 import { migrateWorkspace } from './lib/migrate';
 import type { NavTabId } from './config/navTabs';
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
-  const [needsOnboarding, setNeedsOnboarding] = useState(() => !hasProfile());
-  const [profile, setProfile] = useState(getProfile());
-
-  useEffect(() => {
-    const handleStorage = () => setProfile(getProfile());
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
-  }, []);
 
   // Workspaces > Series > Volumes > Chapters
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const cloudClient = useCloudClient();
-  const automationEngine = useAutomationEngine(cloudClient, workspaces);
+  const automationEngine = useAutomationEngine(cloudClient);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [activeMangaId, setActiveMangaId] = useState<string | null>(null);
   const [activeVolumeId, setActiveVolumeId] = useState<string | null>(null);
@@ -329,7 +320,7 @@ export default function App() {
   return (
     <div className="min-h-screen app-shell-bg dynamic-bg text-ink">
       {showSplash && <SplashScreen onFinish={() => setShowSplash(false)} />}
-      {!showSplash && needsOnboarding && <OnboardingModal onDone={() => setNeedsOnboarding(false)} />}
+      {!showSplash && <AuthGate>
 
       <div className="fog-orbs" aria-hidden="true">
         <span />
@@ -354,23 +345,13 @@ export default function App() {
               <CloudStorage
                 cc={cloudClient}
                 workspaces={workspaces}
-                profile={profile}
                 onImportWorkspace={handleImportWorkspace}
+                automationEngine={automationEngine}
               />
             </div>
           )}
 
-          {activeNavigationTab === 'scheduler' && (
-            <AutomationPanel
-              automations={automationEngine.automations}
-              workspaces={workspaces}
-              createAutomation={automationEngine.createAutomation}
-              updateAutomation={automationEngine.updateAutomation}
-              deleteAutomation={automationEngine.deleteAutomation}
-              toggleAutomation={automationEngine.toggleAutomation}
-              runNow={automationEngine.runNow}
-            />
-          )}
+          {activeNavigationTab === 'teams' && <TeamsPanel />}
 
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
@@ -755,6 +736,7 @@ export default function App() {
       <Modal open={showTermsModal} onClose={() => setShowTermsModal(false)} title="User Agreement" size="lg">
         <UserAgreement />
       </Modal>
+      </AuthGate>}
     </div>
   );
 }
