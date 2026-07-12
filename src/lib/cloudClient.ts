@@ -205,7 +205,7 @@ export function useCloudClient() {
         } catch {
           return { id: m.id, text: m.message || '', date: new Date(m.date * 1000).toLocaleString(), timestamp: m.date * 1000, sender: 'Team Member', avatar: null, hasMedia: !!m.media, msgObj: m, fileName: (m.media as any)?.document?.attributes?.find((a: any) => a.fileName)?.fileName || 'attachment' };
         }
-      }).filter((m): m is CloudChatMessage => m !== null);
+      }).filter((m): m is NonNullable<typeof m> => m !== null);
       setChatMessages(formattedChats);
     } catch {
       console.error('Failed to load chat');
