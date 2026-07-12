@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import splashVideoWebm from '../assets/splash-intro.webm';
+import splashVideoMp4 from '../assets/splash-intro.mp4';
 import logo from '../assets/logo-new.jpg';
 
-type Phase = 'showing' | 'leaving';
+type Phase = 'loading' | 'playing' | 'leaving';
 
 interface Particle {
   id: number;
@@ -31,32 +33,74 @@ function makeParticles(count: number): Particle[] {
   });
 }
 
-// Pure CSS intro — no <video>, since hardware video decode has been observed to
-// paint an opaque black layer over the whole page in some remote/virtualized
-// display setups (VMs, browser-in-browser previews), ignoring CSS opacity entirely.
 export function SplashScreen({ onFinish }: { onFinish: () => void }) {
-  const [phase, setPhase] = useState<Phase>('showing');
+  const [phase, setPhase] = useState<Phase>('loading');
+  const videoRef = useRef<HTMLVideoElement>(null);
   const particles = useMemo(() => makeParticles(48), []);
 
   useEffect(() => {
-    const leaveTimer = setTimeout(() => setPhase('leaving'), 1300);
-    const finishTimer = setTimeout(onFinish, 1300 + 950);
-    return () => {
-      clearTimeout(leaveTimer);
-      clearTimeout(finishTimer);
+    const video = videoRef.current;
+    if (!video) return;
+
+    const play = () => {
+      setPhase(p => (p === 'loading' ? 'playing' : p));
+      video.play().catch(() => {});
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    if (video.readyState >= 3) {
+      play();
+    } else {
+      video.addEventListener('canplaythrough', play, { once: true });
+    }
+
+    // Safety net in case the video never fires canplaythrough (e.g. slow/odd network).
+    const loadTimeout = setTimeout(play, 4000);
+
+    return () => {
+      video.removeEventListener('canplaythrough', play);
+      clearTimeout(loadTimeout);
+    };
   }, []);
 
-  return (
-    <div className={`fixed inset-0 z-[999] bg-black overflow-hidden flex items-center justify-center ${phase === 'leaving' ? 'pointer-events-none' : ''}`}>
-      <img
-        src={logo}
-        alt="MET"
-        className={`w-20 h-20 rounded-2xl object-cover animate-splash-breathe-static transition-opacity duration-500 ${phase === 'leaving' ? 'opacity-0' : 'opacity-100'}`}
-        draggable={false}
-      />
+  useEffect(() => {
+    if (phase !== 'playing') return;
+    // Safety net in case `ended` never fires.
+    const playTimeout = setTimeout(finish, 8000);
+    return () => clearTimeout(playTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
+  function finish() {
+    setPhase(p => (p === 'leaving' ? p : 'leaving'));
+    setTimeout(onFinish, 950);
+  }
+
+  return (
+    <div className={`fixed inset-0 z-[999] bg-black overflow-hidden ${phase === 'leaving' ? 'pointer-events-none' : ''}`}>
+      {/* Quiet pulsing logo while the video downloads, so the screen isn't a dead black void */}
+      <div
+        className={`absolute inset-0 flex items-center justify-center transition-opacity duration-500 ${
+          phase === 'loading' ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <img src={logo} alt="MET" className="w-20 h-20 rounded-2xl object-cover animate-splash-breathe" draggable={false} />
+      </div>
+
+      <video
+        ref={videoRef}
+        preload="auto"
+        muted
+        playsInline
+        onEnded={finish}
+        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
+          phase === 'loading' ? 'opacity-0' : phase === 'leaving' ? 'opacity-0 duration-[900ms]' : 'opacity-100'
+        }`}
+      >
+        <source src={splashVideoWebm} type="video/webm" />
+        <source src={splashVideoMp4} type="video/mp4" />
+      </video>
+
+      {/* Ember/particle dissolve, fired once the video finishes */}
       {phase === 'leaving' && (
         <div className="absolute inset-0">
           {particles.map(p => (
