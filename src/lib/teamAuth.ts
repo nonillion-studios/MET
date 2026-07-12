@@ -77,5 +77,13 @@ export function useTeamAuth() {
     await supabase.auth.signOut();
   }, []);
 
-  return { session, loading, signIn, signUp, signOut, updateProfile };
+  const signInWithGoogle = useCallback(async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
+    });
+    return error ? error.message : null;
+  }, []);
+
+  return { session, loading, signIn, signUp, signOut, updateProfile, signInWithGoogle };
 }
