@@ -3,7 +3,7 @@ import { Clock, Bell, User, Search, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { IconButton } from './ui';
 import { getProfile } from '../lib/profile';
-import logo from '../assets/logo.jpg';
+import logo from '../assets/logo-new.jpg';
 
 export function TopBar() {
   const [time, setTime] = useState(new Date());

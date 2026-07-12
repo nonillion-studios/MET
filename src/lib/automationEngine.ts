@@ -5,7 +5,7 @@ import { swalToast } from './swalTheme';
 import { genId } from './id';
 import { getProfile } from './profile';
 import type { CloudClient } from './cloudClient';
-import logo from '../assets/logo.jpg';
+import logo from '../assets/logo-new.jpg';
 
 const STORAGE_KEY = 'automations';
 const CHECK_INTERVAL_MS = 30_000;
