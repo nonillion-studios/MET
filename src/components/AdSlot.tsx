@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import adsConfig from '../config/ads.json';
+import adImage from '../assets/a103ba81-1f9b-41dc-a6db-cd0109797bcb.png';
 
 interface Ad {
   imageUrl: string;
   linkUrl: string;
 }
 
-const ADS = (adsConfig as { ads: Ad[] }).ads.filter(ad => ad.imageUrl);
+const ADS: Ad[] = [{ imageUrl: adImage, linkUrl: '' }];
 const ROTATE_MS = 10000;
 
 // Shared across every AdSlot instance so a broken image (bad URL, 404,
