@@ -1,9 +1,12 @@
-import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut } from 'lucide-react';
 import { clear } from 'idb-keyval';
 import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
-import { GlassCard, Button } from './ui';
+import { GlassCard, Button, Input } from './ui';
 import { AdSlot } from './AdSlot';
-import { swal } from '../lib/swalTheme';
+import { swal, swalToast } from '../lib/swalTheme';
+import { readAvatarFile } from '../lib/image';
+import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -20,6 +23,38 @@ const APP_VERSION = '0.1.0';
 
 export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps) {
   const { mode, setMode } = useTheme();
+  const { session, signOut, updateProfile } = useTeamAuth();
+  const profile = profileFromSession(session);
+  const [name, setName] = useState(profile.name);
+  const [avatar, setAvatar] = useState(profile.avatar);
+  const [saving, setSaving] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSaveProfile = async () => {
+    if (!name.trim()) {
+      swal({ icon: 'error', title: 'Name Required', text: 'Enter a name for your profile.' });
+      return;
+    }
+    setSaving(true);
+    const error = await updateProfile(name.trim(), avatar);
+    setSaving(false);
+    if (error) {
+      swal({ icon: 'error', title: 'Update failed', text: error });
+      return;
+    }
+    swalToast({ icon: 'success', title: 'Profile updated' });
+  };
+
+  const handleSignOut = async () => {
+    const result = await swal({
+      icon: 'question',
+      title: 'Sign out?',
+      text: "You'll need to sign in again to access your account.",
+      showCancelButton: true,
+      confirmButtonText: 'Sign Out',
+    });
+    if (result.isConfirmed) await signOut();
+  };
 
   const handleClearData = async () => {
     const result = await swal({
@@ -38,6 +73,33 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
 
   return (
     <div className="flex flex-col gap-6">
+      <GlassCard className="p-6 space-y-4">
+        <h3 className="text-base font-semibold text-ink font-display">Account</h3>
+        <p className="text-xs text-ink-muted -mt-2">Signed in as {session?.user.email}</p>
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => avatarInputRef.current?.click()}
+            className="w-16 h-16 rounded-full border border-dashed border-hairline bg-ink/5 flex items-center justify-center overflow-hidden shrink-0 hover:border-accent transition-colors"
+          >
+            {avatar ? <img src={avatar} alt="Avatar" className="w-full h-full object-cover" /> : <ImagePlus size={18} className="text-ink-faint" />}
+          </button>
+          <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readAvatarFile(f, setAvatar); }} />
+          <div className="flex-1 space-y-1">
+            <label className="text-xs text-accent font-semibold">Name</label>
+            <Input placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Button onClick={handleSaveProfile} disabled={saving} className="flex-1">
+            <Save size={14} /> {saving ? 'Saving...' : 'Save Profile'}
+          </Button>
+          <Button variant="secondary" onClick={handleSignOut} className="flex-1">
+            <LogOut size={14} /> Sign Out
+          </Button>
+        </div>
+      </GlassCard>
+
       <GlassCard className="p-6 space-y-4">
         <h3 className="text-base font-semibold text-ink font-display">Appearance</h3>
         <div className="grid grid-cols-3 gap-2">

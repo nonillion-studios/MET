@@ -1,8 +1,10 @@
+import { Plus } from 'lucide-react';
 import { NAV_TABS, type NavTab, type NavTabId } from '../config/navTabs';
 
 interface BottomTabBarProps {
   activeTab: NavTabId;
   onTabChange: (id: NavTabId) => void;
+  onCreatePress: () => void;
 }
 
 function TabButton({ tab, active, onClick }: { tab: NavTab; active: boolean; onClick: () => void }) {
@@ -25,11 +27,9 @@ function TabButton({ tab, active, onClick }: { tab: NavTab; active: boolean; onC
   );
 }
 
-export function BottomTabBar({ activeTab, onTabChange }: BottomTabBarProps) {
-  const home = NAV_TABS.find(t => t.id === 'home')!;
-  const sides = NAV_TABS.filter(t => t.id !== 'home');
-  const left = sides.slice(0, Math.ceil(sides.length / 2));
-  const right = sides.slice(Math.ceil(sides.length / 2));
+export function BottomTabBar({ activeTab, onTabChange, onCreatePress }: BottomTabBarProps) {
+  const left = NAV_TABS.slice(0, 2);
+  const right = NAV_TABS.slice(2);
 
   return (
     <div className="lg:hidden fixed bottom-safe left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-sm sm:w-auto sm:max-w-none flex justify-center">
@@ -43,11 +43,11 @@ export function BottomTabBar({ activeTab, onTabChange }: BottomTabBarProps) {
         <div className="relative -mt-7 shrink-0">
           <button
             type="button"
-            onClick={() => onTabChange('home')}
-            className={`w-14 h-14 bg-accent rounded-full flex items-center justify-center shadow-[0_6px_24px_color-mix(in_srgb,var(--color-accent)_65%,transparent)] ring-1 ring-white/25 cursor-pointer text-white hover:scale-110 active:scale-95 transition-all duration-300 ${activeTab === 'home' ? 'scale-105' : ''}`}
-            aria-label="Home"
+            onClick={onCreatePress}
+            className="w-14 h-14 bg-accent rounded-full flex items-center justify-center shadow-[0_6px_24px_color-mix(in_srgb,var(--color-accent)_65%,transparent)] ring-1 ring-white/25 cursor-pointer text-white hover:scale-110 active:scale-95 transition-all duration-300"
+            aria-label="Create"
           >
-            <home.icon size={26} strokeWidth={2.6} />
+            <Plus size={26} strokeWidth={2.6} />
           </button>
         </div>
 
