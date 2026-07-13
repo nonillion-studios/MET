@@ -26,6 +26,7 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "react-konva": "^19.2.5",
+    "react-resizable-panels": "^2.1.9",
     "sweetalert2": "^11.26.24",
     "telegram": "^2.26.22",
     "vite": "^6.2.3"

@@ -1,0 +1,108 @@
+export interface MenuItemDef {
+  id: string;
+  label: string;
+  shortcut?: string;
+  action?: () => void;
+  disabled?: boolean;
+  separator?: boolean;
+}
+
+export interface MenuDef {
+  id: string;
+  label: string;
+  items: MenuItemDef[];
+}
+
+export interface MenuActions {
+  onBack: () => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  toggleCleaned: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  fit: () => void;
+  toggleDock: () => void;
+  addLayer: () => void;
+  duplicateLayer: () => void;
+  deleteLayer: () => void;
+  moveLayerUp: () => void;
+  moveLayerDown: () => void;
+  hasActiveLayer: boolean;
+  addTextLayer: () => void;
+  centerTextInBubble: () => void;
+  hasActiveTextLayer: boolean;
+  panelTabs: { id: string; label: string }[];
+  showPanel: (id: string) => void;
+  showShortcutsHelp: () => void;
+}
+
+export function buildMenus(a: MenuActions): MenuDef[] {
+  return [
+    {
+      id: 'project',
+      label: 'Project',
+      items: [
+        { id: 'back', label: 'Back to Pages', action: a.onBack },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', action: a.undo, disabled: !a.canUndo },
+        { id: 'redo', label: 'Redo', shortcut: 'Ctrl+Shift+Z', action: a.redo, disabled: !a.canRedo },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'toggle-cleaned', label: 'Toggle Original / Cleaned', action: a.toggleCleaned },
+        { id: 'sep1', label: '', separator: true },
+        { id: 'zoom-in', label: 'Zoom In', shortcut: 'Ctrl+=', action: a.zoomIn },
+        { id: 'zoom-out', label: 'Zoom Out', shortcut: 'Ctrl+-', action: a.zoomOut },
+        { id: 'fit', label: 'Fit to Screen', shortcut: 'Ctrl+0', action: a.fit },
+        { id: 'sep2', label: '', separator: true },
+        { id: 'toggle-dock', label: 'Toggle Panels', action: a.toggleDock },
+      ],
+    },
+    {
+      id: 'layer',
+      label: 'Layer',
+      items: [
+        { id: 'add-layer', label: 'New Layer', action: a.addLayer },
+        { id: 'duplicate-layer', label: 'Duplicate Layer', action: a.duplicateLayer, disabled: !a.hasActiveLayer },
+        { id: 'delete-layer', label: 'Delete Layer', action: a.deleteLayer, disabled: !a.hasActiveLayer },
+        { id: 'sep1', label: '', separator: true },
+        { id: 'move-up', label: 'Bring Forward', action: a.moveLayerUp, disabled: !a.hasActiveLayer },
+        { id: 'move-down', label: 'Send Backward', action: a.moveLayerDown, disabled: !a.hasActiveLayer },
+      ],
+    },
+    {
+      id: 'text',
+      label: 'Text',
+      items: [
+        { id: 'add-text', label: 'New Text Layer', action: a.addTextLayer },
+        { id: 'center-bubble', label: 'Center in Bubble', action: a.centerTextInBubble, disabled: !a.hasActiveTextLayer },
+      ],
+    },
+    {
+      id: 'window',
+      label: 'Window',
+      items: [
+        { id: 'toggle-dock', label: 'Toggle Panels', action: a.toggleDock },
+        { id: 'sep1', label: '', separator: true },
+        ...a.panelTabs.map(t => ({ id: `show-${t.id}`, label: `Show ${t.label}`, action: () => a.showPanel(t.id) })),
+      ],
+    },
+    {
+      id: 'help',
+      label: 'Help',
+      items: [
+        { id: 'shortcuts', label: 'Keyboard Shortcuts', action: a.showShortcutsHelp },
+      ],
+    },
+  ];
+}

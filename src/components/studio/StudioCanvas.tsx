@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
-import { Stage, Layer, Image as KonvaImage, Rect, Text as KonvaText, Transformer } from 'react-konva';
+import { Stage, Layer, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer } from 'react-konva';
 import type Konva from 'konva';
 import type { Page } from '../../types';
 import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { swalToast } from '../../lib/swalTheme';
+import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
+import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
+import type { Selection } from './paint/selection';
+import { strokePenPath, type PaintSettings } from './paint/paintEngine';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
+const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop']);
+const LASSO_TOOLS = new Set(['lasso-freehand']);
 
 interface StudioCanvasProps {
   page: Page | null;
@@ -22,21 +28,43 @@ interface StudioCanvasProps {
   /** x/y are in page-image coordinates. */
   onAddTextLayer: (x: number, y: number) => void;
   onUpdateTextLayer: (id: string, patch: Partial<TextLayerData>) => void;
+  /** Current brush/fill/etc. settings, driven by the tool options bar. */
+  paintSettings: PaintSettings;
+  /** Active selection (marquee/lasso/wand); paint ops clip to this when present. */
+  selection: Selection;
+  onSelectionChange: (sel: Selection) => void;
+  /** Fired once per committed stroke/fill/etc. on a raster layer, with its pixels just before the op, for the history stack. */
+  onPaintStrokeEnd: (layerId: string, before: ImageData) => void;
+  /** Fired when the Eyedropper samples a pixel from the background page image. */
+  onEyedropperPick?: (hex: string) => void;
 }
 
 export interface StudioCanvasHandle {
   /** Flood-fills the page around a text layer to find its speech bubble and re-centers it there. */
   centerTextLayerInBubble: (id: string) => void;
+  /** Returns the raster canvas for a layer id, creating it if the layer has no backing yet. */
+  getPaintCanvas: (layerId: string) => HTMLCanvasElement | null;
+  /** Frees a raster layer's canvas when its layer is deleted. */
+  deletePaintCanvas: (layerId: string) => void;
+  /** Forces Konva to redraw a layer after its raster canvas was mutated directly (e.g. by undo/redo). */
+  redrawLayer: (layerId: string) => void;
+  getZoom: () => number;
+  zoomTo: (scale: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, activeTool, fitSignal, layers,
   activeLayerId, onSelectLayer, onAddTextLayer, onUpdateTextLayer,
+  paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const textNodeRefs = useRef<Record<string, Konva.Text | null>>({});
+  const layerNodeRefs = useRef<Record<string, Konva.Layer | null>>({});
+  const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   const layersRef = useRef(layers);
   layersRef.current = layers;
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -48,8 +76,63 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const pinchDistRef = useRef<number | null>(null);
   const [touchCount, setTouchCount] = useState(0);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
+  const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
+
+  const activeLayer = layers.find(l => l.id === activeLayerId) ?? null;
+  const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
+  const paintLayerIdRef = useRef<string | null>(null);
+  paintLayerIdRef.current = activeLayer?.type === 'clean-patch' ? activeLayer.id : null;
+
+  const getActivePaintCanvas = useCallback(() => {
+    const layerId = paintLayerIdRef.current;
+    const img = imageRef.current;
+    if (!layerId || !img) return null;
+    return getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
+  }, []);
+
+  const paint = usePaintLayer({
+    getCanvas: getActivePaintCanvas,
+    settings: paintSettings,
+    selection,
+    onSelectionChange,
+    onStrokeEnd: (before) => {
+      const layerId = paintLayerIdRef.current;
+      layerNodeRefs.current[layerId ?? '']?.batchDraw();
+      if (layerId) onPaintStrokeEnd(layerId, before);
+    },
+  });
 
   useImperativeHandle(ref, () => ({
+    getPaintCanvas(layerId: string) {
+      const img = imageRef.current;
+      if (!img) return null;
+      return getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
+    },
+    redrawLayer(layerId: string) {
+      layerNodeRefs.current[layerId]?.batchDraw();
+    },
+    deletePaintCanvas(layerId: string) {
+      deleteCanvasFor(paintCanvasRegistry.current, layerId);
+    },
+    getZoom() {
+      return scale;
+    },
+    zoomTo(nextScale: number) {
+      const clamped = clampScale(nextScale);
+      const cx = containerSize.width / 2, cy = containerSize.height / 2;
+      const pointTo = { x: (cx - pos.x) / scale, y: (cy - pos.y) / scale };
+      setScale(clamped);
+      setPos({ x: cx - pointTo.x * clamped, y: cy - pointTo.y * clamped });
+    },
+    zoomIn() {
+      this.zoomTo(scale * 1.25);
+    },
+    zoomOut() {
+      this.zoomTo(scale / 1.25);
+    },
     centerTextLayerInBubble(id: string) {
       const layer = layersRef.current.find(l => l.id === id);
       const img = imageRef.current;
@@ -69,7 +152,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       });
       swalToast({ icon: 'success', title: 'Centered in bubble' });
     },
-  }), [onUpdateTextLayer]);
+  }), [onUpdateTextLayer, scale, pos, containerSize]);
 
   const activeSource = showCleaned && page?.cleaned ? page.cleaned : page?.original ?? null;
 
@@ -81,6 +164,27 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     img.onload = () => setImage(img);
     return () => { img.onload = null; };
   }, [activeSource]);
+
+  // Esc cancels an in-progress Pen path.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && penPoints.length > 0) setPenPoints([]);
+      if (e.key === 'Enter' && activeTool === 'pen' && penPoints.length > 1) commitPenPath();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [penPoints, activeTool]);
+
+  // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
+  useEffect(() => {
+    if (!image) { sampleCanvasRef.current = null; return; }
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.getContext('2d')!.drawImage(image, 0, 0);
+    sampleCanvasRef.current = canvas;
+  }, [image]);
 
   // Track container size responsively.
   useEffect(() => {
@@ -129,13 +233,121 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, [activeLayerId, activeTool, editingLayerId, layers]);
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
-    if (activeTool !== 'text') return;
     const targetClass = e.target.getClassName?.();
-    if (e.target !== e.target.getStage() && targetClass !== 'Image' && targetClass !== 'Rect') return;
+    const clickedBackground = e.target === e.target.getStage() || targetClass === 'Image' || targetClass === 'Rect';
+
+    if (activeTool === 'pen') {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!stage || !pointer) return;
+      setPenPoints(prev => [...prev, { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale }]);
+      return;
+    }
+
+    if (activeTool !== 'text') return;
+    if (!clickedBackground) return;
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return;
     onAddTextLayer((pointer.x - pos.x) / scale, (pointer.y - pos.y) / scale);
+  };
+
+  const imageSpacePointer = (): { x: number; y: number } | null => {
+    const stage = stageRef.current;
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return null;
+    return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
+  };
+
+  const handlePaintPointerDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (activeTool === 'wand') {
+      const p = imageSpacePointer();
+      if (p) paint.pickMagicWand(p.x, p.y);
+      return;
+    }
+    if (activeTool === 'eyedropper') {
+      const p = imageSpacePointer();
+      const canvas = sampleCanvasRef.current;
+      if (!p || !canvas || !onEyedropperPick) return;
+      const x = Math.max(0, Math.min(canvas.width - 1, Math.round(p.x)));
+      const y = Math.max(0, Math.min(canvas.height - 1, Math.round(p.y)));
+      const d = canvas.getContext('2d')!.getImageData(x, y, 1, 1).data;
+      onEyedropperPick(`#${[d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('')}`);
+      return;
+    }
+    if (MARQUEE_TOOLS.has(activeTool)) {
+      const p = imageSpacePointer();
+      if (!p || !image) return;
+      if (activeTool === 'marquee-row') {
+        onSelectionChange({ kind: 'rect', x: 0, y: p.y - 2, width: image.width, height: 4 });
+        return;
+      }
+      if (activeTool === 'marquee-col') {
+        onSelectionChange({ kind: 'rect', x: p.x - 2, y: 0, width: 4, height: image.height });
+        return;
+      }
+      marqueeStartRef.current = p;
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool)) {
+      const p = imageSpacePointer();
+      if (!p) return;
+      lassoPointsRef.current = [p];
+      return;
+    }
+    if (!isPaintTool) return;
+    const p = imageSpacePointer();
+    if (!p) return;
+    paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey);
+  };
+  const handlePaintPointerMove = () => {
+    if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
+      const p = imageSpacePointer();
+      if (!p) return;
+      const start = marqueeStartRef.current;
+      const rect = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.abs(p.x - start.x), height: Math.abs(p.y - start.y) };
+      onSelectionChange(activeTool === 'marquee-ellipse' ? { kind: 'ellipse', ...rect } : { kind: 'rect', ...rect });
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool) && lassoPointsRef.current) {
+      const p = imageSpacePointer();
+      if (!p) return;
+      lassoPointsRef.current = [...lassoPointsRef.current, p];
+      onSelectionChange({ kind: 'polygon', points: lassoPointsRef.current });
+      return;
+    }
+    if (!isPaintTool) return;
+    const p = imageSpacePointer();
+    if (!p) return;
+    paint.pointerMove(activeTool as Parameters<typeof paint.pointerMove>[0], p.x, p.y);
+    layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
+  };
+  const handlePaintPointerUp = () => {
+    if (MARQUEE_TOOLS.has(activeTool)) { marqueeStartRef.current = null; return; }
+    if (LASSO_TOOLS.has(activeTool)) { lassoPointsRef.current = null; return; }
+    if (!isPaintTool) return;
+    const p = imageSpacePointer();
+    if (!p) return;
+    paint.pointerUp(activeTool as Parameters<typeof paint.pointerUp>[0], p.x, p.y);
+    layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
+  };
+
+  const commitPenPath = () => {
+    if (penPoints.length < 2) { setPenPoints([]); return; }
+    const canvas = getActivePaintCanvas();
+    const ctx = canvas?.getContext('2d');
+    const layerId = paintLayerIdRef.current;
+    if (canvas && ctx && layerId) {
+      const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      strokePenPath(ctx, penPoints, true, { fillColor: null, strokeColor: paintSettings.color, strokeWidth: Math.max(2, paintSettings.size / 6) }, selection);
+      layerNodeRefs.current[layerId]?.batchDraw();
+      onPaintStrokeEnd(layerId, before);
+    }
+    setPenPoints([]);
+  };
+
+  const handleStageDblClick = () => {
+    if (activeTool === 'pen') commitPenPath();
   };
 
   const editingLayer = editingLayerId ? layers.find(l => l.id === editingLayerId) ?? null : null;
@@ -226,6 +438,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onTouchEnd={handleTouchEnd}
           onClick={handleStageClick}
           onTap={handleStageClick}
+          onDblClick={handleStageDblClick}
+          onMouseDown={handlePaintPointerDown}
+          onMouseMove={handlePaintPointerMove}
+          onMouseUp={handlePaintPointerUp}
         >
           <Layer>
             {image && (
@@ -250,11 +466,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           {layers.filter(l => !l.isBackground).map(layer => (
             <Layer
               key={layer.id}
+              ref={(node) => { layerNodeRefs.current[layer.id] = node; }}
               visible={layer.visible}
               opacity={layer.opacity}
               globalCompositeOperation={BLEND_TO_COMPOSITE[layer.blendMode]}
               listening={layer.visible && !layer.locked}
             >
+              {layer.type === 'clean-patch' && image && (
+                <KonvaImage
+                  image={getOrCreateCanvasFor(paintCanvasRegistry.current, layer.id, image.width, image.height)}
+                  width={image.width}
+                  height={image.height}
+                  listening={false}
+                />
+              )}
               {layer.type === 'text' && layer.text && (
                 <KonvaText
                   ref={(node) => { textNodeRefs.current[layer.id] = node; }}
@@ -296,6 +521,34 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               )}
             </Layer>
           ))}
+
+          <Layer listening={false}>
+            {selection.kind === 'rect' && (
+              <Rect x={selection.x} y={selection.y} width={selection.width} height={selection.height}
+                stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} />
+            )}
+            {selection.kind === 'ellipse' && (
+              <Ellipse x={selection.x + selection.width / 2} y={selection.y + selection.height / 2}
+                radiusX={Math.abs(selection.width) / 2} radiusY={Math.abs(selection.height) / 2}
+                stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} />
+            )}
+            {selection.kind === 'polygon' && selection.points.length > 1 && (
+              <Line points={selection.points.flatMap(p => [p.x, p.y])} closed
+                stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} />
+            )}
+            {selection.kind === 'mask' && (
+              <Rect x={selection.bounds.x} y={selection.bounds.y} width={selection.bounds.width} height={selection.bounds.height}
+                stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} opacity={0.8} />
+            )}
+            {penPoints.length > 0 && (
+              <>
+                <Line points={penPoints.flatMap(p => [p.x, p.y])} stroke={paintSettings.color} strokeWidth={2 / scale} />
+                {penPoints.map((p, i) => (
+                  <Rect key={i} x={p.x - 3 / scale} y={p.y - 3 / scale} width={6 / scale} height={6 / scale} fill={paintSettings.color} />
+                ))}
+              </>
+            )}
+          </Layer>
 
           <Layer>
             <Transformer
