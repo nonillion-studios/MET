@@ -364,7 +364,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
   };
 
-  const handlePaintPointerDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handlePaintPointerDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    // A second touch point mid-gesture belongs to two-finger pan/pinch (handled by the Touch
+    // handlers below), not tool dispatch — Pointer Events fire per-finger independently.
+    if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     // Middle-mouse-button drag, or left-click while Space is held, pans regardless of the active tool.
     if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
       e.evt.preventDefault();
@@ -409,7 +412,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!isPaintTool) return;
     const p = imageSpacePointer();
     if (!p) return;
-    paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey);
+    // A real stylus reports actual pressure; mouse/touch report a flat 0.5 per spec, which isn't
+    // meaningful pressure data, so only let pen input affect brush size.
+    const pressure = e.evt.pointerType === 'pen' ? e.evt.pressure || 0.5 : 1;
+    paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey, pressure);
   };
   // Window-level mousemove/mouseup for middle-mouse/space-drag panning, so the drag keeps
   // tracking even if the pointer leaves the canvas bounds.
@@ -433,8 +439,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     };
   }, []);
 
-  const handlePaintPointerMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handlePaintPointerMove = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (panRef.current?.active) return;
+    if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
       const p = imageSpacePointer();
       if (!p) return;
@@ -466,10 +473,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!isPaintTool) return;
     const p = imageSpacePointer();
     if (!p) return;
-    paint.pointerMove(activeTool as Parameters<typeof paint.pointerMove>[0], p.x, p.y);
+    const pressure = e.evt.pointerType === 'pen' ? e.evt.pressure || 0.5 : 1;
+    paint.pointerMove(activeTool as Parameters<typeof paint.pointerMove>[0], p.x, p.y, pressure);
     layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
   };
-  const handlePaintPointerUp = () => {
+  const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (panRef.current?.active) { panRef.current = null; return; }
     if (MARQUEE_TOOLS.has(activeTool)) { marqueeStartRef.current = null; return; }
     if (LASSO_TOOLS.has(activeTool)) { lassoPointsRef.current = null; return; }
@@ -605,9 +614,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onClick={handleStageClick}
           onTap={handleStageClick}
           onDblClick={handleStageDblClick}
-          onMouseDown={handlePaintPointerDown}
-          onMouseMove={handlePaintPointerMove}
-          onMouseUp={handlePaintPointerUp}
+          onPointerDown={handlePaintPointerDown}
+          onPointerMove={handlePaintPointerMove}
+          onPointerUp={handlePaintPointerUp}
         >
           <Layer>
             {image && (

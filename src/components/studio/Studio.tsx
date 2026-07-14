@@ -653,13 +653,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
 
           {!panelsHidden && layoutMode === 'tablet' && dockOpen && (
             <div className="absolute inset-y-0 right-0 z-20 flex">
-              <div className="liquid-glass-bar w-11 shrink-0 border-l border-hairline flex flex-col items-center py-2 gap-1">
+              <div className="liquid-glass-bar w-12 shrink-0 border-l border-hairline flex flex-col items-center py-2 gap-1">
                 {allTabs.map(t => (
                   <button
                     key={t.id}
                     onClick={() => setTabletOverlayTab(prev => prev === t.id ? null : t.id)}
                     title={t.label}
-                    className={`w-9 h-9 rounded-lg text-[10px] font-semibold flex items-center justify-center transition-colors ${
+                    className={`w-11 h-11 rounded-lg text-[10px] font-semibold flex items-center justify-center transition-colors ${
                       tabletOverlayTab === t.id ? 'bg-accent-soft text-accent' : 'text-ink-faint hover:text-ink hover:bg-ink/5'
                     }`}
                   >
