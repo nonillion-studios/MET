@@ -39,7 +39,7 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     id: 'lasso',
     tools: [
       { id: 'lasso-freehand', label: 'Lasso', icon: Lasso, enabled: true, shortcut: 'l' },
-      { id: 'lasso-polygon', label: 'Polygonal Lasso', icon: Spline, enabled: false },
+      { id: 'lasso-polygon', label: 'Polygonal Lasso', icon: Spline, enabled: true },
       { id: 'lasso-magnetic', label: 'Magnetic Lasso', icon: Spline, enabled: false },
     ],
   },

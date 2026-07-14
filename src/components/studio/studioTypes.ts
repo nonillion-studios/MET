@@ -39,6 +39,8 @@ export const FONT_FAMILIES = [
   'Anime Ace', 'CC Wild Words', 'Comic Sans MS', 'Arial', 'Georgia', 'Impact',
 ];
 
+export type TranslationStatus = 'draft' | 'translated' | 'reviewed';
+
 export interface TextLayerData {
   content: string;
   x: number;
@@ -54,6 +56,9 @@ export interface TextLayerData {
   strokeColor: string;
   strokeWidth: number;
   rotation: number;
+  /** Translator workflow metadata — surfaced in the Translation Preview panel. */
+  status: TranslationStatus;
+  comment: string;
 }
 
 export interface StudioLayer {
@@ -122,6 +127,8 @@ export function createTextLayer(x: number, y: number): StudioLayer {
       strokeColor: '#ffffff',
       strokeWidth: 0,
       rotation: 0,
+      status: 'draft',
+      comment: '',
     },
   };
 }

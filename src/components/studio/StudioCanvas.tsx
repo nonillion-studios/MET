@@ -98,6 +98,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
+  const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
 
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
@@ -260,16 +261,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return () => { img.onload = null; };
   }, [overlaySource]);
 
-  // Esc cancels an in-progress Pen path.
+  // Esc cancels an in-progress Pen path or polygonal lasso; Enter commits either.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && penPoints.length > 0) setPenPoints([]);
+      if (e.key === 'Escape' && lassoPolyPoints.length > 0) setLassoPolyPoints([]);
       if (e.key === 'Enter' && activeTool === 'pen' && penPoints.length > 1) commitPenPath();
+      if (e.key === 'Enter' && activeTool === 'lasso-polygon' && lassoPolyPoints.length > 2) commitLassoPolygon();
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [penPoints, activeTool]);
+  }, [penPoints, lassoPolyPoints, activeTool]);
 
   // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
   useEffect(() => {
@@ -336,6 +339,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const pointer = stage?.getPointerPosition();
       if (!stage || !pointer) return;
       setPenPoints(prev => [...prev, { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale }]);
+      return;
+    }
+
+    if (activeTool === 'lasso-polygon') {
+      const p = imageSpacePointer();
+      if (!p) return;
+      setLassoPolyPoints(prev => [...prev, p]);
       return;
     }
 
@@ -423,13 +433,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     };
   }, []);
 
-  const handlePaintPointerMove = () => {
+  const handlePaintPointerMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (panRef.current?.active) return;
     if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
       const p = imageSpacePointer();
       if (!p) return;
       const start = marqueeStartRef.current;
-      const rect = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.abs(p.x - start.x), height: Math.abs(p.y - start.y) };
+      let width = Math.abs(p.x - start.x);
+      let height = Math.abs(p.y - start.y);
+      // Shift constrains Rectangular/Elliptical Marquee to a perfect square/circle, Photoshop-style.
+      if (e.evt.shiftKey) {
+        const side = Math.max(width, height);
+        width = side;
+        height = side;
+      }
+      const rect = {
+        x: p.x >= start.x ? start.x : start.x - width,
+        y: p.y >= start.y ? start.y : start.y - height,
+        width,
+        height,
+      };
       onSelectionChange(activeTool === 'marquee-ellipse' ? { kind: 'ellipse', ...rect } : { kind: 'rect', ...rect });
       return;
     }
@@ -471,8 +494,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     setPenPoints([]);
   };
 
+  const commitLassoPolygon = () => {
+    if (lassoPolyPoints.length > 2) onSelectionChange({ kind: 'polygon', points: lassoPolyPoints });
+    setLassoPolyPoints([]);
+  };
+
   const handleStageDblClick = () => {
     if (activeTool === 'pen') commitPenPath();
+    if (activeTool === 'lasso-polygon') commitLassoPolygon();
   };
 
   const editingLayer = editingLayerId ? layers.find(l => l.id === editingLayerId) ?? null : null;
@@ -691,6 +720,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 <Line points={penPoints.flatMap(p => [p.x, p.y])} stroke={paintSettings.color} strokeWidth={2 / scale} />
                 {penPoints.map((p, i) => (
                   <Rect key={i} x={p.x - 3 / scale} y={p.y - 3 / scale} width={6 / scale} height={6 / scale} fill={paintSettings.color} />
+                ))}
+              </>
+            )}
+            {lassoPolyPoints.length > 0 && (
+              <>
+                <Line points={lassoPolyPoints.flatMap(p => [p.x, p.y])} closed={lassoPolyPoints.length > 2}
+                  stroke="#ffffff" strokeWidth={1.5 / scale} dash={[6 / scale, 4 / scale]} />
+                {lassoPolyPoints.map((p, i) => (
+                  <Rect key={i} x={p.x - 3 / scale} y={p.y - 3 / scale} width={6 / scale} height={6 / scale} fill="#ffffff" />
                 ))}
               </>
             )}

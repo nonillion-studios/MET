@@ -27,6 +27,7 @@ import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { WorkflowBar } from './WorkflowBar';
 import { ExportDialog } from './ExportDialog';
+import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
   createBackgroundLayer, createLayer, createTextLayer, parseTyperScript,
@@ -267,9 +268,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
     return layersByPage[activePageId] ?? [createBackgroundLayer()];
   }, [layersByPage, activePageId]);
 
-  function updateLayers(updater: (current: StudioLayer[]) => StudioLayer[], historyLabel?: string) {
-    if (!activePageId) return;
-    const pageId = activePageId;
+  /** General primitive: edit any page's layer stack, not just the active one — the Translation
+   *  Preview panel needs to edit dialogue text across every page in the chapter at once. */
+  function updateLayersOnPage(pageId: string, updater: (current: StudioLayer[]) => StudioLayer[], historyLabel?: string) {
     const before = layersByPage[pageId] ?? [createBackgroundLayer()];
     const after = updater(before);
     setLayersByPage(prev => ({ ...prev, [pageId]: after }));
@@ -280,6 +281,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
         redo: () => setLayersByPage(prev => ({ ...prev, [pageId]: after })),
       });
     }
+  }
+
+  function updateLayers(updater: (current: StudioLayer[]) => StudioLayer[], historyLabel?: string) {
+    if (!activePageId) return;
+    updateLayersOnPage(activePageId, updater, historyLabel);
   }
 
   function handleAddLayer() {
@@ -393,6 +399,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
     ));
   }
 
+  /** Cross-page text edit, for the Translation Preview panel (search/replace, status, comments). */
+  function handleUpdateTextLayerOnPage(pageId: string, id: string, patch: Partial<TextLayerData>) {
+    updateLayersOnPage(pageId, current => current.map(l =>
+      l.id === id && l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
+    ));
+  }
+
+  function jumpToBubble(pageId: string, layerId: string) {
+    setActivePageId(pageId);
+    setActiveLayerId(layerId);
+    dock.selectTab('text');
+  }
+
   function handleCenterTextLayer(id: string) {
     canvasRef.current?.centerTextLayerInBubble(id);
   }
@@ -439,9 +458,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
     />
   );
 
+  const translationPanel = (
+    <TranslationPreviewPanel
+      pages={pages}
+      layersByPage={layersByPage}
+      activePageId={activePageId}
+      onJumpToBubble={jumpToBubble}
+      onUpdateText={(pageId, layerId, patch) => handleUpdateTextLayerOnPage(pageId, layerId, patch)}
+    />
+  );
+
   const allTabs = [
     ...(textPanel ? [{ id: 'text', label: 'Text', content: textPanel }] : []),
     { id: 'typer', label: 'TypeR', content: typerPanel },
+    { id: 'translation', label: 'Translation', content: translationPanel },
     { id: 'color', label: 'Color', content: colorPanel },
     { id: 'history', label: 'History', content: historyPanel },
     { id: 'layers', label: 'Layers', content: layersPanel },

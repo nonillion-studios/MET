@@ -5,6 +5,7 @@ export const DEFAULT_DOCK_REGION: Record<string, DockRegionId> = {
   text: 'top',
   layers: 'top',
   typer: 'bottom',
+  translation: 'bottom',
   color: 'bottom',
   history: 'bottom',
   pages: 'bottom',
