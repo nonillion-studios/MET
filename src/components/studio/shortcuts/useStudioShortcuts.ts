@@ -9,6 +9,7 @@ interface UseStudioShortcutsArgs {
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFit: () => void;
+  onToggleCleaned: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -18,7 +19,7 @@ function isTextInputFocused(): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || (el as HTMLElement).isContentEditable;
 }
 
-export function useStudioShortcuts({ onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit }: UseStudioShortcutsArgs) {
+export function useStudioShortcuts({ onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit, onToggleCleaned }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
   useEffect(() => {
@@ -38,11 +39,12 @@ export function useStudioShortcuts({ onToolChange, onBrushSizeStep, onSwapColors
       if (key === ']') { onBrushSizeStep(2); return; }
       if (key === 'x') { onSwapColors(); return; }
       if (key === 'd') { onResetColors(); return; }
+      if (key === 'o') { onToggleCleaned(); return; }
 
       const toolId = toolMap[key];
       if (toolId) { e.preventDefault(); onToolChange(toolId); }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit]);
+  }, [toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit, onToggleCleaned]);
 }

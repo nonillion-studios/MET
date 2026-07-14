@@ -70,10 +70,12 @@ function StudioInner({ chapterName, pages, onBack }: StudioProps) {
     onZoomIn: () => canvasRef.current?.zoomIn(),
     onZoomOut: () => canvasRef.current?.zoomOut(),
     onFit: () => setFitSignal(s => s + 1),
+    onToggleCleaned: () => setShowCleaned(v => !v),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   const [activeTool, setActiveTool] = useState('select');
   const [showCleaned, setShowCleaned] = useState(false);
+  const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [fitSignal, setFitSignal] = useState(0);
   const [dockOpen, setDockOpen] = useState(true);
 
@@ -331,6 +333,8 @@ function StudioInner({ chapterName, pages, onBack }: StudioProps) {
         chapterName={chapterName}
         showCleaned={showCleaned}
         onToggleCleaned={() => setShowCleaned(v => !v)}
+        overlayOpacity={overlayOpacity}
+        onOverlayOpacityChange={setOverlayOpacity}
         onFit={() => setFitSignal(s => s + 1)}
         onBack={onBack}
         onToggleDock={() => setDockOpen(v => !v)}
@@ -367,6 +371,7 @@ function StudioInner({ chapterName, pages, onBack }: StudioProps) {
                 ref={canvasRef}
                 page={activePage}
                 showCleaned={showCleaned}
+                overlayOpacity={overlayOpacity}
                 activeTool={activeTool}
                 fitSignal={fitSignal}
                 layers={layers}

@@ -5,6 +5,8 @@ interface StudioToolbarProps {
   chapterName: string;
   showCleaned: boolean;
   onToggleCleaned: () => void;
+  overlayOpacity: number;
+  onOverlayOpacityChange: (opacity: number) => void;
   onFit: () => void;
   onBack: () => void;
   onToggleDock: () => void;
@@ -12,7 +14,7 @@ interface StudioToolbarProps {
 }
 
 export function StudioToolbar({
-  chapterName, showCleaned, onToggleCleaned,
+  chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
   onFit, onBack, onToggleDock, hasCleaned,
 }: StudioToolbarProps) {
   return (
@@ -36,6 +38,22 @@ export function StudioToolbar({
         <span className="text-ink-faint">/</span>
         <span className={showCleaned ? 'text-accent' : 'text-ink-faint'}>Cleaned</span>
       </button>
+
+      {hasCleaned && showCleaned && (
+        <div className="hidden md:flex items-center gap-1.5 shrink-0 pl-1" title="Blend the original page as an overlay above the cleaned page">
+          <span className="text-[10px] text-ink-faint uppercase tracking-wide">Overlay</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={overlayOpacity}
+            onChange={(e) => onOverlayOpacityChange(Number(e.target.value))}
+            className="w-20 accent-accent"
+            aria-label="Original page overlay opacity"
+          />
+        </div>
+      )}
 
       <div className="flex-1" />
 

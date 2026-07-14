@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Button, GlassCard, IconButton } from '../ui';
 import { extractImagesFromZip } from '../../lib/zip';
-import { extractImagesFromFiles, createPagesFromOriginals, suggestPairing } from '../../lib/pages';
+import { extractImagesFromFiles, createPagesFromOriginals, suggestPairing, type ImageExtractionResult } from '../../lib/pages';
 import { swal, swalToast } from '../../lib/swalTheme';
 import type { Page, ProcessedImage } from '../../types';
 
@@ -47,19 +47,30 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
     }
   };
 
-  const runImport = async (kind: 'original' | 'cleaned', run: () => Promise<ProcessedImage[]>) => {
+  const runImport = async (kind: 'original' | 'cleaned', run: () => Promise<ImageExtractionResult>) => {
     setBusy(true);
     try {
-      const images = await run();
+      const { images, skipped } = await run();
       if (images.length === 0) {
-        swal({ icon: 'warning', title: 'No images found', text: 'That upload did not contain any supported images.' });
+        const detail = skipped.length > 0
+          ? `Every file was skipped: ${skipped.map(s => `${s.filename} (${s.reason})`).join(', ')}`
+          : 'That upload did not contain any supported images.';
+        swal({ icon: 'warning', title: 'No images found', text: detail });
         return;
       }
       if (kind === 'original') addOriginals(images);
       else addCleaned(images);
+      if (skipped.length > 0) {
+        swalToast({
+          icon: 'warning',
+          title: `${skipped.length} file(s) skipped`,
+          text: skipped.slice(0, 3).map(s => `${s.filename}: ${s.reason}`).join('; ') + (skipped.length > 3 ? '…' : ''),
+        });
+      }
     } catch (err) {
       console.error(err);
-      swal({ icon: 'error', title: 'Import Failed', text: 'The file might be corrupted or in an unsupported format.' });
+      const detail = err instanceof Error && err.message ? err.message : 'The file might be corrupted or in an unsupported format.';
+      swal({ icon: 'error', title: 'Import Failed', text: detail });
     } finally {
       setBusy(false);
     }

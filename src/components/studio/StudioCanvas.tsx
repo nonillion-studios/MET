@@ -18,6 +18,8 @@ const LASSO_TOOLS = new Set(['lasso-freehand']);
 interface StudioCanvasProps {
   page: Page | null;
   showCleaned: boolean;
+  /** 0 disables; >0 blends the original page as a translucent overlay above the cleaned page. */
+  overlayOpacity: number;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
@@ -55,7 +57,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, activeTool, fitSignal, layers,
   activeLayerId, onSelectLayer, onAddTextLayer, onUpdateTextLayer,
   paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick,
 }, ref) {
@@ -74,12 +76,38 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
   const pinchDistRef = useRef<number | null>(null);
+  const prevPinchCenterRef = useRef<{ x: number; y: number } | null>(null);
   const [touchCount, setTouchCount] = useState(0);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
+  const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
+
+  // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
+  const [spaceDown, setSpaceDown] = useState(false);
+  const panRef = useRef<{ active: boolean; lastX: number; lastY: number } | null>(null);
+  useEffect(() => {
+    function isTextInputFocused() {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || (el as HTMLElement).isContentEditable;
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code === 'Space' && !isTextInputFocused()) { e.preventDefault(); setSpaceDown(true); }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === 'Space') setSpaceDown(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
 
   const activeLayer = layers.find(l => l.id === activeLayerId) ?? null;
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
@@ -155,6 +183,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }), [onUpdateTextLayer, scale, pos, containerSize]);
 
   const activeSource = showCleaned && page?.cleaned ? page.cleaned : page?.original ?? null;
+  // Only meaningful when the cleaned page is the base — overlaying the original above itself is a no-op.
+  const overlaySource = showCleaned && overlayOpacity > 0 && page?.cleaned && page?.original ? page.original : null;
 
   // Load the active image element for Konva.
   useEffect(() => {
@@ -164,6 +194,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     img.onload = () => setImage(img);
     return () => { img.onload = null; };
   }, [activeSource]);
+
+  // Load the original-page overlay image (view-original-above-cleaned mode).
+  useEffect(() => {
+    if (!overlaySource) { setOverlayImage(null); return; }
+    const img = new window.Image();
+    img.src = overlaySource.dataUrl;
+    img.onload = () => setOverlayImage(img);
+    return () => { img.onload = null; };
+  }, [overlaySource]);
 
   // Esc cancels an in-progress Pen path.
   useEffect(() => {
@@ -260,6 +299,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   };
 
   const handlePaintPointerDown = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    // Middle-mouse-button drag, or left-click while Space is held, pans regardless of the active tool.
+    if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
+      e.evt.preventDefault();
+      panRef.current = { active: true, lastX: e.evt.clientX, lastY: e.evt.clientY };
+      return;
+    }
     if (activeTool === 'wand') {
       const p = imageSpacePointer();
       if (p) paint.pickMagicWand(p.x, p.y);
@@ -300,7 +345,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!p) return;
     paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey);
   };
+  // Window-level mousemove/mouseup for middle-mouse/space-drag panning, so the drag keeps
+  // tracking even if the pointer leaves the canvas bounds.
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      const p = panRef.current;
+      if (!p?.active) return;
+      const dx = e.clientX - p.lastX;
+      const dy = e.clientY - p.lastY;
+      panRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
+      setPos(prev => ({ x: prev.x + dx, y: prev.y + dy }));
+    }
+    function onMouseUp() {
+      if (panRef.current?.active) panRef.current = null;
+    }
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
   const handlePaintPointerMove = () => {
+    if (panRef.current?.active) return;
     if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
       const p = imageSpacePointer();
       if (!p) return;
@@ -323,6 +391,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
   };
   const handlePaintPointerUp = () => {
+    if (panRef.current?.active) { panRef.current = null; return; }
     if (MARQUEE_TOOLS.has(activeTool)) { marqueeStartRef.current = null; return; }
     if (LASSO_TOOLS.has(activeTool)) { lassoPointsRef.current = null; return; }
     if (!isPaintTool) return;
@@ -392,8 +461,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!stage || !box) return;
     const stagePoint = { x: center.x - box.left, y: center.y - box.top };
 
-    if (pinchDistRef.current == null) {
+    if (pinchDistRef.current == null || prevPinchCenterRef.current == null) {
       pinchDistRef.current = dist;
+      prevPinchCenterRef.current = stagePoint;
       return;
     }
 
@@ -401,26 +471,37 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const newScale = clampScale(oldScale * (dist / pinchDistRef.current));
     pinchDistRef.current = dist;
 
-    const stagePointTo = {
-      x: (stagePoint.x - pos.x) / oldScale,
-      y: (stagePoint.y - pos.y) / oldScale,
+    // Anchor on the previous frame's pinch center (not the current one) so that a plain
+    // two-finger drag — no distance change — pans by the center's movement instead of no-op'ing.
+    const prevCenter = prevPinchCenterRef.current;
+    prevPinchCenterRef.current = stagePoint;
+    const anchorWorld = {
+      x: (prevCenter.x - pos.x) / oldScale,
+      y: (prevCenter.y - pos.y) / oldScale,
     };
     setScale(newScale);
     setPos({
-      x: stagePoint.x - stagePointTo.x * newScale,
-      y: stagePoint.y - stagePointTo.y * newScale,
+      x: stagePoint.x - anchorWorld.x * newScale,
+      y: stagePoint.y - anchorWorld.y * newScale,
     });
   };
 
   const handleTouchEnd = (e: Konva.KonvaEventObject<TouchEvent>) => {
-    if (e.evt.touches.length < 2) pinchDistRef.current = null;
+    if (e.evt.touches.length < 2) {
+      pinchDistRef.current = null;
+      prevPinchCenterRef.current = null;
+    }
     setTouchCount(e.evt.touches.length);
   };
 
-  const draggable = activeTool === 'pan' || activeTool === 'select';
+  // Space/middle-mouse panning is handled manually via panRef (see handlePaintPointerDown and the
+  // window mousemove/mouseup effect) so it works uniformly across tools without fighting Konva's
+  // own native drag-handling for the Pan/Select tools.
+  const draggable = (activeTool === 'pan' || activeTool === 'select') && !spaceDown;
+  const cursorClass = panRef.current?.active || spaceDown ? 'cursor-grab' : '';
 
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-[#0b0b0d] touch-none">
+    <div ref={containerRef} className={`relative w-full h-full overflow-hidden bg-[#0b0b0d] touch-none ${cursorClass}`}>
       {containerSize.width > 0 && (
         <Stage
           ref={stageRef}
@@ -457,6 +538,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   shadowOpacity={0.6}
                 />
                 <KonvaImage image={image} width={image.width} height={image.height} />
+                {overlayImage && (
+                  <KonvaImage
+                    image={overlayImage}
+                    width={image.width}
+                    height={image.height}
+                    opacity={overlayOpacity}
+                    listening={false}
+                  />
+                )}
               </>
             )}
           </Layer>
