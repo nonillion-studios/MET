@@ -39,6 +39,8 @@ export const FONT_FAMILIES = [
   'Anime Ace', 'CC Wild Words', 'Comic Sans MS', 'Arial', 'Georgia', 'Impact',
 ];
 
+export type TranslationStatus = 'draft' | 'translated' | 'reviewed';
+
 export interface TextLayerData {
   content: string;
   x: number;
@@ -54,6 +56,9 @@ export interface TextLayerData {
   strokeColor: string;
   strokeWidth: number;
   rotation: number;
+  /** Translator workflow metadata — surfaced in the Translation Preview panel. */
+  status: TranslationStatus;
+  comment: string;
 }
 
 export interface StudioLayer {
@@ -122,6 +127,8 @@ export function createTextLayer(x: number, y: number): StudioLayer {
       strokeColor: '#ffffff',
       strokeWidth: 0,
       rotation: 0,
+      status: 'draft',
+      comment: '',
     },
   };
 }
@@ -129,10 +136,15 @@ export function createTextLayer(x: number, y: number): StudioLayer {
 /**
  * TypeR-style scripted lettering: a style is picked per script line by matching
  * a prefix (e.g. "!!" for SFX), then stripped before the text is placed.
+ * Ported from the real TypeR 2.5 extension's parsing model (folders, "//"
+ * continuation lines, Page-N auto page switching) — see CLAUDE.md for the
+ * mapping of Photoshop-host concepts to this canvas app's equivalents.
  */
 export interface TyperStyle {
   id: string;
   name: string;
+  /** Purely organizational (grouping in the panel) — folder membership does not itself affect prefix matching priority; see parseTyperScript. */
+  folder?: string;
   /** Empty prefix ("") matches any line that no other, more specific style claims first. */
   prefix: string;
   fontFamily: string;
@@ -145,34 +157,92 @@ export interface TyperStyle {
 }
 
 export const DEFAULT_TYPER_STYLES: TyperStyle[] = [
-  { id: 'dialogue', name: 'Dialogue', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 },
-  { id: 'sfx', name: 'SFX', prefix: '!!', fontFamily: 'Impact', fontSize: 44, color: '#ffffff', bold: true, italic: false, strokeColor: '#000000', strokeWidth: 3 },
-  { id: 'thought', name: 'Thought', prefix: '~', fontFamily: FONT_FAMILIES[0], fontSize: 24, color: '#000000', bold: false, italic: true, strokeColor: '#ffffff', strokeWidth: 0 },
+  { id: 'dialogue', name: 'Dialogue', folder: 'General', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 },
+  { id: 'sfx', name: 'SFX', folder: 'General', prefix: '!!', fontFamily: 'Impact', fontSize: 44, color: '#ffffff', bold: true, italic: false, strokeColor: '#000000', strokeWidth: 3 },
+  { id: 'thought', name: 'Thought', folder: 'General', prefix: '~', fontFamily: FONT_FAMILIES[0], fontSize: 24, color: '#000000', bold: false, italic: true, strokeColor: '#ffffff', strokeWidth: 0 },
 ];
 
+export function createTyperStyle(name = 'New Style'): TyperStyle {
+  return { id: genTyperId(), name, folder: 'General', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 };
+}
+
+let typerIdCounter = 0;
+function genTyperId() {
+  typerIdCounter += 1;
+  return `style-${Date.now()}-${typerIdCounter}`;
+}
+
 export interface TyperLine {
-  /** Index into the original script (for progress display), skipping ignored/empty lines. */
+  /** Raw source line(s) — multi-line when "//" continuation lines were merged in. */
   raw: string;
   content: string;
   style: TyperStyle;
+  /** Set when a preceding "Page N" control line (English or Arabic, incl. Arabic-Indic digits) preceded this line. */
+  pageHint?: string;
+  /** Inline bold (markdown or HTML) wrapping on this line overrides the matched style for this placement only. */
+  boldOverride?: boolean;
+  italicOverride?: boolean;
+}
+
+const ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+function arabicIndicToLatinDigits(s: string): string {
+  return s.replace(/[٠-٩]/g, (d) => String(ARABIC_INDIC_DIGITS.indexOf(d)));
+}
+
+/** Matches an English or Arabic "Page N" control line — case-insensitive, optional colon/dash, Arabic-Indic digits supported. */
+const PAGE_LINE_RE = /^(?:page|الصفحة|ص)[\s:\-]*([0-9٠-٩]+)\s*$/i;
+
+function stripInlineEmphasis(content: string): { content: string; boldOverride?: boolean; italicOverride?: boolean } {
+  const boldMatch = content.match(/^\*\*(.+)\*\*$/) ?? content.match(/^<b>(.+)<\/b>$/i);
+  if (boldMatch) return { content: boldMatch[1].trim(), boldOverride: true };
+  const italicMatch = content.match(/^\*(.+)\*$/) ?? content.match(/^<i>(.+)<\/i>$/i);
+  if (italicMatch) return { content: italicMatch[1].trim(), italicOverride: true };
+  return { content };
 }
 
 /**
- * Parses a pasted script into placeable lines. Lines starting with "##" are
- * ignored (notes). Longer prefixes are checked first so "!!" doesn't get
- * shadowed by an empty-prefix style.
+ * Parses a pasted script into placeable lines.
+ * - "##" prefix lines are ignored (notes).
+ * - "Page N" control lines (English/Arabic, Arabic-Indic digits ok) don't place text
+ *   themselves — they tag the next real line with a `pageHint` for auto page-switching.
+ * - "//" lines append to the previously placed line (a continuation), joined with a newline.
+ * - Longer prefixes are checked first so "!!" doesn't get shadowed by an empty-prefix style.
+ * - A line fully wrapped in bold or italic markdown/HTML markers gets a per-placement style override.
  */
 export function parseTyperScript(script: string, styles: TyperStyle[]): TyperLine[] {
   const sortedStyles = [...styles].sort((a, b) => b.prefix.length - a.prefix.length);
-  return script
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.startsWith('##'))
-    .map(raw => {
-      const style = sortedStyles.find(s => s.prefix && raw.startsWith(s.prefix))
-        ?? sortedStyles.find(s => s.prefix === '')
-        ?? styles[0];
-      const content = style.prefix ? raw.slice(style.prefix.length).trim() : raw;
-      return { raw, content, style };
-    });
+  const lines: TyperLine[] = [];
+  let pendingPageHint: string | undefined;
+
+  for (const rawLine of script.split('\n')) {
+    const trimmed = rawLine.trim();
+    if (trimmed.length === 0) continue;
+    if (trimmed.startsWith('##')) continue;
+
+    const pageMatch = trimmed.match(PAGE_LINE_RE);
+    if (pageMatch) {
+      pendingPageHint = arabicIndicToLatinDigits(pageMatch[1]);
+      continue;
+    }
+
+    if (trimmed.startsWith('//')) {
+      const last = lines[lines.length - 1];
+      if (last) {
+        last.content = `${last.content}\n${trimmed.slice(2).trim()}`;
+        last.raw = `${last.raw}\n${rawLine}`;
+      }
+      continue;
+    }
+
+    const style = sortedStyles.find(s => s.prefix && trimmed.startsWith(s.prefix))
+      ?? sortedStyles.find(s => s.prefix === '')
+      ?? styles[0];
+    const stripped = style.prefix ? trimmed.slice(style.prefix.length).trim() : trimmed;
+    const { content, boldOverride, italicOverride } = stripInlineEmphasis(stripped);
+
+    lines.push({ raw: rawLine, content, style, pageHint: pendingPageHint, boldOverride, italicOverride });
+    pendingPageHint = undefined;
+  }
+
+  return lines;
 }

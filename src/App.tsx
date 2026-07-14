@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes
+  Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes, Download, Upload
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { MangaSeries, Volume, Chapter, Workspace, Page } from './types';
@@ -22,9 +22,11 @@ import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
 import { PageManager } from './components/studio/PageManager';
 import { Studio } from './components/studio/Studio';
+import { TextEditorPage } from './components/textEditor/TextEditorPage';
 import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
 import { migrateWorkspace } from './lib/migrate';
+import { exportWorkspaceToMsp, downloadMsp, importMspFile, saveImportedStudioData } from './lib/mspFile';
 import { interleaveWithAds } from './lib/interleaveAds';
 import type { NavTabId } from './config/navTabs';
 
@@ -48,6 +50,7 @@ export default function App() {
   const [newWorkspaceDesc, setNewWorkspaceDesc] = useState('');
   const [newWorkspaceCoverUrl, setNewWorkspaceCoverUrl] = useState('');
   const workspaceCoverInputRef = useRef<HTMLInputElement>(null);
+  const mspImportInputRef = useRef<HTMLInputElement>(null);
 
   // Create series modal
   const [showCreateSeriesModal, setShowCreateSeriesModal] = useState(false);
@@ -74,6 +77,9 @@ export default function App() {
   const [showTermsModal, setShowTermsModal] = useState(false);
 
   const [chapterView, setChapterView] = useState<'manage' | 'studio'>('manage');
+  // Bridges "Send to TypeR" from the standalone Text Editor page into whichever chapter's
+  // Studio the user next opens — Studio consumes and clears this on mount.
+  const [pendingTyperScript, setPendingTyperScript] = useState<string | null>(null);
 
   useEffect(() => {
     get('workspaces_library').then(async (saved) => {
@@ -254,6 +260,32 @@ export default function App() {
     if (activeWorkspaceId === workspace.id) resetToWorkspaceRoot();
   };
 
+  const handleExportWorkspace = async (workspace: Workspace) => {
+    try {
+      const blob = await exportWorkspaceToMsp(workspace);
+      downloadMsp(blob, workspace.name);
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Export Failed', text: err instanceof Error ? err.message : 'Could not export this project.' });
+    }
+  };
+
+  const handleImportMspFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const { workspace, studioDataByChapterId } = await importMspFile(file);
+      const imported = { ...workspace, id: genId('workspace') };
+      setWorkspaces(prev => [...prev, imported]);
+      await saveImportedStudioData(studioDataByChapterId);
+      swalToast({ icon: 'success', title: `Imported "${imported.name}"` });
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Import Failed', text: err instanceof Error ? err.message : 'That file could not be imported.' });
+    }
+  };
+
   const handleDeleteManga = async (manga: MangaSeries) => {
     const result = await swal({
       icon: 'warning',
@@ -354,6 +386,12 @@ export default function App() {
 
           {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} />}
 
+          {activeNavigationTab === 'text-editor' && (
+            <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#0b0b0d] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+              <TextEditorPage onSendToTyper={(script) => setPendingTyperScript(script)} />
+            </div>
+          )}
+
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
               {!activeChapter && <AdSlot placement="library-top" />}
@@ -404,9 +442,12 @@ export default function App() {
                   </div>
                 ) : (
                   <Studio
+                    chapterId={activeChapter.id}
                     chapterName={activeChapter.name}
                     pages={activeChapter.pages}
                     onBack={() => setChapterView('manage')}
+                    pendingTyperScript={pendingTyperScript}
+                    onConsumePendingTyperScript={() => setPendingTyperScript(null)}
                   />
                 )
               )}
@@ -549,7 +590,13 @@ export default function App() {
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <h2 className="text-lg font-display font-semibold text-ink">My Workspaces</h2>
-                    <Button size="sm" onClick={() => setShowCreateWorkspaceModal(true)}><Plus size={14} /> New Workspace</Button>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => mspImportInputRef.current?.click()}>
+                        <Upload size={14} /> Import Project
+                      </Button>
+                      <input ref={mspImportInputRef} type="file" accept=".msp" className="hidden" onChange={handleImportMspFile} />
+                      <Button size="sm" onClick={() => setShowCreateWorkspaceModal(true)}><Plus size={14} /> New Workspace</Button>
+                    </div>
                   </div>
                   {workspaces.length === 0 && (
                     <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
@@ -574,13 +621,23 @@ export default function App() {
                             <p className="text-[11px] text-ink-faint uppercase tracking-wide">{ws.mangas.length} series</p>
                           </div>
                         </GlassCard>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(ws); }}
-                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                          aria-label="Delete workspace"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleExportWorkspace(ws); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Export project (.msp)"
+                            title="Export project (.msp)"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(ws); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Delete workspace"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </button>
                     ), 'library-workspaces')}
                   </div>

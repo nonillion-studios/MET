@@ -36,7 +36,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
   const sourceSnapshotRef = useRef<HTMLCanvasElement | null>(null);
   const strokeBeforeRef = useRef<ImageData | null>(null);
 
-  const pointerDown = useCallback((tool: PaintTool, x: number, y: number, altKey: boolean) => {
+  const pointerDown = useCallback((tool: PaintTool, x: number, y: number, altKey: boolean, pressure = 1) => {
     const canvas = getCanvas();
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -76,12 +76,14 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     strokeBeforeRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
     drawingRef.current = true;
     lastRef.current = { x, y };
-    applyStrokeSegment(ctx, tool, x, y, x, y);
+    applyStrokeSegment(ctx, tool, x, y, x, y, pressure);
   }, [getCanvas, settings, selection, onStrokeEnd]);
 
-  function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number) {
+  function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number, pressure = 1) {
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
-      strokeSegment(ctx, lastX, lastY, x, y, settings, tool, selection);
+      // Stylus pressure (0-1, from PointerEvent.pressure) scales the effective brush size for this segment.
+      const effectiveSettings = pressure !== 1 ? { ...settings, size: Math.max(1, settings.size * pressure) } : settings;
+      strokeSegment(ctx, lastX, lastY, x, y, effectiveSettings, tool, selection);
     } else if (tool === 'clone' && cloneOffsetRef.current && sourceSnapshotRef.current) {
       cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
     } else if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn' || tool === 'sponge') {
@@ -92,7 +94,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     }
   }
 
-  const pointerMove = useCallback((tool: PaintTool, x: number, y: number) => {
+  const pointerMove = useCallback((tool: PaintTool, x: number, y: number, pressure = 1) => {
     const canvas = getCanvas();
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -104,7 +106,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
 
     if (!drawingRef.current || !lastRef.current) return;
     const last = lastRef.current;
-    applyStrokeSegment(ctx, tool, last.x, last.y, x, y);
+    applyStrokeSegment(ctx, tool, last.x, last.y, x, y, pressure);
     lastRef.current = { x, y };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getCanvas, settings, selection]);

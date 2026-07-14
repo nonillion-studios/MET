@@ -1,4 +1,4 @@
-import { ArrowLeft, Maximize2, PanelRight } from 'lucide-react';
+import { ArrowLeft, Maximize2, Minimize2, PanelRight } from 'lucide-react';
 import { IconButton } from '../ui';
 
 interface StudioToolbarProps {
@@ -11,11 +11,13 @@ interface StudioToolbarProps {
   onBack: () => void;
   onToggleDock: () => void;
   hasCleaned: boolean;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
 }
 
 export function StudioToolbar({
   chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
-  onFit, onBack, onToggleDock, hasCleaned,
+  onFit, onBack, onToggleDock, hasCleaned, isFullscreen, onToggleFullscreen,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline overflow-x-auto">
@@ -59,6 +61,15 @@ export function StudioToolbar({
 
       <IconButton size="sm" aria-label="Fit to screen" onClick={onFit} className="!bg-transparent shrink-0">
         <Maximize2 size={15} />
+      </IconButton>
+      <IconButton
+        size="sm"
+        aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        title={isFullscreen ? 'Exit fullscreen (Ctrl/Cmd+Shift+F)' : 'Fullscreen (Ctrl/Cmd+Shift+F)'}
+        onClick={onToggleFullscreen}
+        className={`!bg-transparent shrink-0 ${isFullscreen ? '!text-accent' : ''}`}
+      >
+        {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
       </IconButton>
       <IconButton size="sm" aria-label="Toggle layers & pages panel" onClick={onToggleDock} className="!bg-transparent shrink-0">
         <PanelRight size={15} />

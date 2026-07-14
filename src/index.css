@@ -331,6 +331,15 @@
   animation: modalBackdropIn 0.2s ease-out both;
 }
 
+/* Phone-breakpoint full-height panel sheet slide-in */
+@keyframes slideUpSheet {
+  0% { transform: translateY(100%); }
+  100% { transform: translateY(0); }
+}
+.animate-slide-up-sheet {
+  animation: slideUpSheet 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Safe-area padding for iOS home-indicator clearance on floating nav bars */
 .pb-safe {
   padding-bottom: max(env(safe-area-inset-bottom), 0px);

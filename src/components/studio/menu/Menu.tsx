@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react';
 import { cn } from '../../ui/cn';
 import type { MenuDef } from './menuDefinitions';
 
@@ -22,7 +23,10 @@ export function Menu({ menu, onItemClick }: MenuProps) {
             'text-ink hover:bg-accent-soft hover:text-accent'
           )}
         >
-          <span>{item.label}</span>
+          <span className="flex items-center gap-1.5">
+            <Check size={11} className={item.checked ? 'text-accent' : 'invisible'} />
+            {item.label}
+          </span>
           {item.shortcut && <span className="text-[10px] text-ink-faint font-mono">{item.shortcut}</span>}
         </button>
       ))}
