@@ -6,7 +6,7 @@ Architecture guide for future Claude sessions working on this repo. Read this be
 
 **MET** is a React 19 + TypeScript + Vite + Konva web app for manga/manhwa cleaning, translation, and typesetting. It is a normal bundled SPA (not the single-file/offline architecture described in the orphaned prototype doc at `src/assets/claude.md` — that file documents a *different*, disconnected reference prototype at `src/assets/mangastudio (1).html`; useful as design reference only, not part of the shipping app).
 
-Entry point: `src/App.tsx`, rendered via `src/main.tsx` into `index.html`. Top-level navigation (`src/config/navTabs.ts`) currently has 4 tabs: Library, Cloud, Teams, Settings — there is no dedicated Home/landing screen yet (see "Known gaps" below).
+Entry point: `src/App.tsx`, rendered via `src/main.tsx` into `index.html`. Top-level navigation (`src/config/navTabs.ts`) has 5 tabs: Library, Text Editor, Settings, Teams, Cloud — there is still no dedicated Home/landing screen (Recent/Templates/Tutorials/Plugins/Account), see "Known gaps" below.
 
 ## Data model
 
@@ -40,11 +40,15 @@ Real, working layer features: opacity, blend mode (`globalCompositeOperation` vi
 
 Konva `Stage`/`Layer` per page. Background image loads into `image` state from `page.original` or `page.cleaned` (via `showCleaned`); when `overlayOpacity > 0` and `showCleaned` is true, `page.original` also loads as a second `overlayImage` rendered on top at that opacity (View Original overlay mode).
 
-Pan: Pan/Select tools drag the Stage natively; **any other tool** pans via Space-hold or middle-mouse-drag, handled manually through `panRef` + window-level `mousemove`/`mouseup` listeners (not Konva's built-in drag, to avoid fighting per-tool pointer handlers). Two-finger touch pans *and* pinch-zooms simultaneously (`handleTouchMove` anchors on the *previous* frame's pinch center, not the current one — a plain two-finger drag with no distance change still pans correctly).
+Pan: Pan/Select tools drag the Stage natively; **any other tool** pans via Space-hold or middle-mouse-drag, handled manually through `panRef` + window-level `mousemove`/`mouseup` listeners (not Konva's built-in drag, to avoid fighting per-tool pointer handlers).
 
 Tool routing in `handlePaintPointerDown/Move/Up` dispatches by `activeTool` string against several disjoint sets: `MARQUEE_TOOLS`, `LASSO_TOOLS` (drag-based freehand only — `lasso-polygon` is click-accumulate, handled separately via `handleStageClick`/`lassoPolyPoints`, mirroring the Pen tool's `penPoints` pattern), `PAINT_TOOLS` (from `paint/usePaintLayer.ts`). Marquee Shift constrains to a perfect square/circle.
 
-Selection model: `paint/selection.ts`'s `Selection` union (`rect | ellipse | polygon | mask`) — vector shapes clip via `Path2D`, magic-wand masks approximate live via bounding box during a stroke and get pixel-perfect refinement on commit (`refineMaskedRegion`). **Not implemented**: feather, expand/contract, add/subtract with Shift/Alt (would need `Selection` to support compound multi-region masks, not just one shape at a time — real work, not done).
+All of the above dispatch through **Pointer Events** (`onPointerDown/Move/Up`), not separate mouse/touch handlers — mouse, touch, and pen input share one code path. Real stylus pressure (`PointerEvent.pressure`) scales brush/pencil/eraser size (only for `pointerType === 'pen'`; mouse/touch report a flat, meaningless 0.5 per spec). A `touchCount >= 2` guard skips tool dispatch for pointer events fired mid-two-finger-gesture, deferring to the separate pinch/pan `onTouchMove` handler. Two-finger touch pans *and* pinch-zooms simultaneously (`handleTouchMove` anchors on the *previous* frame's pinch center, not the current one — a plain two-finger drag with no distance change still pans correctly).
+
+Selection model: `paint/selection.ts`'s `Selection` union (`rect | ellipse | polygon | mask`) — vector shapes clip via `Path2D`, magic-wand masks approximate live via bounding box during a stroke and get pixel-perfect refinement on commit (`refineMaskedRegion`). **Not implemented**: feather, expand/contract, add/subtract with Shift/Alt (would need `Selection` to support compound multi-region masks, not just one shape at a time — real work, not done). Also not implemented: magnetic lasso, patch tool, curvature pen/path selection/direct selection, liquify, brush mirror/symmetry modes — declared in `toolGroups.ts`/SPEC but not built.
+
+Grid (`showGrid`) and rulers (`showRulers`) are real, toggled from the View menu — grid is a Konva overlay layer at a fixed 100px page-space spacing; rulers are HTML overlays tracking `pos`/`scale` with tick labels every 100px.
 
 ### Persistence
 
@@ -62,7 +66,7 @@ Native project format: `.msp` (zipped JSON containing the full workspace tree + 
 - PSD: `exportPsd()` builds an `ag-psd` `Psd` object — one layer per `StudioLayer`, raster layers get a canvas, text layers get `LayerTextData` (editable in Photoshop; font family names pass through as-is, Photoshop substitutes if not installed — can't resolve that from a browser). `ag-psd` is **dynamically imported** (`await import('ag-psd')`) so it code-splits into its own chunk instead of bloating the main bundle (it's ~300KB alone).
 - `ExportDialog.tsx` wires both into the Project menu / `Ctrl/Cmd+E`.
 
-Text export (TXT/DOCX/PDF) does not exist yet — there is no text editor to export from (see Phase 7 gap below).
+Text export (TXT/DOCX/PDF) lives in `src/lib/textEditorExport.ts` — see the Text Editor section below.
 
 ### TypeR (scripted lettering)
 
@@ -85,7 +89,7 @@ Ported from the real TypeR 2.5 extension's documented behavior (see `src/assets/
 
 `DockContext.tsx` manages which tab is active in the `top`/`bottom` regions and which tabs are floating (`FloatingPanel.tsx`, drag + resize). Layout (active tabs + floating rects) persists to `localStorage` under `dock_layout_<chapterId>`, debounced — scoped per chapter so switching projects doesn't bleed one chapter's panel arrangement into another's. `homeRegion` (which region a tab defaults to) is static (`dockLayout.ts`'s `DEFAULT_DOCK_REGION`) and never mutated at runtime, so it isn't persisted.
 
-Responsive breakpoints (`Studio.tsx`'s `layoutMode`): `desktop` (≥1024px, side dock), `tablet` (768–1024px, dock collapses to a tap-to-open icon strip overlay), `phone` (<768px, bottom sheet — **not yet redesigned** per the fuller phone spec of a bottom toolbar + full-height slide-in sheets; still using the original 45vh bottom-sheet dock).
+Responsive breakpoints (`Studio.tsx`'s `layoutMode`): `desktop` (≥1024px, side dock), `tablet` (768–1024px, dock collapses to a tap-to-open icon strip overlay), `phone` (<768px, dock opens as a near-full-height slide-in sheet — `animate-slide-up-sheet` in `index.css` — with a drag-handle/close affordance, not a fixed-height strip). Tool rail is already icon-only/horizontal on phone via existing `lg:hidden` breakpoint classes; StudioToolbar serves as the top mini-bar on every breakpoint.
 
 Fullscreen: native Fullscreen API on the Studio root, synced to `fullscreenchange` (not just button state, so Esc/browser UI stays in sync). Not bound to literal F11 — browsers intercept that key at the chrome level before JS reliably sees it — bound to `Ctrl/Cmd+Shift+F` instead. `Tab` hides all panels (menu bar, tool options, tool rail, dock, floating panels), guarded against firing while any input/textarea/contenteditable has focus.
 
@@ -95,18 +99,30 @@ Window menu items render real checkmarks (`Menu.tsx`'s `checked` field) reflecti
 
 `WorkflowBar.tsx` — a slim stage-pill strip (Chapter → Page → Detection → Cleaning → Drawing → Typesetting → Review → Export) mounted between the toolbar and tool options bar. Every "active" pill reflects a real, checkable condition (has a cleaned page, has a `clean-patch` layer, has a non-empty text layer); Detection/Review/Export are shown dim/untracked since nothing in the app tracks those stages yet — deliberately not faked.
 
+## Text Editor (`src/components/textEditor/TextEditorPage.tsx`)
+
+A standalone top-level page (`src/config/navTabs.ts`'s `'text-editor'` nav tab), **not** embedded in Studio — reached via the sidebar/bottom nav, matching the "own page, own switcher" requirement. TypeR itself is Studio-only; the editor connects to it one-way via a "Send to TypeR" pipeline (see below).
+
+- **Multi-document tabs**: `TextEditorDoc[]` (`src/lib/textEditorStore.ts`), each with its own pages, persisted to IndexedDB (`text_editor_docs` key, separate from both Studio stores).
+- **Pagination**: each doc's pages are A4-sized (`794×1123px`) `contentEditable` divs. `reflow()` does direct DOM manipulation on refs — pushes overflowing trailing block-children to the next page, pulls blocks back up from the next page to fill gaps — and only touches React state to change *page count* (splice the array, keep every untouched page's string reference identical). This is deliberate: re-rendering a page's `dangerouslySetInnerHTML` on every keystroke would reset that page's DOM and kill the caret mid-typing, so normal content edits never flow back through state — only autosave (on a debounce timer, captured fresh from refs) and explicit bulk actions (spell-check apply, find/replace, doc switch) do, and those intentionally force a full page re-render via `renderKey`.
+- **Formatting**: `document.execCommand`-based toolbar (bold/italic/underline/headings/lists/align) — the same pragmatic approach the reference prototype used; no custom rich-text model.
+- **Spell-check**: `src/lib/spellCheck.ts` — a small starter EN+AR misspelling dictionary (not a full language dictionary — there's no server to back a real one), flags exact-word matches as clickable `.spell-miss` spans, click-to-fix. `stripSpellMarks()` always runs before export/send, matching the reference prototype's "export strips spell marks" convention.
+- **Export**: TXT (real, `pageToPlainText`), DOCX (real, via the `docx` npm package — dynamically imported so it doesn't bloat the main bundle, block-level HTML→paragraph/run mapping with bold/italic/underline/heading levels preserved), PDF (`printDocAsPdf` opens a print-formatted window with `@media print` A4 page breaks exactly matching the on-screen pages, then calls `window.print()` — deliberately avoids a heavy client-side PDF-rendering library since the browser's native print-to-PDF already produces print-quality, pixel-accurate output).
+- **Send to TypeR**: strips spell marks, joins all pages' plain text, and calls `onSendToTyper` → `App.tsx`'s `pendingTyperScript` state → `Studio.tsx` consumes it into `typerScript` on mount and clears it. This means the text is "waiting" in whichever chapter's Studio the user opens next, without either page needing to be mounted simultaneously.
+- **Not implemented this pass**: tables, images, comments, track changes, and the *optional* in-editor floating panels (Translation Preview and a live read-only page thumbnail) that SPEC describes as opt-in helpers while writing — real, separate scope beyond a first working editor. No dedicated "switch Studio ↔ Editor" keyboard shortcut either; switching is one click via the existing nav rail/tab bar.
+
 ## Known gaps (honest, not silently dropped)
 
-- **No standalone text editor.** Nothing Word-like exists — no pagination, spell-checker, DOCX/PDF/TXT export, or "send editor text → TypeR" pipeline. This is real, substantial net-new work (a full second app page), not a bug fix.
-- **No Home/landing page.** Top nav is 4 flat tabs (Library/Cloud/Teams/Settings); Recent/Templates/Tutorials/Plugins/Account don't exist. Building nav destinations with no real content behind them would violate the no-placeholder rule — needs real features first.
-- **Touch/pointer engine is only partially unified.** Brush/paint tools still use separate mouse (`onMouseDown` et al.) and touch (`onTouchMove` et al.) handlers rather than a single Pointer Events pipeline; stylus pressure (`PointerEvent.pressure`) is not read anywhere. Two-finger pan/pinch and press-and-hold flyouts do work on touch already.
-- **Interactive control sizing** on mobile/tablet breakpoints hasn't had a systematic ≥44px touch-target pass — many buttons/sliders are still 24–32px.
-- **Layer groups/masks/adjustment layers/smart objects**, **magnetic lasso**, **patch tool**, **curvature pen / path selection / direct selection**, **selection feather/expand/contract/add-subtract**, **liquify**, **brush mirror/symmetry modes** — declared as intended features (in tool lists or type unions) but not implemented. Each is a genuinely separate chunk of work.
-- **Fonts manager, music player, navigator/minimap, rulers/grid/guides** — not implemented.
+- **No Home/landing page.** Top nav is 5 flat tabs (Library/Text Editor/Settings/Teams/Cloud); Recent/Templates/Tutorials/Plugins/Account don't exist. Building nav destinations with no real content behind them would violate the no-placeholder rule — needs real features first.
+- **Interactive control sizing** on mobile/tablet breakpoints hasn't had a systematic ≥44px touch-target pass — many buttons/sliders are still 24–32px (a few new additions, like the tablet dock icon strip, were sized to 44px; the sweep across every existing control wasn't done).
+- **Layer groups/masks/adjustment layers/smart objects**, **magnetic lasso**, **patch tool**, **curvature pen / path selection / direct selection**, **selection feather/expand/contract/add-subtract**, **liquify**, **brush mirror/symmetry modes**, **Multi-Bubble mode** (TypeR) — declared as intended features (in tool lists, type unions, or SPEC) but not implemented. Each is a genuinely separate chunk of work.
+- **Fonts manager, music player, navigator/minimap, safe-area overlay** — not implemented (Grid and Rulers *are* implemented, see Canvas engine above).
+- **Text editor**: no tables/images/comments/track-changes, no in-editor floating Translation-Preview/page-thumbnail panels, no dedicated Studio↔Editor shortcut.
 
 ## Conventions
 
 - Keep the two IndexedDB stores (`workspaces_library` vs `studio_<chapterId>`) separate — don't fold raster/layer data into the main library object; that was a deliberate autosave-cost decision.
 - New persisted shapes should include a `schemaVersion` field and a real migration path (see `migrate.ts` for the pattern), not just hope old data happens to still parse.
-- Large/optional dependencies (like `ag-psd`) should be dynamically imported, not top-level, to keep the main bundle lean — check `npm run build`'s chunk output after adding one.
+- Large/optional dependencies (`ag-psd`, `docx`) are dynamically imported (`await import(...)`), not top-level, to keep the main bundle lean — check `npm run build`'s chunk output after adding a new one; it should show up as its own chunk, not inflate the main one.
 - `npm run lint` is actually `tsc --noEmit` (no separate linter configured) — run it after any change; `npm run build` is the stronger check since Vite/Rollup catch a few things `tsc --noEmit` alone doesn't.
+- This session ported algorithms/behavior from two references: `src/assets/mangastudio (1).html` (a disconnected single-file prototype — TypeR parsing model, Tab-hide-panels, teReflow pagination) and the documentation in `src/assets/claude.md` (Arabic, describes that prototype's contracts). Both are read-only reference material, not part of the shipping app — don't wire them in or assume their code paths exist here.
