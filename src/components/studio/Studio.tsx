@@ -45,6 +45,9 @@ interface StudioProps {
   chapterName: string;
   pages: Page[];
   onBack: () => void;
+  /** Text sent from the standalone Text Editor page's "Send to TypeR" button, waiting to be picked up. */
+  pendingTyperScript?: string | null;
+  onConsumePendingTyperScript?: () => void;
 }
 
 export function Studio(props: StudioProps) {
@@ -59,7 +62,7 @@ export function Studio(props: StudioProps) {
   );
 }
 
-function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
+function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
   const { foreground, setForeground, swap: swapColors, reset: resetColors } = useColor();
   const history = useHistory();
@@ -137,6 +140,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack }: StudioProps) {
   const [typerIndex, setTyperIndex] = useState(0);
   const [typerArmed, setTyperArmed] = useState(false);
   const typerLines = useMemo(() => parseTyperScript(typerScript, typerStyles), [typerScript, typerStyles]);
+
+  // Pick up text sent from the Text Editor's "Send to TypeR" button, if any is waiting.
+  useEffect(() => {
+    if (pendingTyperScript == null) return;
+    setTyperScript(pendingTyperScript);
+    onConsumePendingTyperScript?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingTyperScript]);
 
   // TypeR "Page N" auto page-switching: when the armed script advances onto a line tagged with
   // a page hint, jump there automatically (matching by number in the filename, falling back to

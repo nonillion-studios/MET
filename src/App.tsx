@@ -22,6 +22,7 @@ import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
 import { PageManager } from './components/studio/PageManager';
 import { Studio } from './components/studio/Studio';
+import { TextEditorPage } from './components/textEditor/TextEditorPage';
 import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
 import { migrateWorkspace } from './lib/migrate';
@@ -76,6 +77,9 @@ export default function App() {
   const [showTermsModal, setShowTermsModal] = useState(false);
 
   const [chapterView, setChapterView] = useState<'manage' | 'studio'>('manage');
+  // Bridges "Send to TypeR" from the standalone Text Editor page into whichever chapter's
+  // Studio the user next opens — Studio consumes and clears this on mount.
+  const [pendingTyperScript, setPendingTyperScript] = useState<string | null>(null);
 
   useEffect(() => {
     get('workspaces_library').then(async (saved) => {
@@ -382,6 +386,12 @@ export default function App() {
 
           {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} />}
 
+          {activeNavigationTab === 'text-editor' && (
+            <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#0b0b0d] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+              <TextEditorPage onSendToTyper={(script) => setPendingTyperScript(script)} />
+            </div>
+          )}
+
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
               {!activeChapter && <AdSlot placement="library-top" />}
@@ -436,6 +446,8 @@ export default function App() {
                     chapterName={activeChapter.name}
                     pages={activeChapter.pages}
                     onBack={() => setChapterView('manage')}
+                    pendingTyperScript={pendingTyperScript}
+                    onConsumePendingTyperScript={() => setPendingTyperScript(null)}
                   />
                 )
               )}
