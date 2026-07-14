@@ -3,7 +3,7 @@ import {
   MousePointer2, Hand, Square, Circle, Rows, Columns, Lasso, Spline, Wand2,
   Crop, Scissors, Pipette, Bandage, Stamp, Sparkles, Paintbrush, Pencil, Eraser,
   Blend, PaintBucket, Droplets, SunDim, Sun, Flame, Waves, PenTool, Type,
-  ZoomIn, Minus,
+  ZoomIn, Minus, Wind,
 } from 'lucide-react';
 
 export interface StudioToolDef {
@@ -101,6 +101,7 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
       { id: 'sponge', label: 'Sponge', icon: SunDim, enabled: true },
     ],
   },
+  { id: 'liquify', tools: [{ id: 'liquify', label: 'Liquify', icon: Wind, enabled: true }] },
 
   {
     id: 'pen', groupStart: true,

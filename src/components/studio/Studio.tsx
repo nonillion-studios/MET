@@ -18,7 +18,7 @@ import { DockProvider, useDock } from './dock/DockContext';
 import { FloatingPanel } from './dock/FloatingPanel';
 import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
 import { NO_SELECTION, type Selection } from './paint/selection';
-import type { PaintSettings } from './paint/paintEngine';
+import type { PaintSettings, LiquifyMode } from './paint/paintEngine';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
 import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
@@ -31,8 +31,9 @@ import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
   createBackgroundLayer, createLayer, createTextLayer, parseTyperScript,
-  DEFAULT_TYPER_STYLES, type StudioLayer, type TextLayerData, type TyperStyle,
+  DEFAULT_TYPER_STYLES, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
 } from './studioTypes';
+import { FontsPanel } from './FontsPanel';
 import {
   loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot,
   type ChapterStudioData, type SerializedStudioLayer,
@@ -64,7 +65,7 @@ export function Studio(props: StudioProps) {
 
 function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
-  const { foreground, setForeground, swap: swapColors, reset: resetColors } = useColor();
+  const { foreground, background, setForeground, swap: swapColors, reset: resetColors } = useColor();
   const history = useHistory();
   useKeyboardUndo();
   const dock = useDock();
@@ -73,7 +74,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [brushOpacity, setBrushOpacity] = useState(1);
   const [brushFlow, setBrushFlow] = useState(1);
   const [tolerance, setTolerance] = useState(32);
-  const paintSettings: PaintSettings = { size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow, color: foreground, tolerance };
+  const [liquifyMode, setLiquifyMode] = useState<LiquifyMode>('push');
+  const paintSettings: PaintSettings = {
+    size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+    color: foreground, bgColor: background, tolerance, liquifyMode,
+  };
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
   const studioRootRef = useRef<HTMLDivElement>(null);
@@ -116,6 +121,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
+  const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
+  const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
   const [dockOpen, setDockOpen] = useState(true);
   const [tabletOverlayTab, setTabletOverlayTab] = useState<string | null>(null);
@@ -452,11 +459,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   );
 
   const textPanel = activeLayer?.type === 'text' ? (
-    <TextPanel layer={activeLayer} onUpdate={handleUpdateTextLayer} onCenter={handleCenterTextLayer} />
+    <TextPanel layer={activeLayer} onUpdate={handleUpdateTextLayer} onCenter={handleCenterTextLayer} fontFamilies={allFontFamilies} />
   ) : null;
 
   const colorPanel = <ColorPanel />;
   const historyPanel = <HistoryPanel />;
+  const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} />;
 
   const typerPanel = (
     <TyperPanel
@@ -486,6 +494,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'typer', label: 'TypeR', content: typerPanel },
     { id: 'translation', label: 'Translation', content: translationPanel },
     { id: 'color', label: 'Color', content: colorPanel },
+    { id: 'fonts', label: 'Fonts', content: fontsPanel },
     { id: 'history', label: 'History', content: historyPanel },
     { id: 'layers', label: 'Layers', content: layersPanel },
     { id: 'pages', label: 'Pages', content: pagesPanel },
@@ -601,6 +610,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onFlowChange={setBrushFlow}
           tolerance={tolerance}
           onToleranceChange={setTolerance}
+          liquifyMode={liquifyMode}
+          onLiquifyModeChange={setLiquifyMode}
         />
       )}
 

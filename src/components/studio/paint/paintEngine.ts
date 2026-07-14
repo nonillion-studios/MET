@@ -3,7 +3,7 @@ import { clipToSelection, magicWandMask, type Selection } from './selection';
 export type PaintTool =
   | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone'
   | 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn' | 'sponge' | 'contentAware'
-  | 'shape-rect' | 'shape-ellipse' | 'shape-line' | 'spot-heal';
+  | 'shape-rect' | 'shape-ellipse' | 'shape-line' | 'spot-heal' | 'liquify';
 
 export interface PaintSettings {
   size: number;
@@ -11,7 +11,9 @@ export interface PaintSettings {
   opacity: number; // 0-1
   flow: number; // 0-1
   color: string; // hex
+  bgColor: string; // hex — used as the Gradient tool's "to" color (foreground-to-background, Photoshop convention)
   tolerance: number; // 0-255, used by bucket/wand
+  liquifyMode: LiquifyMode;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -211,6 +213,85 @@ export function applyFilterBrush(
         for (let c = 0; c < 3; c++) {
           img.data[o + c] = src[o + c] + (gray - src[o + c]) * strength * falloff;
         }
+      }
+    }
+  }
+  ctx.putImageData(img, bx, by);
+}
+
+export type LiquifyMode = 'push' | 'swirl' | 'pinch' | 'bloat' | 'crystalize';
+
+/**
+ * Liquify: per-stamp pixel-displacement warp, ported (as math, not code — the original is a
+ * Konva/canvas-based React app) from Flowy's liquify tool concept (see CLAUDE.md for the
+ * attribution note). Each mode computes a *source sample offset* per pixel and reads from
+ * there instead of the pixel's own position, which is what makes it a true warp rather than a
+ * blend like the Smudge filter brush above. `reconstruct` (gradually undo toward the original
+ * pixels) isn't implemented — it needs a pristine pre-liquify snapshot kept alongside the layer,
+ * which no other tool here needs, so it's a real, separate piece of state this pass didn't add.
+ */
+export function liquify(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, size: number, strength: number,
+  mode: LiquifyMode,
+  dragDx: number, dragDy: number,
+  selection: Selection,
+) {
+  const r = Math.max(4, Math.round(size / 2));
+  const px = Math.round(x - r), py = Math.round(y - r);
+  const w = r * 2, h = r * 2;
+  const cw = ctx.canvas.width, ch = ctx.canvas.height;
+  const bx = Math.max(0, px), by = Math.max(0, py);
+  const bw = Math.min(w, cw - bx), bh = Math.min(h, ch - by);
+  if (bw <= 0 || bh <= 0) return;
+  const inSel = selectionTester(selection);
+
+  const img = ctx.getImageData(bx, by, bw, bh);
+  const src = new Uint8ClampedArray(img.data);
+  const at = (ix: number, iy: number, c: number) => {
+    const cx = Math.max(0, Math.min(bw - 1, Math.round(ix)));
+    const cy = Math.max(0, Math.min(bh - 1, Math.round(iy)));
+    return src[(cy * bw + cx) * 4 + c];
+  };
+
+  const cx = bw / 2, cy = bh / 2;
+  const amount = Math.max(0.05, Math.min(1, strength));
+
+  for (let iy = 0; iy < bh; iy++) {
+    for (let ix = 0; ix < bw; ix++) {
+      if (!inSel(bx + ix, by + iy)) continue;
+      const dcx = ix - cx, dcy = iy - cy;
+      const dist = Math.hypot(dcx, dcy);
+      const falloff = Math.max(0, 1 - dist / (r || 1));
+      if (falloff <= 0) continue;
+      const o = (iy * bw + ix) * 4;
+
+      let sampleX = ix, sampleY = iy;
+      if (mode === 'push') {
+        // Forward warp: sample from "behind" the drag direction so pixels appear pushed along it.
+        sampleX = ix - dragDx * falloff * amount * 2;
+        sampleY = iy - dragDy * falloff * amount * 2;
+      } else if (mode === 'swirl') {
+        const angle = falloff * amount * 1.2;
+        const cos = Math.cos(angle), sin = Math.sin(angle);
+        sampleX = cx + dcx * cos - dcy * sin;
+        sampleY = cy + dcx * sin + dcy * cos;
+      } else if (mode === 'pinch') {
+        const pull = 1 - falloff * amount * 0.8;
+        sampleX = cx + dcx * pull;
+        sampleY = cy + dcy * pull;
+      } else if (mode === 'bloat') {
+        const push = 1 + falloff * amount * 0.8;
+        sampleX = cx + dcx / push;
+        sampleY = cy + dcy / push;
+      } else if (mode === 'crystalize') {
+        const cell = Math.max(2, Math.round(4 + (1 - amount) * 10));
+        sampleX = Math.round(ix / cell) * cell;
+        sampleY = Math.round(iy / cell) * cell;
+      }
+
+      for (let c = 0; c < 4; c++) {
+        img.data[o + c] = at(sampleX, sampleY, c) * falloff + src[o + c] * (1 - falloff);
       }
     }
   }

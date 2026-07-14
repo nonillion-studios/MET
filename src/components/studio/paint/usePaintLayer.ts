@@ -1,13 +1,13 @@
 import { useCallback, useRef } from 'react';
 import {
-  applyFilterBrush, applyGradient, cloneSegment, contentAwareFill, drawShape, floodFillAt, strokeSegment,
+  applyFilterBrush, applyGradient, cloneSegment, contentAwareFill, drawShape, floodFillAt, strokeSegment, liquify,
   type PaintSettings, type PaintTool,
 } from './paintEngine';
 import { magicWandMask, NO_SELECTION, type Selection } from './selection';
 
 export const PAINT_TOOLS: PaintTool[] = [
   'brush', 'pencil', 'eraser', 'bucket', 'gradient', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
-  'shape-rect', 'shape-ellipse', 'shape-line', 'spot-heal',
+  'shape-rect', 'shape-ellipse', 'shape-line', 'spot-heal', 'liquify',
 ];
 
 interface UsePaintLayerArgs {
@@ -88,6 +88,8 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
     } else if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn' || tool === 'sponge') {
       applyFilterBrush(ctx, x, y, settings.size, settings.flow, tool, x - lastX, y - lastY, selection);
+    } else if (tool === 'liquify') {
+      liquify(ctx, x, y, settings.size, settings.flow, settings.liquifyMode, x - lastX, y - lastY, selection);
     } else if (tool === 'spot-heal') {
       const r = Math.max(4, settings.size / 2);
       contentAwareFill(ctx, { x: x - r, y: y - r, width: r * 2, height: r * 2 });
@@ -118,7 +120,8 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
 
     if (tool === 'gradient' && gradientStartRef.current && ctx) {
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      applyGradient(ctx, canvas.width, canvas.height, gradientStartRef.current.x, gradientStartRef.current.y, x, y, settings.color, '#ffffff00', selection);
+      // Foreground-to-background, matching Photoshop's default Gradient tool convention.
+      applyGradient(ctx, canvas.width, canvas.height, gradientStartRef.current.x, gradientStartRef.current.y, x, y, settings.color, settings.bgColor, selection);
       gradientStartRef.current = null;
       onStrokeEnd(before);
       return;

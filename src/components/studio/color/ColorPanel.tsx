@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { RotateCcw, ArrowLeftRight } from 'lucide-react';
+import { colord, extend } from 'colord';
+import cmykPlugin from 'colord/plugins/cmyk';
 import { IconButton, Input } from '../../ui';
 import { useColor } from './ColorContext';
 import { hexToRgb, hsvToRgb, rgbToHex, rgbToHsv } from './colorConversions';
+
+extend([cmykPlugin]);
 
 const SV_SIZE = 160;
 
@@ -50,6 +54,16 @@ export function ColorPanel() {
   }
 
   const rgb = hexToRgb(activeColor);
+  const c = colord(activeColor);
+  const hsl = c.toHsl();
+  const cmyk = c.toCmyk();
+
+  function setFromHsl(patch: Partial<{ h: number; s: number; l: number }>) {
+    setActiveColor(colord({ ...hsl, ...patch }).toHex());
+  }
+  function setFromCmyk(patch: Partial<{ c: number; m: number; y: number; k: number }>) {
+    setActiveColor(colord({ ...cmyk, ...patch }).toHex());
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -121,6 +135,46 @@ export function ColorPanel() {
           <span className="w-8 shrink-0">Hex</span>
           <Input value={activeColor} onChange={(e) => /^#?[0-9a-fA-F]{6}$/.test(e.target.value) && setActiveColor(e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`)} className="!px-2 !py-1 !text-xs font-mono" />
         </label>
+
+        <div className="pt-1 border-t border-hairline/60">
+          <span className="text-[11px] text-ink-faint">HSL</span>
+          <div className="grid grid-cols-3 gap-2 mt-1">
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>H</span>
+              <Input type="number" min={0} max={360} value={Math.round(hsl.h)} onChange={(e) => setFromHsl({ h: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>S</span>
+              <Input type="number" min={0} max={100} value={Math.round(hsl.s)} onChange={(e) => setFromHsl({ s: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>L</span>
+              <Input type="number" min={0} max={100} value={Math.round(hsl.l)} onChange={(e) => setFromHsl({ l: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <span className="text-[11px] text-ink-faint">CMYK</span>
+          <div className="grid grid-cols-4 gap-2 mt-1">
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>C</span>
+              <Input type="number" min={0} max={100} value={Math.round(cmyk.c)} onChange={(e) => setFromCmyk({ c: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>M</span>
+              <Input type="number" min={0} max={100} value={Math.round(cmyk.m)} onChange={(e) => setFromCmyk({ m: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>Y</span>
+              <Input type="number" min={0} max={100} value={Math.round(cmyk.y)} onChange={(e) => setFromCmyk({ y: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+              <span>K</span>
+              <Input type="number" min={0} max={100} value={Math.round(cmyk.k)} onChange={(e) => setFromCmyk({ k: Number(e.target.value) })} className="!px-2 !py-1 !text-xs" />
+            </label>
+          </div>
+        </div>
 
         {recent.length > 0 && (
           <div className="flex flex-col gap-1.5">

@@ -7,9 +7,11 @@ interface TextPanelProps {
   layer: StudioLayer;
   onUpdate: (id: string, patch: Partial<TextLayerData>) => void;
   onCenter: (id: string) => void;
+  /** Built-in fonts plus any custom fonts installed via the Fonts panel. */
+  fontFamilies?: string[];
 }
 
-export function TextPanel({ layer, onUpdate, onCenter }: TextPanelProps) {
+export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMILIES }: TextPanelProps) {
   const text = layer.text;
   if (!text) return null;
 
@@ -40,7 +42,7 @@ export function TextPanel({ layer, onUpdate, onCenter }: TextPanelProps) {
             onChange={(e) => set({ fontFamily: e.target.value })}
             className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1.5 text-ink text-[11px]"
           >
-            {FONT_FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
+            {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </label>
 

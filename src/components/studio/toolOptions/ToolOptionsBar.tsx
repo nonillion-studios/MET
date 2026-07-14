@@ -1,4 +1,5 @@
 import { findTool } from '../toolGroups';
+import type { LiquifyMode } from '../paint/paintEngine';
 
 interface ToolOptionsBarProps {
   activeTool: string;
@@ -12,13 +13,23 @@ interface ToolOptionsBarProps {
   onFlowChange: (v: number) => void;
   tolerance: number;
   onToleranceChange: (v: number) => void;
+  liquifyMode: LiquifyMode;
+  onLiquifyModeChange: (v: LiquifyMode) => void;
 }
 
-const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line']);
+const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
 const HARDNESS_TOOLS = new Set(['brush', 'clone']);
-const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge']);
+const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'liquify']);
 const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient']);
 const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
+
+const LIQUIFY_MODES: { id: LiquifyMode; label: string }[] = [
+  { id: 'push', label: 'Push' },
+  { id: 'swirl', label: 'Swirl' },
+  { id: 'pinch', label: 'Pinch' },
+  { id: 'bloat', label: 'Bloat' },
+  { id: 'crystalize', label: 'Crystalize' },
+];
 
 function Slider({ label, value, min, max, step, onChange, format }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format?: (v: number) => string }) {
   return (
@@ -30,19 +41,35 @@ function Slider({ label, value, min, max, step, onChange, format }: { label: str
   );
 }
 
-export function ToolOptionsBar({ activeTool, size, onSizeChange, hardness, onHardnessChange, opacity, onOpacityChange, flow, onFlowChange, tolerance, onToleranceChange }: ToolOptionsBarProps) {
+export function ToolOptionsBar({
+  activeTool, size, onSizeChange, hardness, onHardnessChange, opacity, onOpacityChange,
+  flow, onFlowChange, tolerance, onToleranceChange, liquifyMode, onLiquifyModeChange,
+}: ToolOptionsBarProps) {
   const tool = findTool(activeTool);
   const showSize = SIZE_TOOLS.has(activeTool);
   const showHardness = HARDNESS_TOOLS.has(activeTool);
   const showFlow = FLOW_TOOLS.has(activeTool);
   const showOpacity = OPACITY_TOOLS.has(activeTool);
   const showTolerance = TOLERANCE_TOOLS.has(activeTool);
+  const showLiquifyMode = activeTool === 'liquify';
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode)) return null;
 
   return (
     <div className="liquid-glass-bar flex items-center gap-4 px-3 h-10 shrink-0 border-b border-hairline overflow-x-auto">
       <span className="text-xs font-medium text-ink shrink-0">{tool.label}</span>
+      {showLiquifyMode && (
+        <label className="flex items-center gap-2 text-[11px] text-ink-faint shrink-0">
+          <span>Mode</span>
+          <select
+            value={liquifyMode}
+            onChange={(e) => onLiquifyModeChange(e.target.value as LiquifyMode)}
+            className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+          >
+            {LIQUIFY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </label>
+      )}
       {showSize && <Slider label="Size" value={size} min={1} max={200} step={1} onChange={onSizeChange} />}
       {showHardness && <Slider label="Hardness" value={hardness * 100} min={0} max={100} step={1} onChange={(v) => onHardnessChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
       {showFlow && <Slider label="Flow" value={flow * 100} min={0} max={100} step={1} onChange={(v) => onFlowChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
