@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer } from './studioTypes';
@@ -13,6 +13,7 @@ interface LayersPanelProps {
   onOpacityChange: (id: string, opacity: number) => void;
   onBlendChange: (id: string, blendMode: StudioLayer['blendMode']) => void;
   onAdd: () => void;
+  onAddAdjustment: () => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: 'up' | 'down') => void;
@@ -20,7 +21,7 @@ interface LayersPanelProps {
 
 export function LayersPanel({
   layers, activeLayerId, onSelect, onToggleVisible, onToggleLocked,
-  onOpacityChange, onBlendChange, onAdd, onDuplicate, onDelete, onMove,
+  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
 }: LayersPanelProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Render top-most layer first, matching Photoshop's stacking convention.
@@ -30,9 +31,14 @@ export function LayersPanel({
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
         <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Layers</span>
-        <IconButton size="sm" aria-label="Add layer" onClick={onAdd} className="!bg-transparent">
-          <Plus size={14} />
-        </IconButton>
+        <div className="flex items-center gap-0.5">
+          <IconButton size="sm" aria-label="Add adjustment layer" title="Add adjustment layer" onClick={onAddAdjustment} className="!bg-transparent">
+            <SlidersHorizontal size={13} />
+          </IconButton>
+          <IconButton size="sm" aria-label="Add layer" title="Add raster layer" onClick={onAdd} className="!bg-transparent">
+            <Plus size={14} />
+          </IconButton>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto py-1.5 px-1.5 flex flex-col gap-1">
