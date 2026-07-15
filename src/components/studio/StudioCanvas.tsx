@@ -10,6 +10,7 @@ import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from 
 import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
 import { NO_SELECTION, combineModeFromModifiers, combineSelections, type Selection, type SelectionCombineMode } from './paint/selection';
 import { strokePenPath, type PaintSettings } from './paint/paintEngine';
+import { BrushCursor } from './paint/BrushCursor';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
 import { filterForAdjustment } from '../../lib/adjustments';
 
@@ -28,6 +29,11 @@ const RULER_SIZE = 20;
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
+/** Tools whose footprint is brush-sized, so they get the live outline cursor instead of the OS one. */
+const BRUSH_CURSOR_TOOLS = new Set([
+  'brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge',
+  'dodge', 'burn', 'sponge', 'spot-heal', 'liquify',
+]);
 
 interface StudioCanvasProps {
   page: Page | null;
@@ -128,6 +134,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const combineBaseRef = useRef<Selection>(NO_SELECTION);
   const combineModeRef = useRef<SelectionCombineMode>('replace');
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Pointer position in container/CSS px for the live brush outline; null when off-canvas. */
+  const [brushCursorPos, setBrushCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
   const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
@@ -744,10 +752,24 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // window mousemove/mouseup effect) so it works uniformly across tools without fighting Konva's
   // own native drag-handling for the Pan/Select tools.
   const draggable = (activeTool === 'pan' || activeTool === 'select') && !spaceDown;
-  const cursorClass = panRef.current?.active || spaceDown ? 'cursor-grab' : '';
+  const panning = panRef.current?.active || spaceDown;
+  // Hide the OS cursor while a brush-sized tool is armed — the BrushCursor ring below
+  // *is* the cursor, and showing both reads as a doubled pointer.
+  const showBrushCursor = !panning && BRUSH_CURSOR_TOOLS.has(activeTool) && brushCursorPos !== null;
+  const cursorClass = panning ? 'cursor-grab' : showBrushCursor ? 'cursor-none' : '';
 
   return (
-    <div ref={containerRef} className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}>
+    <div
+      ref={containerRef}
+      className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}
+      onPointerMove={(e) => {
+        if (!BRUSH_CURSOR_TOOLS.has(activeTool)) return;
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setBrushCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      }}
+      onPointerLeave={() => setBrushCursorPos(null)}
+    >
       {containerSize.width > 0 && (
         <Stage
           ref={stageRef}
@@ -942,6 +964,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             zIndex: 20,
           }}
         />
+      )}
+      {showBrushCursor && (
+        <BrushCursor pos={brushCursorPos} scale={scale} settings={paintSettings} tool={activeTool} />
       )}
       {!page && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">

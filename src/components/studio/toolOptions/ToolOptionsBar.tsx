@@ -1,5 +1,6 @@
 import { findTool } from '../toolGroups';
 import type { LiquifyMode, SymmetryMode } from '../paint/paintEngine';
+import type { BrushShape } from '../paint/brushTip';
 
 interface ToolOptionsBarProps {
   activeTool: string;
@@ -17,6 +18,18 @@ interface ToolOptionsBarProps {
   onLiquifyModeChange: (v: LiquifyMode) => void;
   symmetry: SymmetryMode;
   onSymmetryChange: (v: SymmetryMode) => void;
+  spacing: number;
+  onSpacingChange: (v: number) => void;
+  brushShape: BrushShape;
+  onBrushShapeChange: (v: BrushShape) => void;
+  angle: number;
+  onAngleChange: (v: number) => void;
+  roundness: number;
+  onRoundnessChange: (v: number) => void;
+  scatter: number;
+  onScatterChange: (v: number) => void;
+  smoothing: number;
+  onSmoothingChange: (v: number) => void;
 }
 
 const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
@@ -33,6 +46,11 @@ const LIQUIFY_MODES: { id: LiquifyMode; label: string }[] = [
   { id: 'bloat', label: 'Bloat' },
   { id: 'crystalize', label: 'Crystalize' },
   { id: 'reconstruct', label: 'Reconstruct' },
+];
+
+const BRUSH_SHAPES: { id: BrushShape; label: string }[] = [
+  { id: 'round', label: 'Round' },
+  { id: 'square', label: 'Square' },
 ];
 
 const SYMMETRY_MODES: { id: SymmetryMode; label: string }[] = [
@@ -55,7 +73,9 @@ function Slider({ label, value, min, max, step, onChange, format }: { label: str
 export function ToolOptionsBar({
   activeTool, size, onSizeChange, hardness, onHardnessChange, opacity, onOpacityChange,
   flow, onFlowChange, tolerance, onToleranceChange, liquifyMode, onLiquifyModeChange,
-  symmetry, onSymmetryChange,
+  symmetry, onSymmetryChange, spacing, onSpacingChange, brushShape, onBrushShapeChange,
+  angle, onAngleChange, roundness, onRoundnessChange, scatter, onScatterChange,
+  smoothing, onSmoothingChange,
 }: ToolOptionsBarProps) {
   const tool = findTool(activeTool);
   const showSize = SIZE_TOOLS.has(activeTool);
@@ -90,16 +110,33 @@ export function ToolOptionsBar({
       {showOpacity && <Slider label="Opacity" value={opacity * 100} min={0} max={100} step={1} onChange={(v) => onOpacityChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
       {showTolerance && <Slider label="Tolerance" value={tolerance} min={0} max={100} step={1} onChange={onToleranceChange} />}
       {showSymmetry && (
-        <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
-          <span>Symmetry</span>
-          <select
-            value={symmetry}
-            onChange={(e) => onSymmetryChange(e.target.value as SymmetryMode)}
-            className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
-          >
-            {SYMMETRY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-        </label>
+        <>
+          <Slider label="Spacing" value={spacing * 100} min={1} max={100} step={1} onChange={(v) => onSpacingChange(v / 100)} format={(v) => `${Math.round(v)}%`} />
+          <Slider label="Smoothing" value={smoothing * 100} min={0} max={100} step={1} onChange={(v) => onSmoothingChange(v / 100)} format={(v) => `${Math.round(v)}%`} />
+          <Slider label="Scatter" value={scatter * 100} min={0} max={100} step={1} onChange={(v) => onScatterChange(v / 100)} format={(v) => `${Math.round(v)}%`} />
+          <Slider label="Angle" value={angle} min={-180} max={180} step={1} onChange={onAngleChange} format={(v) => `${Math.round(v)}°`} />
+          <Slider label="Round" value={roundness * 100} min={5} max={100} step={1} onChange={(v) => onRoundnessChange(v / 100)} format={(v) => `${Math.round(v)}%`} />
+          <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
+            <span className="uppercase tracking-wide text-[10px] opacity-70">Tip</span>
+            <select
+              value={brushShape}
+              onChange={(e) => onBrushShapeChange(e.target.value as BrushShape)}
+              className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+            >
+              {BRUSH_SHAPES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
+            <span className="uppercase tracking-wide text-[10px] opacity-70">Symmetry</span>
+            <select
+              value={symmetry}
+              onChange={(e) => onSymmetryChange(e.target.value as SymmetryMode)}
+              className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+            >
+              {SYMMETRY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
+          </label>
+        </>
       )}
     </div>
   );

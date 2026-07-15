@@ -45,6 +45,78 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
   const sourceSnapshotRef = useRef<HTMLCanvasElement | null>(null);
   const strokeBeforeRef = useRef<ImageData | null>(null);
 
+  // --- Brush/Pencil/Eraser stroke buffer -------------------------------------
+  // A whole stroke accumulates into this scratch canvas at `flow` alpha, then is
+  // composited onto the layer at `opacity`. Without the buffer, overlapping
+  // stamps within one stroke would keep darkening past the opacity cap (which is
+  // exactly what the old `opacity * flow` per-stamp alpha did).
+  const strokeBufferRef = useRef<HTMLCanvasElement | null>(null);
+  /** Union of every stamp bbox this stroke, so compositing only touches dirty pixels. */
+  const strokeBoxRef = useRef<{ minX: number; minY: number; maxX: number; maxY: number } | null>(null);
+  /** Pull-string smoothing anchor: the lagging point that actually gets painted. */
+  const smoothRef = useRef<{ x: number; y: number } | null>(null);
+
+  function getStrokeBuffer(w: number, h: number): HTMLCanvasElement {
+    let buf = strokeBufferRef.current;
+    if (!buf) {
+      buf = document.createElement('canvas');
+      strokeBufferRef.current = buf;
+    }
+    if (buf.width !== w || buf.height !== h) {
+      buf.width = w;
+      buf.height = h;
+    } else {
+      buf.getContext('2d')!.clearRect(0, 0, w, h);
+    }
+    return buf;
+  }
+
+  /** The buffer for the stroke in flight, sized to the layer. Null if pointerDown never ran. */
+  function getStrokeBufferForStroke(ctx: CanvasRenderingContext2D): HTMLCanvasElement | null {
+    const buf = strokeBufferRef.current;
+    if (!buf) return null;
+    if (buf.width !== ctx.canvas.width || buf.height !== ctx.canvas.height) return null;
+    return buf;
+  }
+
+  function growBox(box: { minX: number; minY: number; maxX: number; maxY: number } | null) {
+    if (!box) return;
+    const cur = strokeBoxRef.current;
+    strokeBoxRef.current = cur
+      ? {
+          minX: Math.min(cur.minX, box.minX),
+          minY: Math.min(cur.minY, box.minY),
+          maxX: Math.max(cur.maxX, box.maxX),
+          maxY: Math.max(cur.maxY, box.maxY),
+        }
+      : box;
+  }
+
+  /**
+   * Re-renders the dirty region of the layer as (pre-stroke pixels + stroke buffer @ opacity).
+   * Called after each segment so the stroke is visible live while still obeying the opacity cap.
+   */
+  function compositeStroke(ctx: CanvasRenderingContext2D, tool: 'brush' | 'pencil' | 'eraser') {
+    const before = strokeBeforeRef.current;
+    const buf = strokeBufferRef.current;
+    const box = strokeBoxRef.current;
+    if (!before || !buf || !box) return;
+    const x = Math.max(0, Math.floor(box.minX));
+    const y = Math.max(0, Math.floor(box.minY));
+    const w = Math.min(ctx.canvas.width - x, Math.ceil(box.maxX) - x + 1);
+    const h = Math.min(ctx.canvas.height - y, Math.ceil(box.maxY) - y + 1);
+    if (w <= 0 || h <= 0) return;
+
+    // putImageData is a raw write (ignores alpha/composite), so this restores the
+    // dirty region to its pre-stroke state before we lay the stroke back down.
+    ctx.putImageData(before, 0, 0, x, y, w, h);
+    ctx.save();
+    ctx.globalAlpha = settings.opacity;
+    ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.drawImage(buf, x, y, w, h, x, y, w, h);
+    ctx.restore();
+  }
+
   const pointerDown = useCallback((tool: PaintTool, x: number, y: number, altKey: boolean, pressure = 1) => {
     const canvas = getCanvas();
     if (!canvas) return;
@@ -93,26 +165,37 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     strokeBeforeRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
     drawingRef.current = true;
     lastRef.current = { x, y };
+    if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
+      getStrokeBuffer(canvas.width, canvas.height);
+      strokeBoxRef.current = null;
+      smoothRef.current = { x, y };
+    }
     applyStrokeSegment(ctx, tool, x, y, x, y, pressure);
   }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots]);
 
   function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number, pressure = 1) {
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
-      // Stylus pressure (0-1, from PointerEvent.pressure) scales the effective brush size for this segment.
-      const effectiveSettings = pressure !== 1 ? { ...settings, size: Math.max(1, settings.size * pressure) } : settings;
-      strokeSegment(ctx, lastX, lastY, x, y, effectiveSettings, tool, selection);
+      // Stamps go into the stroke buffer at `flow`, never straight onto the layer;
+      // compositeStroke then lays the buffer down at `opacity`. See the buffer
+      // block above for why the two sliders need to stay separate.
+      const buf = getStrokeBufferForStroke(ctx);
+      if (!buf) return;
+      const bufCtx = buf.getContext('2d')!;
+      const w = ctx.canvas.width, h = ctx.canvas.height;
+
+      growBox(strokeSegment(bufCtx, lastX, lastY, x, y, settings, tool, selection, pressure));
       // Symmetry mode: mirror the same segment across the canvas center. Real per-stamp
       // mirroring (not just a post-hoc flip), so it works mid-stroke exactly like Photoshop's.
-      const w = ctx.canvas.width, h = ctx.canvas.height;
       if (settings.symmetry === 'horizontal' || settings.symmetry === 'both') {
-        strokeSegment(ctx, w - lastX, lastY, w - x, y, effectiveSettings, tool, selection);
+        growBox(strokeSegment(bufCtx, w - lastX, lastY, w - x, y, settings, tool, selection, pressure));
       }
       if (settings.symmetry === 'vertical' || settings.symmetry === 'both') {
-        strokeSegment(ctx, lastX, h - lastY, x, h - y, effectiveSettings, tool, selection);
+        growBox(strokeSegment(bufCtx, lastX, h - lastY, x, h - y, settings, tool, selection, pressure));
       }
       if (settings.symmetry === 'both') {
-        strokeSegment(ctx, w - lastX, h - lastY, w - x, h - y, effectiveSettings, tool, selection);
+        growBox(strokeSegment(bufCtx, w - lastX, h - lastY, w - x, h - y, settings, tool, selection, pressure));
       }
+      compositeStroke(ctx, tool);
     } else if (tool === 'clone' && cloneOffsetRef.current && sourceSnapshotRef.current) {
       cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
     } else if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn' || tool === 'sponge') {
@@ -138,8 +221,23 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
 
     if (!drawingRef.current || !lastRef.current) return;
     const last = lastRef.current;
-    applyStrokeSegment(ctx, tool, last.x, last.y, x, y, pressure);
-    lastRef.current = { x, y };
+
+    // Pull-string smoothing: the painted point chases the raw pointer instead of
+    // tracking it exactly, which damps hand jitter. smoothing=0 paints the raw
+    // pointer (identical to the old behaviour); higher values lag further behind.
+    let tx = x, ty = y;
+    const isStrokeTool = tool === 'brush' || tool === 'pencil' || tool === 'eraser';
+    if (isStrokeTool && settings.smoothing > 0 && smoothRef.current) {
+      const follow = 1 - Math.min(0.95, settings.smoothing * 0.9);
+      tx = smoothRef.current.x + (x - smoothRef.current.x) * follow;
+      ty = smoothRef.current.y + (y - smoothRef.current.y) * follow;
+      smoothRef.current = { x: tx, y: ty };
+    } else if (isStrokeTool) {
+      smoothRef.current = { x, y };
+    }
+
+    applyStrokeSegment(ctx, tool, last.x, last.y, tx, ty, pressure);
+    lastRef.current = { x: tx, y: ty };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [getCanvas, settings, selection]);
 

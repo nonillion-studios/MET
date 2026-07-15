@@ -19,6 +19,7 @@ import { FloatingPanel } from './dock/FloatingPanel';
 import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
 import type { PaintSettings, LiquifyMode, SymmetryMode } from './paint/paintEngine';
+import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
@@ -80,9 +81,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [tolerance, setTolerance] = useState(32);
   const [liquifyMode, setLiquifyMode] = useState<LiquifyMode>('push');
   const [symmetry, setSymmetry] = useState<SymmetryMode>('none');
+  const [spacing, setSpacing] = useState(0.15);
+  const [brushShape, setBrushShape] = useState<BrushShape>('round');
+  const [brushAngle, setBrushAngle] = useState(0);
+  const [brushRoundness, setBrushRoundness] = useState(1);
+  const [scatter, setScatter] = useState(0);
+  const [smoothing, setSmoothing] = useState(0);
+  const [pressureSize, setPressureSize] = useState(true);
+  const [pressureOpacity, setPressureOpacity] = useState(false);
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
+    spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
+    scatter, smoothing, pressureSize, pressureOpacity,
   };
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
@@ -790,6 +801,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onLiquifyModeChange={setLiquifyMode}
           symmetry={symmetry}
           onSymmetryChange={setSymmetry}
+          spacing={spacing}
+          onSpacingChange={setSpacing}
+          brushShape={brushShape}
+          onBrushShapeChange={setBrushShape}
+          angle={brushAngle}
+          onAngleChange={setBrushAngle}
+          roundness={brushRoundness}
+          onRoundnessChange={setBrushRoundness}
+          scatter={scatter}
+          onScatterChange={setScatter}
+          smoothing={smoothing}
+          onSmoothingChange={setSmoothing}
         />
       )}
 
