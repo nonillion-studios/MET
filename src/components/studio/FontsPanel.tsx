@@ -35,13 +35,15 @@ export function FontsPanel({ onFamiliesChange }: FontsPanelProps) {
   }, []);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
+    // Snapshot the FileList *before* resetting the input: `files` is live, so
+    // clearing `value` first empties it and the upload silently no-ops.
+    const files = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (!files || files.length === 0) return;
+    if (files.length === 0) return;
     setBusy(true);
     try {
       const added: StoredFont[] = [];
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         try {
           const { family, dataUrl } = await loadCustomFont(file);
           added.push({ id: genId('font'), family, dataUrl });

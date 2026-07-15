@@ -20,7 +20,7 @@ interface ToolOptionsBarProps {
   onSymmetryChange: (v: SymmetryMode) => void;
   spacing: number;
   onSpacingChange: (v: number) => void;
-  brushShape: BrushShape;
+  brushShape: BrushShape | 'image';
   onBrushShapeChange: (v: BrushShape) => void;
   angle: number;
   onAngleChange: (v: number) => void;
@@ -123,6 +123,9 @@ export function ToolOptionsBar({
               onChange={(e) => onBrushShapeChange(e.target.value as BrushShape)}
               className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
             >
+              {/* 'Image' only appears while an imported tip is active — picking a
+                  procedural shape here is how you switch back off it. */}
+              {brushShape === 'image' && <option value="image">Image</option>}
               {BRUSH_SHAPES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
           </label>

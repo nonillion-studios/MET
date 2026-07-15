@@ -20,15 +20,68 @@ export type BrushShape = 'round' | 'square';
 
 export interface BrushTipSpec {
   size: number;
-  /** 0-1. 1 = hard edge, 0 = fully feathered. */
+  /** 0-1. 1 = hard edge, 0 = fully feathered. Ignored for image tips (the mask defines the edge). */
   hardness: number;
-  shape: BrushShape;
-  /** Degrees; rotates the tip. Only meaningful when roundness < 1 or shape is square. */
+  shape: BrushShape | 'image';
+  /** Degrees; rotates the tip. Only meaningful when roundness < 1 or shape is square/image. */
   angle: number;
   /** 0.05-1. 1 = circular; lower squashes the tip along its minor axis (calligraphic). */
   roundness: number;
   /** CSS colour for the tip. Eraser tips can pass anything — only their alpha is used. */
   color: string;
+  /**
+   * Only for shape==='image': a pre-baked alpha mask canvas (see imageToBrushMask).
+   * Identity matters, not contents — it's part of the cache key by `maskId`.
+   */
+  maskCanvas?: HTMLCanvasElement;
+  maskId?: string;
+}
+
+/**
+ * Bakes an uploaded image into a brush alpha mask: alpha = 255 - luminance, so
+ * the dark parts of a conventional black-on-white brush stamp become the opaque
+ * parts of the tip. Done once at import rather than per stamp.
+ *
+ * Images that already carry meaningful alpha (transparent PNGs) are respected —
+ * their existing alpha is multiplied in, so a transparent background stays
+ * transparent instead of being read as white-and-therefore-invisible.
+ */
+export function imageToBrushMask(img: HTMLImageElement | HTMLCanvasElement): HTMLCanvasElement {
+  const w = Math.max(1, Math.min(512, 'naturalWidth' in img ? img.naturalWidth || img.width : img.width));
+  const h = Math.max(1, Math.min(512, 'naturalHeight' in img ? img.naturalHeight || img.height : img.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(img, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h);
+  const d = data.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    const srcAlpha = d[i + 3] / 255;
+    d[i] = 255;
+    d[i + 1] = 255;
+    d[i + 2] = 255;
+    d[i + 3] = Math.round((255 - lum) * srcAlpha);
+  }
+  ctx.putImageData(data, 0, 0);
+  return canvas;
+}
+
+/** Decodes a stored mask data URL back into a canvas. */
+export function maskFromDataUrl(dataUrl: string): Promise<HTMLCanvasElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext('2d')!.drawImage(img, 0, 0);
+      resolve(c);
+    };
+    img.onerror = () => reject(new Error('Failed to decode brush tip'));
+    img.src = dataUrl;
+  });
 }
 
 const MAX_CACHE = 24;
@@ -48,7 +101,7 @@ function keyOf(spec: BrushTipSpec): string {
   const hardness = Math.round(spec.hardness * 20) / 20;
   const angle = Math.round(spec.angle);
   const roundness = Math.round(spec.roundness * 20) / 20;
-  return `${size}|${hardness}|${spec.shape}|${angle}|${roundness}|${spec.color}`;
+  return `${size}|${hardness}|${spec.shape}|${angle}|${roundness}|${spec.color}|${spec.maskId ?? ''}`;
 }
 
 /**
@@ -82,7 +135,17 @@ export function getBrushTip(spec: BrushTipSpec): HTMLCanvasElement {
   const [cr, cg, cb] = parseColor(spec.color);
   const rgb = `${cr},${cg},${cb}`;
 
-  if (spec.shape === 'square') {
+  if (spec.shape === 'image' && spec.maskCanvas) {
+    // Draw the mask into the (already rotated/squashed) tip space, then tint it.
+    // source-in is safe here because it's applied to the whole tip canvas — the
+    // same trick on a page-sized stroke buffer would wipe everything outside the
+    // fill rect, which is exactly why colour lives in the tip and not the buffer.
+    ctx.drawImage(spec.maskCanvas, -r, -r, size, size);
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = `rgb(${rgb})`;
+    ctx.fillRect(-dim, -dim, dim * 2, dim * 2);
+    ctx.globalCompositeOperation = 'source-over';
+  } else if (spec.shape === 'square') {
     if (hardness >= 0.99) {
       ctx.fillStyle = `rgb(${rgb})`;
       ctx.fillRect(-r, -r, size, size);

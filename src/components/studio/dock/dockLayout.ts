@@ -8,6 +8,7 @@ export const DEFAULT_DOCK_REGION: Record<string, DockRegionId> = {
   typer: 'bottom',
   translation: 'bottom',
   color: 'bottom',
+  brushes: 'bottom',
   fonts: 'bottom',
   history: 'bottom',
   pages: 'bottom',

@@ -36,6 +36,8 @@ import {
   type AdjustmentLayerData,
 } from './studioTypes';
 import { FontsPanel } from './FontsPanel';
+import { BrushesPanel } from './BrushesPanel';
+import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
 import {
   loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot,
@@ -82,19 +84,43 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [liquifyMode, setLiquifyMode] = useState<LiquifyMode>('push');
   const [symmetry, setSymmetry] = useState<SymmetryMode>('none');
   const [spacing, setSpacing] = useState(0.15);
-  const [brushShape, setBrushShape] = useState<BrushShape>('round');
+  const [brushShape, setBrushShape] = useState<BrushShape | 'image'>('round');
   const [brushAngle, setBrushAngle] = useState(0);
   const [brushRoundness, setBrushRoundness] = useState(1);
   const [scatter, setScatter] = useState(0);
   const [smoothing, setSmoothing] = useState(0);
   const [pressureSize, setPressureSize] = useState(true);
   const [pressureOpacity, setPressureOpacity] = useState(false);
+  const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
+  /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
+  const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
     scatter, smoothing, pressureSize, pressureOpacity,
+    tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
+
+  /** Applying a preset just writes the engine state — there's no separate "brush mode",
+   *  so the options bar and the panel always describe the same live brush. */
+  function handleSelectBrush(preset: BrushPreset, mask?: HTMLCanvasElement) {
+    setActiveBrushId(preset.id);
+    setBrushSize(preset.size);
+    setBrushHardness(preset.hardness);
+    setBrushOpacity(preset.opacity);
+    setBrushFlow(preset.flow);
+    setSpacing(preset.spacing);
+    setBrushAngle(preset.angle);
+    setBrushRoundness(preset.roundness);
+    setScatter(preset.scatter);
+    setSmoothing(preset.smoothing);
+    setPressureSize(preset.pressureSize);
+    setPressureOpacity(preset.pressureOpacity);
+    setBrushShape(preset.shape);
+    setTipMask(preset.shape === 'image' ? mask : undefined);
+    if (!(PAINT_TOOLS as readonly string[]).includes(activeTool)) setActiveTool('brush');
+  }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
   async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
@@ -638,6 +664,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     <AdjustmentPanel layer={activeLayer} onUpdate={handleUpdateAdjustmentLayer} />
   ) : null;
 
+  const brushesPanel = (
+    <BrushesPanel
+      color={foreground}
+      activeBrushId={activeBrushId}
+      onSelectBrush={handleSelectBrush}
+      live={{ size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+        spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity }}
+      onLiveChange={(patch) => {
+        if (patch.size !== undefined) setBrushSize(patch.size);
+        if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
+        if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
+        if (patch.flow !== undefined) setBrushFlow(patch.flow);
+        if (patch.spacing !== undefined) setSpacing(patch.spacing);
+        if (patch.angle !== undefined) setBrushAngle(patch.angle);
+        if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
+        if (patch.scatter !== undefined) setScatter(patch.scatter);
+        if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
+        if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
+        if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
+      }}
+    />
+  );
+
   const colorPanel = <ColorPanel />;
   const historyPanel = <HistoryPanel />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} />;
@@ -676,6 +725,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     ...(adjustmentPanel ? [{ id: 'adjustment', label: 'Adjustment', content: adjustmentPanel }] : []),
     { id: 'typer', label: 'TypeR', content: typerPanel },
     { id: 'translation', label: 'Translation', content: translationPanel },
+    { id: 'brushes', label: 'Brushes', content: brushesPanel },
     { id: 'color', label: 'Color', content: colorPanel },
     { id: 'fonts', label: 'Fonts', content: fontsPanel },
     { id: 'history', label: 'History', content: historyPanel },

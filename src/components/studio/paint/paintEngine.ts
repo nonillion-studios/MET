@@ -23,7 +23,10 @@ export interface PaintSettings {
   symmetry: SymmetryMode;
   /** Distance between stamps as a fraction of size. 0.15 ≈ the old hardcoded value. */
   spacing: number; // 0.01-1
-  brushShape: BrushShape;
+  brushShape: BrushShape | 'image';
+  /** Only for brushShape==='image': the active preset's baked alpha mask + its cache id. */
+  tipMask?: HTMLCanvasElement;
+  tipMaskId?: string;
   angle: number; // -180..180 degrees
   roundness: number; // 0.05-1 (1 = circular)
   /** Random per-stamp offset perpendicular/along the stroke, as a fraction of size. */
@@ -51,6 +54,8 @@ export function effectiveTip(settings: PaintSettings, tool: 'brush' | 'pencil' |
     // The eraser only ever uses its tip's alpha (it composites destination-out),
     // so its colour is arbitrary — pin it to black to avoid a second cache entry.
     color: tool === 'eraser' ? '#000000' : settings.color,
+    maskCanvas: settings.tipMask,
+    maskId: settings.tipMaskId,
   };
 }
 
