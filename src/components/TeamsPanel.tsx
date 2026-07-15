@@ -31,9 +31,11 @@ import {
   sendTeamMessage, listTeamMessages, subscribeToTeamMessages, TeamMessage,
   sendDirectMessage, listDirectMessages, subscribeToDirectMessages, listConversations, markDirectMessagesRead, DirectMessage, Conversation,
 } from '../lib/chat';
-import type { CloudClient } from '../lib/cloudClient';
+import type { CloudClient, CloudFile, CloudFolder } from '../lib/cloudClient';
+import { CloudFolders } from './cloud/CloudFolders';
+import { Folder as FolderIcon, Upload, Download } from 'lucide-react';
 
-type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'requests' | 'roster' | 'analytics';
+type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'files' | 'requests' | 'roster' | 'analytics';
 
 export function TeamsPanel({ cc }: { cc: CloudClient }) {
   const { session, isAdmin } = useTeamAuth();
@@ -61,6 +63,7 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Users }[] = [
   { id: 'tasks', label: 'Tasks', icon: ListTodo },
   { id: 'bank', label: 'Bank', icon: Wallet },
   { id: 'chat', label: 'Chat', icon: MessageCircle },
+  { id: 'files', label: 'Files', icon: FolderIcon },
   { id: 'requests', label: 'Requests', icon: CalendarClock },
   { id: 'roster', label: 'Roster', icon: Users },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
@@ -123,6 +126,7 @@ function TeamWorkspace({
         {section === 'tasks' && <TasksSection team={team} members={members} canManageTasks={canManage} canReviewTasks={perms.canReviewTasks} myMember={myMember} cc={cc} />}
         {section === 'bank' && <BankTab team={team} members={members} myMember={myMember} canManageBank={perms.canManageBank} />}
         {section === 'chat' && <ChatSection team={team} members={members} myMember={myMember} />}
+        {section === 'files' && <TeamFilesSection team={team} canManage={canManage} cc={cc} />}
         {section === 'requests' && <RequestsTab team={team} myMember={myMember} canManageVacations={perms.canManageVacations} canManageJoinRequests={perms.canManageJoinRequests} onChanged={onChanged} />}
         {section === 'analytics' && <AnalyticsSection team={team} members={members} />}
       </div>
@@ -1327,6 +1331,109 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
           </div>
         ))}
       </GlassCard>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Team Files — shared browse of the team's Telegram channel. Everyone active
+// can view/download everything in it (including task submissions); only
+// managers can create folders or upload standalone files. Regular members
+// still contribute files via task submission (Tasks section), not here.
+// ---------------------------------------------------------------------------
+
+function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: boolean; cc: CloudClient }) {
+  const [files, setFiles] = useState<CloudFile[]>([]);
+  const [folders, setFolders] = useState<CloudFolder[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const refresh = async () => {
+    if (!team.telegram_channel_id) { setLoading(false); return; }
+    setLoading(true);
+    const { files: f, folders: fo } = await cc.fetchChannelFiles(team.telegram_channel_id);
+    setFiles(f); setFolders(fo);
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, [team.telegram_channel_id]);
+
+  const handleCreateFolder = async (name: string, parentId: number | null) => {
+    await cc.createChannelFolder(team.telegram_channel_id, name, parentId);
+    refresh();
+  };
+
+  const handleDeleteFolder = async (folder: CloudFolder) => {
+    const result = await swal({ icon: 'warning', title: `Delete folder "${folder.name}"?`, text: 'Files inside will remain, unfiled.', showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
+    if (!result.isConfirmed) return;
+    await cc.deleteChannelFolder(team.telegram_channel_id, folder);
+    refresh();
+  };
+
+  const handleUpload = async (file: File) => {
+    setUploading(true);
+    await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId);
+    setUploading(false);
+    swalToast({ icon: 'success', title: 'File uploaded' });
+    refresh();
+  };
+
+  const handleDownload = async (file: CloudFile) => {
+    await cc.downloadTaskAttachment(team.telegram_channel_id, file.id, file.name);
+  };
+
+  if (!team.telegram_channel_id) {
+    return (
+      <GlassCard className="p-8 text-center">
+        <p className="text-sm text-ink-muted">No Telegram channel set for this team yet.</p>
+        {canManage && <p className="text-xs text-ink-faint mt-1">Set one in the Roster section to enable shared Team Files.</p>}
+      </GlassCard>
+    );
+  }
+
+  if (loading) return null;
+
+  const filesInFolder = files.filter(f => f.folderId === currentFolderId);
+
+  return (
+    <div className="space-y-4">
+      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} />
+
+      <div className="flex items-center justify-between gap-2">
+        <CloudFolders
+          folders={folders}
+          currentFolderId={currentFolderId}
+          onNavigate={setCurrentFolderId}
+          onCreateFolder={canManage ? handleCreateFolder : () => {}}
+          onDeleteFolder={canManage ? handleDeleteFolder : () => {}}
+          fileCountFor={(folderId) => files.filter(f => f.folderId === folderId).length}
+        />
+      </div>
+
+      {canManage && (
+        <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+          <Upload size={13} /> {uploading ? 'Uploading...' : 'Upload File'}
+        </Button>
+      )}
+
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {filesInFolder.length === 0 && (
+          <p className="text-xs text-ink-faint text-center py-6 sm:col-span-2 lg:col-span-3">No files in this folder yet.</p>
+        )}
+        {filesInFolder.map(f => (
+          <GlassCard key={f.id} className="p-3 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-ink truncate">{f.name}</p>
+              <p className="text-[10px] text-ink-faint">{cc.formatSize(f.sizeBytes)} · {f.sender}</p>
+            </div>
+            <button onClick={() => handleDownload(f)} aria-label={`Download ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+              <Download size={14} />
+            </button>
+          </GlassCard>
+        ))}
+      </div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ import type { Workspace } from '../types';
 export interface CloudFile {
   id: number;
   msg: any;
-  type: 'workspace_backup';
+  type: 'workspace_backup' | 'team_file';
   name: string;
   description: string;
   tags: string[];
@@ -502,6 +502,83 @@ export function useCloudClient() {
     }
   };
 
+  // ---------------------------------------------------------------------
+  // Team Files: browse/upload an arbitrary channel (the team's shared
+  // Telegram channel) rather than the user's own personal cloud channel.
+  // Any message with media is listed (task submissions included, so the
+  // team can see everything sitting in that channel, not just curated
+  // uploads); JSON-caption metadata is used when present for name/folder.
+  // ---------------------------------------------------------------------
+
+  const fetchChannelFiles = async (channelId: string): Promise<{ files: CloudFile[]; folders: CloudFolder[] }> => {
+    if (!client || !channelId) return { files: [], folders: [] };
+    const msgs = await client.getMessages(channelId, { limit: 200 });
+    const cloudFiles: CloudFile[] = [];
+    const cloudFolders: CloudFolder[] = [];
+
+    msgs.forEach(m => {
+      if (m.media) {
+        let meta: any = null;
+        try { meta = m.message ? JSON.parse(m.message) : null; } catch { /* plain caption, not JSON */ }
+        cloudFiles.push({
+          id: m.id,
+          msg: m,
+          type: meta?.type === 'workspace_backup' ? 'workspace_backup' : 'team_file',
+          name: meta?.name || m.message || (m as any).file?.name || 'Untitled',
+          description: meta?.description || '',
+          tags: Array.isArray(meta?.tags) ? meta.tags : [],
+          sender: meta?.sender || 'Team Member',
+          folderId: typeof meta?.folderId === 'number' ? meta.folderId : null,
+          coverMsgId: 0,
+          sizeBytes: meta?.sizeBytes || (m as any).file?.size || 0,
+          date: meta?.date || new Date(m.date * 1000).toISOString(),
+        });
+      } else if (m.message) {
+        try {
+          const data = JSON.parse(m.message);
+          if (data?.type === 'folder') {
+            cloudFolders.push({ id: m.id, name: data.name || 'Untitled Folder', parentId: typeof data.parentId === 'number' ? data.parentId : null });
+          }
+        } catch { /* not a folder marker */ }
+      }
+    });
+
+    return { files: cloudFiles, folders: cloudFolders };
+  };
+
+  const createChannelFolder = async (channelId: string, name: string, parentId: number | null): Promise<void> => {
+    if (!client || !channelId) return;
+    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'folder', name, parentId }) });
+  };
+
+  const deleteChannelFolder = async (channelId: string, folder: CloudFolder): Promise<void> => {
+    if (!client || !channelId) return;
+    await client.deleteMessages(channelId, [folder.id], { revoke: true });
+  };
+
+  const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<void> => {
+    if (!client || !channelId) {
+      swal({ title: 'Error', text: 'Connect Telegram and make sure the team has a channel set first', icon: 'error' });
+      return;
+    }
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBuffer: any = Buffer.from(arrayBuffer);
+      fileBuffer.name = file.name;
+      const metadata = { type: 'team_file', name: file.name, description: '', tags: [], sender: meName || 'Team Member', folderId, sizeBytes: file.size, date: new Date().toISOString() };
+      await client.sendFile(channelId, {
+        file: fileBuffer,
+        caption: JSON.stringify(metadata),
+        forceDocument: true,
+        fileSize: file.size,
+        progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
+      });
+    } catch (err: any) {
+      console.error(err);
+      swal({ title: 'Upload Error', text: err.message || 'An error occurred during upload', icon: 'error' });
+    }
+  };
+
   const saveConfig = () => {
     if (chatId) {
       localStorage.setItem('tg_chat_id', chatId);
@@ -553,6 +630,11 @@ export function useCloudClient() {
 
     uploadTaskAttachment,
     downloadTaskAttachment,
+
+    fetchChannelFiles,
+    createChannelFolder,
+    deleteChannelFolder,
+    uploadChannelFile,
 
     formatSize,
   };
