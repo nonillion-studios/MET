@@ -18,21 +18,6 @@ const ROTATE_MS = 10000;
 // liquid-glass box in its place.
 const brokenAds = new Set<number>();
 
-// Natural aspect ratio (height / width, as a %) for each ad, resolved once and
-// shared across instances so the box never has to guess a size before the
-// image loads and never collapses/jumps when the rotation swaps images.
-const ratioCache = new Map<number, number>();
-
-function preloadRatio(idx: number, url: string) {
-  if (ratioCache.has(idx)) return;
-  const img = new Image();
-  img.onload = () => {
-    ratioCache.set(idx, (img.naturalHeight / img.naturalWidth) * 100);
-  };
-  img.src = url;
-}
-ADS.forEach((ad, idx) => preloadRatio(idx, ad.imageUrl));
-
 function currentIndex() {
   if (ADS.length === 0) return 0;
   return Math.floor(Date.now() / ROTATE_MS) % ADS.length;
@@ -66,7 +51,6 @@ export function AdSlot({ placement, className }: { placement?: string; className
   const validIndex = nextValidIndex(index);
   if (validIndex === -1) return null;
   const ad = ADS[validIndex];
-  const ratio = ratioCache.get(validIndex);
 
   return (
     <a
@@ -75,22 +59,14 @@ export function AdSlot({ placement, className }: { placement?: string; className
       rel="noopener noreferrer sponsored"
       aria-label="Advertisement"
       data-placement={placement}
-      className={`relative block w-full max-w-xl mx-auto overflow-hidden transition-[padding-top] duration-500 ease-out ${className || ''}`}
-      style={{ paddingTop: `${ratio ?? 20.4}%` }}
+      className={`relative flex items-center justify-center w-full h-20 sm:h-24 lg:h-28 rounded-2xl bg-ink/[0.03] overflow-hidden ${className || ''}`}
     >
       <img
         key={validIndex}
         src={ad.imageUrl}
         alt="Advertisement"
-        className="absolute inset-0 w-full h-full object-contain animate-ad-fade"
+        className="max-w-full max-h-full object-contain animate-ad-fade"
         draggable={false}
-        onLoad={e => {
-          if (!ratioCache.has(validIndex)) {
-            const img = e.currentTarget;
-            ratioCache.set(validIndex, (img.naturalHeight / img.naturalWidth) * 100);
-            bump(n => n + 1);
-          }
-        }}
         onError={() => {
           brokenAds.add(validIndex);
           bump(n => n + 1);

@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
-  ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank,
+  ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank, Home, MessageCircle, Globe, Lock, ArrowLeft, UserPlus, Hash,
 } from 'lucide-react';
-import { GlassCard, Button, Input, Textarea, IconButton, Modal, Switch } from './ui';
+import { GlassCard, Button, Input, Textarea, Modal, Switch } from './ui';
 import { swal, swalToast } from '../lib/swalTheme';
 import { readAvatarFile } from '../lib/image';
 import { useTeamAuth } from '../lib/teamAuth';
@@ -17,16 +17,23 @@ import {
 import {
   Task, TaskDifficulty, createTaskWithWorkflow, listTeamTasks, listMyTasks, deleteTask, attachFileToTask,
   setTeamTelegramChannel, acceptTask, declineTask, submitTask, approveTask, rejectSubmission,
-  checkIn, setMemberActive, changePriority,
+  checkIn, setMemberActive, expireStaleOffers,
 } from '../lib/tasks';
 import { deposit, penalize, transfer, requestWithdrawal, decideWithdrawal, listPendingWithdrawals, listTransactions, Transaction, Withdrawal } from '../lib/wallet';
 import {
   requestLeave, decideLeave, requestResignation, decideResignation,
   listPendingLeaveRequests, listPendingResignations, LeaveRequest, ResignationRequest,
 } from '../lib/memberRequests';
+import {
+  requestToJoinTeam, decideJoinRequest, listPublicTeams, listPendingJoinRequests, JoinRequest, PublicTeamCard,
+} from '../lib/joinRequests';
+import {
+  sendTeamMessage, listTeamMessages, subscribeToTeamMessages, TeamMessage,
+  sendDirectMessage, listDirectMessages, subscribeToDirectMessages, listConversations, markDirectMessagesRead, DirectMessage, Conversation,
+} from '../lib/chat';
 import type { CloudClient } from '../lib/cloudClient';
 
-type TabId = 'overview' | 'roster' | 'tasks' | 'bank' | 'requests' | 'leaderboard' | 'stats';
+type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'requests' | 'roster' | 'analytics';
 
 export function TeamsPanel({ cc }: { cc: CloudClient }) {
   const { session, isAdmin } = useTeamAuth();
@@ -46,18 +53,27 @@ export function TeamsPanel({ cc }: { cc: CloudClient }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tab shell
+// Dashboard shell
 // ---------------------------------------------------------------------------
 
-const TABS: { id: TabId; label: string; icon: typeof Users }[] = [
-  { id: 'overview', label: 'Overview', icon: Users },
-  { id: 'roster', label: 'Roster', icon: Users },
+const SECTIONS: { id: SectionId; label: string; icon: typeof Users }[] = [
+  { id: 'dashboard', label: 'Dashboard', icon: Home },
   { id: 'tasks', label: 'Tasks', icon: ListTodo },
   { id: 'bank', label: 'Bank', icon: Wallet },
+  { id: 'chat', label: 'Chat', icon: MessageCircle },
   { id: 'requests', label: 'Requests', icon: CalendarClock },
-  { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
-  { id: 'stats', label: 'Stats', icon: BarChart3 },
+  { id: 'roster', label: 'Roster', icon: Users },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
 ];
+
+interface Perms {
+  isOwner: boolean;
+  canManage: boolean; // owner or leader (blanket — invites, telegram channel, task creation)
+  canReviewTasks: boolean;
+  canManageBank: boolean;
+  canManageJoinRequests: boolean;
+  canManageVacations: boolean;
+}
 
 function TeamWorkspace({
   team, members, isOwner, myMember, canManage, onChanged, cc,
@@ -70,36 +86,46 @@ function TeamWorkspace({
   onChanged: () => void;
   cc: CloudClient;
 }) {
-  const [tab, setTab] = useState<TabId>('overview');
-  const visibleTabs = TABS.filter(t => t.id !== 'stats' || canManage);
+  const [section, setSection] = useState<SectionId>('dashboard');
+
+  const perms: Perms = {
+    isOwner,
+    canManage,
+    canReviewTasks: isOwner || !!myMember?.can_review_tasks,
+    canManageBank: isOwner || !!myMember?.can_manage_bank,
+    canManageJoinRequests: isOwner || !!myMember?.can_manage_join_requests,
+    canManageVacations: isOwner || !!myMember?.can_manage_vacations,
+  };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-1.5">
-        {visibleTabs.map(t => {
-          const Icon = t.icon;
+    <div className="lg:flex lg:gap-6 lg:items-start">
+      <nav className="flex lg:flex-col gap-1.5 overflow-x-auto lg:overflow-visible pb-2 lg:pb-0 mb-4 lg:mb-0 lg:w-48 lg:shrink-0">
+        {SECTIONS.map(s => {
+          const Icon = s.icon;
           return (
             <button
-              key={t.id}
+              key={s.id}
               type="button"
-              onClick={() => setTab(t.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${
-                tab === t.id ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
+              onClick={() => setSection(s.id)}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 lg:w-full ${
+                section === s.id ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
               }`}
             >
-              <Icon size={13} /> {t.label}
+              <Icon size={14} /> {s.label}
             </button>
           );
         })}
-      </div>
+      </nav>
 
-      {tab === 'overview' && <OverviewTab team={team} myMember={myMember} canManage={canManage} members={members} onChanged={onChanged} />}
-      {tab === 'roster' && <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} onChanged={onChanged} />}
-      {tab === 'tasks' && <TasksSection team={team} members={members} canManageTasks={canManage} myMember={myMember} cc={cc} />}
-      {tab === 'bank' && <BankTab team={team} members={members} myMember={myMember} canManage={canManage} />}
-      {tab === 'requests' && <RequestsTab team={team} myMember={myMember} canManage={canManage} onChanged={onChanged} />}
-      {tab === 'leaderboard' && <LeaderboardTab team={team} />}
-      {tab === 'stats' && canManage && <StatsTab team={team} members={members} />}
+      <div className="flex-1 min-w-0">
+        {section === 'dashboard' && <DashboardSection team={team} myMember={myMember} canManage={canManage} members={members} onChanged={onChanged} />}
+        {section === 'roster' && <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} onChanged={onChanged} />}
+        {section === 'tasks' && <TasksSection team={team} members={members} canManageTasks={canManage} canReviewTasks={perms.canReviewTasks} myMember={myMember} cc={cc} />}
+        {section === 'bank' && <BankTab team={team} members={members} myMember={myMember} canManageBank={perms.canManageBank} />}
+        {section === 'chat' && <ChatSection team={team} members={members} myMember={myMember} />}
+        {section === 'requests' && <RequestsTab team={team} myMember={myMember} canManageVacations={perms.canManageVacations} canManageJoinRequests={perms.canManageJoinRequests} onChanged={onChanged} />}
+        {section === 'analytics' && <AnalyticsSection team={team} members={members} />}
+      </div>
     </div>
   );
 }
@@ -108,7 +134,7 @@ function TeamWorkspace({
 // Overview
 // ---------------------------------------------------------------------------
 
-function OverviewTab({ team, myMember, canManage, members, onChanged }: { team: Team; myMember: TeamMember | null; canManage: boolean; members: TeamMember[]; onChanged: () => void }) {
+function DashboardSection({ team, myMember, canManage, members, onChanged }: { team: Team; myMember: TeamMember | null; canManage: boolean; members: TeamMember[]; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
 
   const handleCheckIn = async () => {
@@ -127,9 +153,9 @@ function OverviewTab({ team, myMember, canManage, members, onChanged }: { team: 
   };
 
   return (
-    <div className="space-y-4">
+    <div className="grid gap-4 md:grid-cols-2">
       {myMember && (
-        <GlassCard className="p-6 space-y-4 max-w-md">
+        <GlassCard className="p-6 space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs text-ink-faint">Your balance</p>
@@ -164,7 +190,7 @@ function OverviewTab({ team, myMember, canManage, members, onChanged }: { team: 
       )}
 
       {canManage && (
-        <GlassCard className="p-6 max-w-md">
+        <GlassCard className="p-6">
           <h3 className="text-sm font-semibold text-ink mb-3">Team at a glance</h3>
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div><p className="text-ink-faint text-xs">Members</p><p className="font-bold text-ink">{members.filter(m => m.status === 'active').length}</p></div>
@@ -176,7 +202,7 @@ function OverviewTab({ team, myMember, canManage, members, onChanged }: { team: 
       )}
 
       {!myMember && !canManage && (
-        <GlassCard className="p-8 max-w-md text-center">
+        <GlassCard className="p-8 text-center md:col-span-2">
           <p className="text-sm text-ink-muted">No personal dashboard for this account yet.</p>
         </GlassCard>
       )}
@@ -188,10 +214,23 @@ function OverviewTab({ team, myMember, canManage, members, onChanged }: { team: 
 // Roster
 // ---------------------------------------------------------------------------
 
+const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations'; label: string }[] = [
+  { key: 'can_review_tasks', label: 'Review tasks' },
+  { key: 'can_manage_bank', label: 'Manage bank' },
+  { key: 'can_manage_join_requests', label: 'Manage join requests' },
+  { key: 'can_manage_vacations', label: 'Manage vacations' },
+];
+
 function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onClose: () => void; onSaved: () => void }) {
   const [jobTitle, setJobTitle] = useState<JobTitle | ''>(member.job_title || '');
   const [priority, setPriority] = useState(String(member.priority ?? ''));
   const [balance, setBalance] = useState(String(member.balance ?? 0));
+  const [perms, setPerms] = useState({
+    can_review_tasks: member.can_review_tasks,
+    can_manage_bank: member.can_manage_bank,
+    can_manage_join_requests: member.can_manage_join_requests,
+    can_manage_vacations: member.can_manage_vacations,
+  });
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -200,6 +239,7 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
       job_title: (jobTitle || null) as JobTitle | null,
       priority: priority ? Number(priority) : null,
       balance: Number(balance) || 0,
+      ...perms,
     });
     setSaving(false);
     if (error) { swal({ icon: 'error', title: 'Could not save', text: error }); return; }
@@ -228,6 +268,18 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
           <label className="text-xs text-accent font-semibold">Balance ($)</label>
           <Input type="number" step="0.01" value={balance} onChange={e => setBalance(e.target.value)} />
         </div>
+
+        {member.role === 'leader' && (
+          <div className="space-y-1.5 pt-2 border-t border-hairline">
+            <label className="text-xs text-accent font-semibold">Sub-admin permissions</label>
+            {PERM_TOGGLES.map(p => (
+              <div key={p.key} className="flex items-center justify-between py-1">
+                <span className="text-xs text-ink">{p.label}</span>
+                <Switch checked={perms[p.key]} onChange={v => setPerms(prev => ({ ...prev, [p.key]: v }))} />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </Modal>
   );
@@ -310,7 +362,7 @@ function TeamRoster({
   };
 
   return (
-    <GlassCard className="overflow-hidden max-w-md">
+    <GlassCard className="overflow-hidden max-w-2xl">
       {editing && <EditMemberModal member={editing} onClose={() => setEditing(null)} onSaved={onChanged} />}
 
       <div className="p-6 flex items-center gap-4 border-b border-hairline bg-ink/[0.02]">
@@ -408,6 +460,9 @@ function AdminTeamSection({ cc }: { cc: CloudClient }) {
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [teamName, setTeamName] = useState('');
   const [logo, setLogo] = useState('');
+  const [description, setDescription] = useState('');
+  const [visibility, setVisibility] = useState<'public' | 'private'>('private');
+  const [payNote, setPayNote] = useState('');
   const [creating, setCreating] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
@@ -427,7 +482,7 @@ function AdminTeamSection({ cc }: { cc: CloudClient }) {
       return;
     }
     setCreating(true);
-    const { team: created, error } = await createTeam(teamName.trim(), logo);
+    const { team: created, error } = await createTeam({ name: teamName.trim(), logo, description: description.trim(), visibility, payNote: payNote.trim() });
     setCreating(false);
     if (error) {
       swal({ icon: 'error', title: 'Could not create team', text: error });
@@ -465,6 +520,21 @@ function AdminTeamSection({ cc }: { cc: CloudClient }) {
               <label className="text-xs text-accent font-semibold">Team Name</label>
               <Input placeholder="e.g. Nightfall Scans" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
             </div>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-accent font-semibold">Description</label>
+            <Textarea placeholder="What does this team work on?" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-accent font-semibold">Usual Pay</label>
+            <Input placeholder="e.g. $10–20 per task" value={payNote} onChange={(e) => setPayNote(e.target.value)} />
+          </div>
+          <div className="flex items-center justify-between p-3 rounded-xl border border-hairline">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              {visibility === 'public' ? <Globe size={14} className="text-accent" /> : <Lock size={14} className="text-ink-faint" />}
+              {visibility === 'public' ? 'Public — listed in the directory' : 'Private — join by ID only'}
+            </div>
+            <Switch checked={visibility === 'public'} onChange={v => setVisibility(v ? 'public' : 'private')} />
           </div>
           <Button onClick={handleCreate} disabled={creating} className="w-full">
             <Plus size={14} /> {creating ? 'Creating...' : 'Create Team'}
@@ -538,42 +608,123 @@ function MemberTeamSection({ cc }: { cc: CloudClient }) {
     );
   }
 
-  if (invites.length > 0) {
-    return (
-      <div className="space-y-3 max-w-md">
-        {invites.map(inv => (
-          <GlassCard key={inv.id} className="overflow-hidden border-accent/30">
-            <div className="p-5 flex items-center gap-3 bg-accent-soft">
-              <div className="w-11 h-11 rounded-xl overflow-hidden bg-elevated border border-accent/30 shrink-0 flex items-center justify-center">
-                {inv.team?.logo ? <img src={inv.team.logo} alt={inv.team?.name || 'Team'} className="w-full h-full object-cover" /> : <Mail size={18} className="text-accent" />}
+  return (
+    <div className="space-y-4">
+      {invites.length > 0 && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {invites.map(inv => (
+            <GlassCard key={inv.id} className="overflow-hidden border-accent/30">
+              <div className="p-5 flex items-center gap-3 bg-accent-soft">
+                <div className="w-11 h-11 rounded-xl overflow-hidden bg-elevated border border-accent/30 shrink-0 flex items-center justify-center">
+                  {inv.team?.logo ? <img src={inv.team.logo} alt={inv.team?.name || 'Team'} className="w-full h-full object-cover" /> : <Mail size={18} className="text-accent" />}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold text-accent uppercase tracking-wide">Team Invitation</p>
+                  <p className="text-sm font-semibold text-ink truncate">{inv.team?.name || 'Unknown team'}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-[10px] font-semibold text-accent uppercase tracking-wide">Team Invitation</p>
-                <p className="text-sm font-semibold text-ink truncate">{inv.team?.name || 'Unknown team'}</p>
+              <div className="p-4 flex gap-2">
+                <Button onClick={() => handleAccept(inv.id)} disabled={busyId === inv.id} className="flex-1">
+                  <Check size={14} /> Accept
+                </Button>
+                <Button variant="secondary" onClick={() => handleDecline(inv.id)} disabled={busyId === inv.id} className="flex-1">
+                  <X size={14} /> Decline
+                </Button>
               </div>
-            </div>
-            <div className="p-4 flex gap-2">
-              <Button onClick={() => handleAccept(inv.id)} disabled={busyId === inv.id} className="flex-1">
-                <Check size={14} /> Accept
-              </Button>
-              <Button variant="secondary" onClick={() => handleDecline(inv.id)} disabled={busyId === inv.id} className="flex-1">
-                <X size={14} /> Decline
-              </Button>
-            </div>
-          </GlassCard>
-        ))}
-      </div>
-    );
-  }
+            </GlassCard>
+          ))}
+        </div>
+      )}
+
+      <TeamDirectory />
+    </div>
+  );
+}
+
+function TeamDirectory() {
+  const [teams, setTeams] = useState<PublicTeamCard[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [joinTarget, setJoinTarget] = useState<PublicTeamCard | { id: string; name: string } | null>(null);
+  const [teamIdInput, setTeamIdInput] = useState('');
+
+  useEffect(() => {
+    (async () => { setTeams(await listPublicTeams()); setLoading(false); })();
+  }, []);
+
+  const handleJoinById = () => {
+    if (!teamIdInput.trim()) return;
+    setJoinTarget({ id: teamIdInput.trim(), name: 'this team' });
+  };
+
+  if (loading) return null;
 
   return (
-    <GlassCard className="p-8 max-w-md text-center">
-      <div className="w-12 h-12 mx-auto rounded-full bg-ink/5 border border-hairline flex items-center justify-center mb-3">
-        <Users size={20} className="text-ink-faint" />
+    <div className="space-y-4">
+      {joinTarget && <RequestJoinModal target={joinTarget} onClose={() => setJoinTarget(null)} />}
+
+      <GlassCard className="p-6 space-y-2 max-w-md">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Hash size={15} className="text-accent" /> Join by Team ID</h3>
+        <div className="flex gap-2">
+          <Input placeholder="Paste a team ID" value={teamIdInput} onChange={e => setTeamIdInput(e.target.value)} className="flex-1" />
+          <Button onClick={handleJoinById}>Request</Button>
+        </div>
+      </GlassCard>
+
+      <div>
+        <h3 className="text-sm font-semibold text-ink mb-2">Public Teams</h3>
+        {teams.length === 0 ? (
+          <GlassCard className="p-8 text-center">
+            <p className="text-sm text-ink-muted">No public teams yet.</p>
+          </GlassCard>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {teams.map(t => (
+              <GlassCard key={t.id} className="overflow-hidden">
+                <div className="p-5 flex items-center gap-3 border-b border-hairline bg-ink/[0.02]">
+                  <div className="w-11 h-11 rounded-xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
+                    {t.logo ? <img src={t.logo} alt={t.name} className="w-full h-full object-cover" /> : <Users size={16} className="text-accent" />}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-ink truncate">{t.name}</p>
+                    <p className="text-[10px] text-ink-faint">{t.member_count} member{t.member_count === 1 ? '' : 's'}</p>
+                  </div>
+                </div>
+                <div className="p-4 space-y-2">
+                  {t.description && <p className="text-xs text-ink-muted line-clamp-2">{t.description}</p>}
+                  {t.pay_note && <p className="text-xs font-semibold text-accent">{t.pay_note}</p>}
+                  <Button size="sm" className="w-full" onClick={() => setJoinTarget(t)}><UserPlus size={13} /> Request to Join</Button>
+                </div>
+              </GlassCard>
+            ))}
+          </div>
+        )}
       </div>
-      <p className="text-sm font-semibold text-ink">No team yet</p>
-      <p className="text-xs text-ink-muted mt-1">Ask your leader to sign you up.</p>
-    </GlassCard>
+    </div>
+  );
+}
+
+function RequestJoinModal({ target, onClose }: { target: { id: string; name: string }; onClose: () => void }) {
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const handleSend = async () => {
+    setSending(true);
+    const error = await requestToJoinTeam(target.id, message.trim());
+    setSending(false);
+    if (error) { swal({ icon: 'error', title: 'Could not send request', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Join request sent' });
+    onClose();
+  };
+
+  return (
+    <Modal open onClose={onClose} title={`Request to join ${target.name}`} size="sm" footer={
+      <Button className="w-full" onClick={handleSend} disabled={sending}>{sending ? 'Sending...' : 'Send Request'}</Button>
+    }>
+      <div className="space-y-1">
+        <label className="text-xs text-accent font-semibold">Message (optional letter to the admin)</label>
+        <Textarea placeholder="Tell them a bit about yourself..." value={message} onChange={e => setMessage(e.target.value)} rows={4} />
+      </div>
+    </Modal>
   );
 }
 
@@ -713,7 +864,7 @@ function RateSubmissionControl({ task, onChanged }: { task: Task; onChanged: () 
   );
 }
 
-function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: Team; members: TeamMember[]; canManageTasks: boolean; myMember: TeamMember | null; cc: CloudClient }) {
+function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember, cc }: { team: Team; members: TeamMember[]; canManageTasks: boolean; canReviewTasks: boolean; myMember: TeamMember | null; cc: CloudClient }) {
   const [loading, setLoading] = useState(true);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [title, setTitle] = useState('');
@@ -721,11 +872,13 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
   const [difficulty, setDifficulty] = useState<TaskDifficulty>('Medium');
   const [jobTypes, setJobTypes] = useState<string[]>([]);
   const [dueDate, setDueDate] = useState('');
+  const [reward, setReward] = useState('');
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
+    await expireStaleOffers(team.id);
     setTasks(canManageTasks ? await listTeamTasks(team.id) : await listMyTasks(team.id));
     setLoading(false);
   };
@@ -744,11 +897,11 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
     setCreating(true);
     const error = await createTaskWithWorkflow({
       teamId: team.id, title: title.trim(), description: description.trim(),
-      difficulty, jobTypes, dueDate: dueDate || null,
+      difficulty, jobTypes, dueDate: dueDate || null, reward: reward ? Number(reward) : undefined,
     });
     setCreating(false);
     if (error) { swal({ icon: 'error', title: 'Could not create task', text: error }); return; }
-    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setDifficulty('Medium');
+    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setDifficulty('Medium'); setReward('');
     swalToast({ icon: 'success', title: 'Task created and auto-assigned' });
     refresh();
   };
@@ -775,13 +928,13 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
   if (loading) return null;
 
   return (
-    <GlassCard className="overflow-hidden max-w-md">
+    <GlassCard className="overflow-hidden max-w-2xl">
       <div className="p-6 border-b border-hairline bg-ink/[0.02] flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-accent-soft border border-accent/20 flex items-center justify-center shrink-0">
           <ListTodo size={18} className="text-accent" />
         </div>
         <div>
-          <h3 className="text-base font-display font-display font-semibold text-ink">{canManageTasks ? 'Tasks' : 'My Tasks'}</h3>
+          <h3 className="text-base font-display font-semibold text-ink">{canManageTasks ? 'Tasks' : 'My Tasks'}</h3>
           <p className="text-xs text-ink-muted mt-0.5">{canManageTasks ? 'Create and route work across the team' : 'Offered, in progress, and awaiting review'}</p>
         </div>
       </div>
@@ -805,12 +958,13 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
             </div>
             <div className="grid grid-cols-2 gap-2">
               <select value={difficulty} onChange={(e) => setDifficulty(e.target.value as TaskDifficulty)} className="w-full bg-ink/5 border border-hairline rounded-xl px-3 py-2.5 text-ink text-sm outline-none focus:border-accent">
-                <option value="Easy">Easy · $5</option>
-                <option value="Medium">Medium · $10</option>
-                <option value="Hard">Hard · $20</option>
+                <option value="Easy">Easy</option>
+                <option value="Medium">Medium</option>
+                <option value="Hard">Hard</option>
               </select>
               <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
             </div>
+            <Input type="number" step="0.01" placeholder="Reward ($, optional)" value={reward} onChange={(e) => setReward(e.target.value)} />
             <Button onClick={handleCreate} disabled={creating} className="w-full">
               <Plus size={14} /> {creating ? 'Creating...' : 'Create Task'}
             </Button>
@@ -829,7 +983,7 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
                     {t.description && <p className="text-xs text-ink-muted mt-0.5 whitespace-pre-line">{t.description}</p>}
                     <p className="text-[10px] text-ink-faint mt-1 flex flex-wrap items-center gap-x-2">
                       {canManageTasks && <span>{t.assignee?.name || 'Unassigned'}</span>}
-                      <span>{t.difficulty} · ${t.reward ?? 0}</span>
+                      <span>{t.difficulty}{t.reward != null ? ` · $${t.reward}` : ''}</span>
                       {t.job_types?.length > 0 && <span>{t.job_types.join(', ')}</span>}
                     </p>
                   </div>
@@ -862,7 +1016,7 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
                 {!canManageTasks && isMine && t.status === 'in_progress' && (
                   <SubmitLinkControl task={t} onChanged={refresh} />
                 )}
-                {canManageTasks && t.status === 'under_review' && (
+                {canReviewTasks && t.status === 'under_review' && (
                   <RateSubmissionControl task={t} onChanged={refresh} />
                 )}
               </div>
@@ -878,7 +1032,7 @@ function TasksSection({ team, members, canManageTasks, myMember, cc }: { team: T
 // Bank
 // ---------------------------------------------------------------------------
 
-function BankTab({ team, members, myMember, canManage }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; canManage: boolean }) {
+function BankTab({ team, members, myMember, canManageBank: canManage }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; canManageBank: boolean }) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -922,7 +1076,7 @@ function BankTab({ team, members, myMember, canManage }: { team: Team; members: 
   if (loading) return null;
 
   return (
-    <div className="space-y-4 max-w-md">
+    <div className="grid gap-4 lg:grid-cols-2">
       {(myMember || canManage) && (
         <GlassCard className="p-6 space-y-3">
           <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><PiggyBank size={16} className="text-accent" /> {canManage ? 'Team Treasury' : 'Send / Withdraw'}</h3>
@@ -991,9 +1145,10 @@ function BankTab({ team, members, myMember, canManage }: { team: Team; members: 
 // Requests (leave / resignation)
 // ---------------------------------------------------------------------------
 
-function RequestsTab({ team, myMember, canManage, onChanged }: { team: Team; myMember: TeamMember | null; canManage: boolean; onChanged: () => void }) {
+function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests, onChanged }: { team: Team; myMember: TeamMember | null; canManageVacations: boolean; canManageJoinRequests: boolean; onChanged: () => void }) {
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [resignations, setResignations] = useState<ResignationRequest[]>([]);
+  const [joins, setJoins] = useState<JoinRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [leaveReason, setLeaveReason] = useState('');
   const [leaveDuration, setLeaveDuration] = useState('');
@@ -1001,14 +1156,17 @@ function RequestsTab({ team, myMember, canManage, onChanged }: { team: Team; myM
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
-    if (!canManage) { setLoading(false); return; }
     setLoading(true);
-    const [l, r] = await Promise.all([listPendingLeaveRequests(team.id), listPendingResignations(team.id)]);
-    setLeaves(l); setResignations(r);
+    const [l, r, j] = await Promise.all([
+      canManageVacations ? listPendingLeaveRequests(team.id) : Promise.resolve([]),
+      canManageVacations ? listPendingResignations(team.id) : Promise.resolve([]),
+      canManageJoinRequests ? listPendingJoinRequests(team.id) : Promise.resolve([]),
+    ]);
+    setLeaves(l); setResignations(r); setJoins(j);
     setLoading(false);
   };
 
-  useEffect(() => { refresh(); }, [team.id, canManage]);
+  useEffect(() => { refresh(); }, [team.id, canManageVacations, canManageJoinRequests]);
 
   const handleRequestLeave = async () => {
     if (!leaveReason.trim() || !leaveDuration.trim()) { swal({ icon: 'error', title: 'Fill in both fields' }); return; }
@@ -1033,7 +1191,7 @@ function RequestsTab({ team, myMember, canManage, onChanged }: { team: Team; myM
   };
 
   return (
-    <div className="space-y-4 max-w-md">
+    <div className="grid gap-4 lg:grid-cols-2">
       {myMember && (
         <GlassCard className="p-6 space-y-4">
           <div className="space-y-2">
@@ -1050,7 +1208,24 @@ function RequestsTab({ team, myMember, canManage, onChanged }: { team: Team; myM
         </GlassCard>
       )}
 
-      {canManage && !loading && (
+      {!loading && canManageJoinRequests && (
+        <GlassCard className="p-6 space-y-2">
+          <h3 className="text-sm font-semibold text-ink">Pending Join Requests</h3>
+          {joins.length === 0 && <p className="text-xs text-ink-faint text-center py-3">None pending.</p>}
+          {joins.map(j => (
+            <div key={j.id} className="p-2.5 rounded-xl border border-hairline text-xs space-y-1.5">
+              <p className="font-semibold text-ink">{j.user?.name || j.user?.email}</p>
+              {j.message && <p className="text-ink-muted whitespace-pre-line">{j.message}</p>}
+              <div className="flex gap-1">
+                <Button size="sm" onClick={async () => { await decideJoinRequest(j.id, true); refresh(); onChanged(); }}>Approve</Button>
+                <Button size="sm" variant="secondary" onClick={async () => { await decideJoinRequest(j.id, false); refresh(); }}>Reject</Button>
+              </div>
+            </div>
+          ))}
+        </GlassCard>
+      )}
+
+      {!loading && canManageVacations && (
         <>
           <GlassCard className="p-6 space-y-2">
             <h3 className="text-sm font-semibold text-ink">Pending Leave Requests</h3>
@@ -1088,39 +1263,19 @@ function RequestsTab({ team, myMember, canManage, onChanged }: { team: Team; myM
 }
 
 // ---------------------------------------------------------------------------
-// Leaderboard & Stats
+// Analytics (leaderboard + team report, open to every member)
 // ---------------------------------------------------------------------------
 
-function LeaderboardTab({ team }: { team: Team }) {
+function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[] }) {
   const [top, setTop] = useState<TeamMember[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => { setTop(await getLeaderboard(team.id)); setLoading(false); })();
-  }, [team.id]);
-
-  if (loading) return null;
-
-  return (
-    <GlassCard className="p-6 max-w-md space-y-2">
-      <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Trophy size={16} className="text-accent" /> Top Earners</h3>
-      {top.length === 0 && <p className="text-xs text-ink-faint text-center py-3">No data yet.</p>}
-      {top.map((m, i) => (
-        <div key={m.id} className="flex items-center justify-between p-2.5 rounded-xl border border-hairline">
-          <span className="text-sm font-semibold text-ink">#{i + 1} {m.profile?.name || m.invited_email}</span>
-          <span className="text-sm font-bold text-accent">${m.balance.toFixed(2)}</span>
-        </div>
-      ))}
-    </GlassCard>
-  );
-}
-
-function StatsTab({ team, members }: { team: Team; members: TeamMember[] }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => { setTasks(await listTeamTasks(team.id)); setLoading(false); })();
+    (async () => {
+      const [t, tk] = await Promise.all([getLeaderboard(team.id), listTeamTasks(team.id)]);
+      setTop(t); setTasks(tk); setLoading(false);
+    })();
   }, [team.id]);
 
   if (loading) return null;
@@ -1129,7 +1284,7 @@ function StatsTab({ team, members }: { team: Team; members: TeamMember[] }) {
   const overdue = tasks.filter(t => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'done' && t.status !== 'cancelled');
 
   return (
-    <div className="space-y-4 max-w-md">
+    <div className="grid gap-4 lg:grid-cols-2">
       <GlassCard className="p-6 space-y-2">
         <h3 className="text-sm font-semibold text-ink">Team Report</h3>
         <div className="grid grid-cols-2 gap-3 text-sm">
@@ -1140,8 +1295,19 @@ function StatsTab({ team, members }: { team: Team; members: TeamMember[] }) {
         </div>
       </GlassCard>
 
+      <GlassCard className="p-6 space-y-2">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Trophy size={16} className="text-accent" /> Top Earners</h3>
+        {top.length === 0 && <p className="text-xs text-ink-faint text-center py-3">No data yet.</p>}
+        {top.map((m, i) => (
+          <div key={m.id} className="flex items-center justify-between p-2.5 rounded-xl border border-hairline">
+            <span className="text-sm font-semibold text-ink">#{i + 1} {m.profile?.name || m.invited_email}</span>
+            <span className="text-sm font-bold text-accent">${m.balance.toFixed(2)}</span>
+          </div>
+        ))}
+      </GlassCard>
+
       {overdue.length > 0 && (
-        <GlassCard className="p-6 space-y-2">
+        <GlassCard className="p-6 space-y-2 lg:col-span-2">
           <h3 className="text-sm font-semibold text-ink">Overdue Tasks</h3>
           {overdue.map(t => (
             <div key={t.id} className="p-2.5 rounded-xl border border-danger/30 text-xs">
@@ -1152,7 +1318,7 @@ function StatsTab({ team, members }: { team: Team; members: TeamMember[] }) {
         </GlassCard>
       )}
 
-      <GlassCard className="p-6 space-y-2">
+      <GlassCard className="p-6 space-y-2 lg:col-span-2">
         <h3 className="text-sm font-semibold text-ink">Members</h3>
         {members.map(m => (
           <div key={m.id} className="flex items-center justify-between p-2 text-xs border-b border-hairline last:border-0">
@@ -1162,5 +1328,166 @@ function StatsTab({ team, members }: { team: Team; members: TeamMember[] }) {
         ))}
       </GlassCard>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat (team channel + DMs)
+// ---------------------------------------------------------------------------
+
+function ChatSection({ team, members, myMember }: { team: Team; members: TeamMember[]; myMember: TeamMember | null }) {
+  const [mode, setMode] = useState<'team' | 'dm'>('team');
+  const [activePartner, setActivePartner] = useState<string | null>(null);
+
+  const partnerMember = members.find(m => m.user_id === activePartner);
+
+  return (
+    <GlassCard className="overflow-hidden h-[70vh] flex flex-col">
+      <div className="flex items-center gap-2 p-3 border-b border-hairline shrink-0">
+        <button
+          type="button"
+          onClick={() => { setMode('team'); setActivePartner(null); }}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${mode === 'team' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
+        >
+          Team Chat
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('dm')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors ${mode === 'dm' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}
+        >
+          Direct Messages
+        </button>
+      </div>
+
+      {mode === 'team' && <TeamChatThread team={team} />}
+      {mode === 'dm' && !activePartner && <ConversationList team={team} members={members} myMember={myMember} onSelect={setActivePartner} />}
+      {mode === 'dm' && activePartner && (
+        <DirectThread team={team} partnerId={activePartner} partnerName={partnerMember?.profile?.name || partnerMember?.invited_email || 'Member'} onBack={() => setActivePartner(null)} />
+      )}
+    </GlassCard>
+  );
+}
+
+function TeamChatThread({ team }: { team: Team }) {
+  const [messages, setMessages] = useState<TeamMessage[]>([]);
+  const [body, setBody] = useState('');
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    listTeamMessages(team.id).then(msgs => { if (mounted) setMessages(msgs); });
+    const unsubscribe = subscribeToTeamMessages(team.id, msg => setMessages(prev => [...prev, msg]));
+    return () => { mounted = false; unsubscribe(); };
+  }, [team.id]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
+
+  const handleSend = async () => {
+    if (!body.trim()) return;
+    const text = body.trim();
+    setBody('');
+    await sendTeamMessage(team.id, text);
+  };
+
+  return (
+    <>
+      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        {messages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
+        {messages.map(m => (
+          <div key={m.id} className="p-2.5 rounded-xl bg-ink/[0.03] max-w-md">
+            <p className="text-[10px] font-semibold text-accent">{m.sender?.name || 'Member'}</p>
+            <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+      <div className="p-3 border-t border-hairline flex gap-2 shrink-0">
+        <Input placeholder="Message the team..." value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+        <Button onClick={handleSend}><Send size={14} /></Button>
+      </div>
+    </>
+  );
+}
+
+function ConversationList({ team, members, myMember, onSelect }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; onSelect: (userId: string) => void }) {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => { setConversations(await listConversations(team.id)); setLoading(false); })();
+  }, [team.id]);
+
+  const others = members.filter(m => m.status === 'active' && m.user_id && m.user_id !== myMember?.user_id);
+  const contacted = new Set(conversations.map(c => c.otherUserId));
+
+  if (loading) return null;
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+      {conversations.map(c => (
+        <button key={c.otherUserId} onClick={() => onSelect(c.otherUserId)} className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-ink truncate">{c.otherName}</p>
+            <p className="text-xs text-ink-faint truncate">{c.lastMessage}</p>
+          </div>
+          {c.unread > 0 && <span className="text-[10px] font-bold text-white bg-accent rounded-full w-5 h-5 flex items-center justify-center shrink-0">{c.unread}</span>}
+        </button>
+      ))}
+      {others.filter(m => !contacted.has(m.user_id!)).map(m => (
+        <button key={m.id} onClick={() => onSelect(m.user_id!)} className="w-full flex items-center gap-2 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
+          <p className="text-sm text-ink">{m.profile?.name || m.invited_email}</p>
+        </button>
+      ))}
+      {conversations.length === 0 && others.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No teammates to message yet.</p>}
+    </div>
+  );
+}
+
+function DirectThread({ team, partnerId, partnerName, onBack }: { team: Team; partnerId: string; partnerName: string; onBack: () => void }) {
+  const [messages, setMessages] = useState<DirectMessage[]>([]);
+  const [body, setBody] = useState('');
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    listDirectMessages(team.id, partnerId).then(msgs => { if (mounted) setMessages(msgs); });
+    markDirectMessagesRead(team.id, partnerId);
+    const unsubscribe = subscribeToDirectMessages(team.id, msg => {
+      if (msg.sender_id === partnerId || msg.receiver_id === partnerId) setMessages(prev => [...prev, msg]);
+    });
+    return () => { mounted = false; unsubscribe(); };
+  }, [team.id, partnerId]);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
+
+  const handleSend = async () => {
+    if (!body.trim()) return;
+    const text = body.trim();
+    setBody('');
+    await sendDirectMessage(team.id, partnerId, text);
+  };
+
+  return (
+    <>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-hairline shrink-0">
+        <button onClick={onBack} aria-label="Back" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+          <ArrowLeft size={14} />
+        </button>
+        <p className="text-sm font-semibold text-ink">{partnerName}</p>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        {messages.map(m => (
+          <div key={m.id} className={`p-2.5 rounded-xl max-w-md ${m.sender_id === partnerId ? 'bg-ink/[0.03]' : 'bg-accent-soft ml-auto'}`}>
+            <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+      <div className="p-3 border-t border-hairline flex gap-2 shrink-0">
+        <Input placeholder="Type a message..." value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+        <Button onClick={handleSend}><Send size={14} /></Button>
+      </div>
+    </>
   );
 }

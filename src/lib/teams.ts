@@ -7,6 +7,9 @@ export interface Team {
   logo: string;
   owner_id: string;
   telegram_channel_id: string;
+  description: string;
+  visibility: 'public' | 'private';
+  pay_note: string;
   created_at: string;
 }
 
@@ -28,25 +31,36 @@ export interface TeamMember {
   member_status: 'active' | 'on_leave' | 'resigned';
   streak_count: number;
   last_check_in: string | null;
+  can_review_tasks: boolean;
+  can_manage_bank: boolean;
+  can_manage_join_requests: boolean;
+  can_manage_vacations: boolean;
   profile?: { name: string; avatar: string; email: string } | null;
 }
 
-export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember, 'job_title' | 'priority' | 'balance'>>): Promise<string | null> {
+export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember,
+  'job_title' | 'priority' | 'balance' | 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations'
+>>): Promise<string | null> {
   const { error } = await supabase.from('team_members').update(fields).eq('id', memberRowId);
   return error ? error.message : null;
 }
 
-export async function createTeam(name: string, logo: string): Promise<{ team: Team | null; error: string | null }> {
+export async function createTeam(input: { name: string; logo: string; description: string; visibility: 'public' | 'private'; payNote: string }): Promise<{ team: Team | null; error: string | null }> {
   const { data: userData } = await supabase.auth.getUser();
   const ownerId = userData.user?.id;
   if (!ownerId) return { team: null, error: 'Not signed in.' };
 
   const { data, error } = await supabase
     .from('teams')
-    .insert({ name, logo, owner_id: ownerId })
+    .insert({ name: input.name, logo: input.logo, owner_id: ownerId, description: input.description, visibility: input.visibility, pay_note: input.payNote })
     .select()
     .single();
   return { team: error ? null : (data as Team), error: error ? error.message : null };
+}
+
+export async function updateTeamSettings(teamId: string, fields: Partial<Pick<Team, 'name' | 'logo' | 'description' | 'visibility' | 'pay_note'>>): Promise<string | null> {
+  const { error } = await supabase.from('teams').update(fields).eq('id', teamId);
+  return error ? error.message : null;
 }
 
 export async function getMyOwnedTeam(): Promise<Team | null> {

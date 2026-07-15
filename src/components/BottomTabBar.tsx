@@ -31,13 +31,11 @@ export function BottomTabBar({ activeTab, onTabChange, onCreatePress }: BottomTa
   const right = NAV_TABS.slice(2);
 
   return (
-    <div className="lg:hidden fixed bottom-safe left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-sm sm:w-auto sm:max-w-none flex justify-center">
-      <div className="liquid-glass-nav relative w-full sm:w-auto px-3 xs:px-5 sm:px-6 py-2.5 rounded-[28px] flex items-center justify-between gap-2 xs:gap-5 sm:gap-8 md:gap-10 transition-all">
-        <div className="flex items-center gap-2 xs:gap-4 sm:gap-6">
-          {left.map(tab => (
-            <TabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => onTabChange(tab.id)} />
-          ))}
-        </div>
+    <div className="lg:hidden fixed bottom-safe left-1/2 -translate-x-1/2 z-50 flex justify-center">
+      <div className="liquid-glass-nav relative px-4 xs:px-5 sm:px-6 py-2.5 rounded-[28px] flex items-center justify-center gap-4 xs:gap-5 sm:gap-6 transition-all">
+        {left.map(tab => (
+          <TabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => onTabChange(tab.id)} />
+        ))}
 
         <div className="relative -mt-7 shrink-0">
           <button
@@ -50,11 +48,9 @@ export function BottomTabBar({ activeTab, onTabChange, onCreatePress }: BottomTa
           </button>
         </div>
 
-        <div className="flex items-center gap-2 xs:gap-4 sm:gap-6">
-          {right.map(tab => (
-            <TabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => onTabChange(tab.id)} />
-          ))}
-        </div>
+        {right.map(tab => (
+          <TabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => onTabChange(tab.id)} />
+        ))}
       </div>
     </div>
   );
