@@ -1,8 +1,8 @@
-import { AlignLeft, AlignCenter, AlignRight, Bold, Italic, AlignCenterHorizontal } from 'lucide-react';
+import { AlignLeft, AlignCenter, AlignRight, AlignJustify, Bold, Italic, AlignCenterHorizontal } from 'lucide-react';
 import { IconButton, Textarea } from '../ui';
 import { cn } from '../ui/cn';
 import { StudioPanel } from './StudioPanel';
-import { FONT_FAMILIES, type StudioLayer, type TextAlign, type TextLayerData } from './studioTypes';
+import { FONT_FAMILIES, DEFAULT_TEXT_SHADOW, type StudioLayer, type TextAlign, type TextLayerData } from './studioTypes';
 
 interface TextPanelProps {
   layer: StudioLayer;
@@ -81,6 +81,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
             { id: 'left', icon: AlignLeft },
             { id: 'center', icon: AlignCenter },
             { id: 'right', icon: AlignRight },
+            { id: 'justify', icon: AlignJustify },
           ] as { id: TextAlign; icon: typeof AlignLeft }[]).map(({ id, icon: Icon }) => (
             <IconButton
               key={id}
@@ -108,6 +109,86 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
           />
           <span className="w-8 text-right tabular-nums">{text.lineHeight.toFixed(2)}</span>
         </label>
+
+        <label className="flex items-center gap-2 text-micro text-ink-faint">
+          <span className="w-16 shrink-0">Tracking</span>
+          <input
+            type="range" min={-5} max={30} step={0.5}
+            value={text.letterSpacing}
+            onChange={(e) => set({ letterSpacing: Number(e.target.value) })}
+            className="flex-1 accent-[var(--color-accent)]"
+          />
+          <span className="w-8 text-right tabular-nums">{text.letterSpacing}</span>
+        </label>
+
+        <label className="flex items-center gap-2 text-micro text-ink-faint">
+          <span className="w-16 shrink-0">Wrap</span>
+          <select
+            value={text.autoWidth ? 'point' : 'box'}
+            onChange={(e) => set({ autoWidth: e.target.value === 'point' })}
+            className="studio-interactive flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+          >
+            <option value="point">Point (grows to fit)</option>
+            <option value="box">Box (wraps at width)</option>
+          </select>
+        </label>
+
+        <div className="flex flex-col gap-2 pt-2 border-t border-hairline/60">
+          <label className="flex items-center justify-between text-micro text-ink-faint">
+            <span>Shadow / Glow</span>
+            <input
+              type="checkbox"
+              checked={text.shadow?.enabled ?? false}
+              onChange={(e) => set({ shadow: { ...(text.shadow ?? DEFAULT_TEXT_SHADOW), enabled: e.target.checked } })}
+              className="accent-[var(--color-accent)]"
+            />
+          </label>
+          {text.shadow?.enabled && (
+            <>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={text.shadow.color}
+                  onChange={(e) => set({ shadow: { ...text.shadow, color: e.target.value } })}
+                  className="w-8 h-7 rounded-control border border-hairline bg-transparent"
+                />
+                <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
+                  <span className="shrink-0">Blur</span>
+                  <input
+                    type="range" min={0} max={40} step={1}
+                    value={text.shadow.blur}
+                    onChange={(e) => set({ shadow: { ...text.shadow, blur: Number(e.target.value) } })}
+                    className="flex-1 accent-[var(--color-accent)]"
+                  />
+                  <span className="w-6 text-right tabular-nums">{text.shadow.blur}</span>
+                </label>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-micro text-ink-faint flex-1">
+                  <span className="shrink-0">X</span>
+                  <input
+                    type="number" min={-40} max={40}
+                    value={text.shadow.offsetX}
+                    onChange={(e) => set({ shadow: { ...text.shadow, offsetX: Number(e.target.value) } })}
+                    className="w-full bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 text-micro text-ink-faint flex-1">
+                  <span className="shrink-0">Y</span>
+                  <input
+                    type="number" min={-40} max={40}
+                    value={text.shadow.offsetY}
+                    onChange={(e) => set({ shadow: { ...text.shadow, offsetY: Number(e.target.value) } })}
+                    className="w-full bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+                  />
+                </label>
+              </div>
+              <p className="text-[10px] text-ink-faint/70 leading-snug">
+                A glow is a shadow at 0/0 with a wide blur.
+              </p>
+            </>
+          )}
+        </div>
 
         <div className={cn('flex flex-col gap-2 pt-2 border-t border-hairline/60')}>
           <span className="text-micro text-ink-faint">Stroke</span>

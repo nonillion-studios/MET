@@ -40,7 +40,7 @@ import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
 import {
-  loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot,
+  loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot, STUDIO_SCHEMA_VERSION,
   type ChapterStudioData, type SerializedStudioLayer,
 } from '../../lib/studioProjectStore';
 
@@ -406,7 +406,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       });
     }
     const data: ChapterStudioData = {
-      schemaVersion: 1,
+      schemaVersion: STUDIO_SCHEMA_VERSION,
       layersByPage: mergedLayersByPage,
       typerScript: typerScriptRef.current,
       typerStyles: typerStylesRef.current,
@@ -554,8 +554,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => current.map(l => l.id === id ? { ...l, blendMode } : l), 'Change Blend Mode');
   }
 
-  function handleAddTextLayer(x: number, y: number) {
-    const layer = createTextLayer(x, y);
+  function handleAddTextLayer(x: number, y: number, boxWidth?: number) {
+    const layer = createTextLayer(x, y, boxWidth);
 
     if (typerArmed && typerLines[typerIndex]) {
       const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];

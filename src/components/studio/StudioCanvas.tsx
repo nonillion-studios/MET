@@ -50,7 +50,8 @@ interface StudioCanvasProps {
   activeLayerId: string | null;
   onSelectLayer: (id: string) => void;
   /** x/y are in page-image coordinates. */
-  onAddTextLayer: (x: number, y: number) => void;
+  /** boxWidth given => box text of that width (click-drag); omitted => point text (click). */
+  onAddTextLayer: (x: number, y: number, boxWidth?: number) => void;
   onUpdateTextLayer: (id: string, patch: Partial<TextLayerData>) => void;
   /** Current brush/fill/etc. settings, driven by the tool options bar. */
   paintSettings: PaintSettings;
@@ -129,6 +130,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [touchCount, setTouchCount] = useState(0);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** Text tool drag origin — a drag makes box text, a plain click makes point text. */
+  const textDragRef = useRef<{ x: number; y: number } | null>(null);
+  /** Set when a text drag already created a layer, so the trailing click doesn't make a second one. */
+  const textDragConsumedRef = useRef(false);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
   /** Selection to combine against and how, captured from Shift/Alt at the start of a marquee/lasso drag. */
   const combineBaseRef = useRef<Selection>(NO_SELECTION);
@@ -487,6 +492,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
 
     if (activeTool !== 'text') return;
+    if (textDragConsumedRef.current) { textDragConsumedRef.current = false; return; }
     if (!clickedBackground) return;
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
@@ -509,6 +515,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
       e.evt.preventDefault();
       panRef.current = { active: true, lastX: e.evt.clientX, lastY: e.evt.clientY };
+      return;
+    }
+    if (activeTool === 'text') {
+      const p = imageSpacePointer();
+      if (p) textDragRef.current = p;
       return;
     }
     if (activeTool === 'wand') {
@@ -624,6 +635,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (panRef.current?.active) { panRef.current = null; return; }
+    if (activeTool === 'text' && textDragRef.current) {
+      const start = textDragRef.current;
+      textDragRef.current = null;
+      const p = imageSpacePointer();
+      const width = p ? Math.abs(p.x - start.x) : 0;
+      // Below the threshold this was a click, not a drag — let handleStageClick
+      // make point text instead.
+      if (p && width >= 12) {
+        textDragConsumedRef.current = true;
+        onAddTextLayer(Math.min(start.x, p.x), Math.min(start.y, p.y), width);
+      }
+      return;
+    }
     if (MARQUEE_TOOLS.has(activeTool)) {
       if (marqueeStartRef.current && combineModeRef.current !== 'replace' && image) {
         onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
@@ -845,13 +869,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   text={layer.text.content || ' '}
                   x={layer.text.x}
                   y={layer.text.y}
-                  width={layer.text.width}
+                  width={layer.text.autoWidth ? undefined : layer.text.width}
                   fontFamily={layer.text.fontFamily}
                   fontSize={layer.text.fontSize}
                   fontStyle={`${layer.text.bold ? 'bold' : ''} ${layer.text.italic ? 'italic' : ''}`.trim() || 'normal'}
                   fill={layer.text.color}
                   align={layer.text.align}
                   lineHeight={layer.text.lineHeight}
+                  letterSpacing={layer.text.letterSpacing}
+                  // Point text never wraps — with width undefined, Konva grows the node to fit.
+                  wrap={layer.text.autoWidth ? 'none' : 'word'}
+                  shadowEnabled={layer.text.shadow?.enabled ?? false}
+                  shadowColor={layer.text.shadow?.color}
+                  shadowBlur={layer.text.shadow?.blur}
+                  shadowOffsetX={layer.text.shadow?.offsetX}
+                  shadowOffsetY={layer.text.shadow?.offsetY}
                   stroke={layer.text.strokeWidth > 0 ? layer.text.strokeColor : undefined}
                   strokeWidth={layer.text.strokeWidth}
                   rotation={layer.text.rotation}
@@ -936,7 +968,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             <Transformer
               ref={transformerRef}
               rotateEnabled
-              enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right']}
+              enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']}
               boundBoxFunc={(oldBox, newBox) => (newBox.width < 20 ? oldBox : newBox)}
             />
           </Layer>

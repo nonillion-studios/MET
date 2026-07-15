@@ -42,8 +42,22 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
   const style = `${text.italic ? 'italic ' : ''}${text.bold ? 'bold ' : ''}${text.fontSize}px ${text.fontFamily}`;
   ctx.font = style;
   ctx.textBaseline = 'top';
-  ctx.textAlign = text.align;
-  const anchorX = text.align === 'left' ? text.x : text.align === 'right' ? text.x + text.width : text.x + text.width / 2;
+  // Canvas 2D has no 'justify'; it's approximated as left-aligned here and the
+  // per-line stretch is applied below, matching how Konva renders it on screen.
+  ctx.textAlign = text.align === 'justify' ? 'left' : text.align;
+  if (text.letterSpacing) {
+    // Supported in Chromium/Safari; older engines just ignore it rather than throw.
+    (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${text.letterSpacing}px`;
+  }
+  if (text.shadow?.enabled) {
+    ctx.shadowColor = text.shadow.color;
+    ctx.shadowBlur = text.shadow.blur;
+    ctx.shadowOffsetX = text.shadow.offsetX;
+    ctx.shadowOffsetY = text.shadow.offsetY;
+  }
+  const anchorX = text.align === 'left' || text.align === 'justify'
+    ? text.x
+    : text.align === 'right' ? text.x + text.width : text.x + text.width / 2;
 
   const lines = text.content.split('\n').flatMap(line => wrapLine(ctx, line, text.width));
   const lineHeightPx = text.fontSize * text.lineHeight;

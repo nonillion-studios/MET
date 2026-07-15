@@ -33,13 +33,21 @@ export const LAYER_TYPE_ICON: Record<StudioLayerType, LucideIcon> = {
   adjustment: SlidersHorizontal,
 };
 
-export type TextAlign = 'left' | 'center' | 'right';
+export type TextAlign = 'left' | 'center' | 'right' | 'justify';
 
 export const FONT_FAMILIES = [
   'Anime Ace', 'CC Wild Words', 'Comic Sans MS', 'Arial', 'Georgia', 'Impact',
 ];
 
 export type TranslationStatus = 'draft' | 'translated' | 'reviewed';
+
+export interface TextShadow {
+  enabled: boolean;
+  color: string;
+  blur: number;
+  offsetX: number;
+  offsetY: number;
+}
 
 export interface TextLayerData {
   content: string;
@@ -56,10 +64,24 @@ export interface TextLayerData {
   strokeColor: string;
   strokeWidth: number;
   rotation: number;
+  /**
+   * Point text (Photoshop's click-to-type) grows to fit its content and never wraps;
+   * box text (click-drag) wraps inside a fixed `width`. Stored as a flag rather than
+   * width=0 so a point layer keeps a usable width if it's later converted to a box.
+   */
+  autoWidth: boolean;
+  /** Extra px between characters (Konva `letterSpacing`; canvas 2D letterSpacing on export). */
+  letterSpacing: number;
+  /** Drop shadow / glow — a glow is just a shadow at offset 0 with a wide blur. */
+  shadow: TextShadow;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;
 }
+
+export const DEFAULT_TEXT_SHADOW: TextShadow = {
+  enabled: false, color: '#000000', blur: 6, offsetX: 0, offsetY: 2,
+};
 
 export type AdjustmentKind = 'brightness-contrast' | 'hue-saturation' | 'levels';
 
@@ -159,7 +181,11 @@ export function createAdjustmentLayer(kind: AdjustmentKind = 'brightness-contras
   };
 }
 
-export function createTextLayer(x: number, y: number): StudioLayer {
+/**
+ * @param boxWidth When given, creates *box* text of that width (click-drag);
+ *                 omitted creates *point* text that grows with its content (click).
+ */
+export function createTextLayer(x: number, y: number, boxWidth?: number): StudioLayer {
   layerCounter += 1;
   return {
     id: `layer-${Date.now()}-${layerCounter}`,
@@ -173,7 +199,10 @@ export function createTextLayer(x: number, y: number): StudioLayer {
       content: '',
       x,
       y,
-      width: 240,
+      width: boxWidth ?? 240,
+      autoWidth: boxWidth === undefined,
+      letterSpacing: 0,
+      shadow: { ...DEFAULT_TEXT_SHADOW },
       fontFamily: FONT_FAMILIES[0],
       fontSize: 28,
       color: '#000000',
