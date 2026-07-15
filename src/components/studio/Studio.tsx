@@ -30,10 +30,12 @@ import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, parseTyperScript,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, parseTyperScript,
   DEFAULT_TYPER_STYLES, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
+  type AdjustmentLayerData,
 } from './studioTypes';
 import { FontsPanel } from './FontsPanel';
+import { AdjustmentPanel } from './AdjustmentPanel';
 import {
   loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot,
   type ChapterStudioData, type SerializedStudioLayer,
@@ -314,9 +316,24 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveLayerId(layer.id);
   }
 
+  function handleAddAdjustmentLayer() {
+    const layer = createAdjustmentLayer('brightness-contrast');
+    updateLayers(current => [...current, layer], 'Add Adjustment Layer');
+    setActiveLayerId(layer.id);
+    dock.selectTab('adjustment');
+  }
+
+  function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
+    updateLayers(current => current.map(l =>
+      l.id === id && l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
+    ));
+  }
+
   function selectLayer(id: string) {
     setActiveLayerId(id);
-    if (layers.find(l => l.id === id)?.type === 'text') dock.selectTab('text');
+    const type = layers.find(l => l.id === id)?.type;
+    if (type === 'text') dock.selectTab('text');
+    if (type === 'adjustment') dock.selectTab('adjustment');
   }
 
   function handleDuplicateLayer(id: string) {
@@ -448,6 +465,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onOpacityChange={handleOpacityChange}
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
+      onAddAdjustment={handleAddAdjustmentLayer}
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
       onMove={handleMoveLayer}
@@ -460,6 +478,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const textPanel = activeLayer?.type === 'text' ? (
     <TextPanel layer={activeLayer} onUpdate={handleUpdateTextLayer} onCenter={handleCenterTextLayer} fontFamilies={allFontFamilies} />
+  ) : null;
+
+  const adjustmentPanel = activeLayer?.type === 'adjustment' ? (
+    <AdjustmentPanel layer={activeLayer} onUpdate={handleUpdateAdjustmentLayer} />
   ) : null;
 
   const colorPanel = <ColorPanel />;
@@ -491,6 +513,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const allTabs = [
     ...(textPanel ? [{ id: 'text', label: 'Text', content: textPanel }] : []),
+    ...(adjustmentPanel ? [{ id: 'adjustment', label: 'Adjustment', content: adjustmentPanel }] : []),
     { id: 'typer', label: 'TypeR', content: typerPanel },
     { id: 'translation', label: 'Translation', content: translationPanel },
     { id: 'color', label: 'Color', content: colorPanel },

@@ -10,6 +10,7 @@ import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
 import type { Selection } from './paint/selection';
 import { strokePenPath, type PaintSettings } from './paint/paintEngine';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
+import { filterForAdjustment } from '../../lib/adjustments';
 
 export interface ExportSnapshot {
   width: number;
@@ -95,6 +96,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
+  const bgImageNodeRef = useRef<Konva.Image | null>(null);
   const pinchDistRef = useRef<number | null>(null);
   const prevPinchCenterRef = useRef<{ x: number; y: number } | null>(null);
   const [touchCount, setTouchCount] = useState(0);
@@ -200,7 +202,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const bgCanvas = document.createElement('canvas');
       bgCanvas.width = img.width;
       bgCanvas.height = img.height;
-      bgCanvas.getContext('2d')!.drawImage(img, 0, 0);
+      const bgCtx = bgCanvas.getContext('2d')!;
+      bgCtx.drawImage(img, 0, 0);
+      const bgAdjustments = layersRef.current.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
+      if (bgAdjustments.length > 0) {
+        const bgImageData = bgCtx.getImageData(0, 0, bgCanvas.width, bgCanvas.height);
+        for (const l of bgAdjustments) filterForAdjustment(l.adjustment!)(bgImageData);
+        bgCtx.putImageData(bgImageData, 0, 0);
+      }
       const exportLayers: SerializedStudioLayer[] = layersRef.current.map((l) => {
         const canvas = paintCanvasRegistry.current[l.id];
         return canvas ? { ...l, raster: canvas.toDataURL('image/png') } : l;
@@ -315,6 +324,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, [image, containerSize]);
 
   useEffect(() => { fitToScreen(); }, [fitToScreen, page?.id, fitSignal]);
+
+  // Adjustment layers apply to the background page image only (see studioTypes.ts
+  // AdjustmentLayerData doc) — stacked in layer order, cached once and re-cached only
+  // when params/image change so idle repaints stay cheap on low-end devices.
+  const adjustmentLayers = layers.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
+  const adjustmentKey = adjustmentLayers.map(l => JSON.stringify(l.adjustment)).join('|');
+  useEffect(() => {
+    const node = bgImageNodeRef.current;
+    if (!node) return;
+    if (adjustmentLayers.length === 0) {
+      node.clearCache();
+      node.filters([]);
+      node.getLayer()?.batchDraw();
+      return;
+    }
+    node.filters(adjustmentLayers.map(l => filterForAdjustment(l.adjustment!)));
+    node.cache();
+    node.getLayer()?.batchDraw();
+  }, [adjustmentKey, image]);
 
   // Freshly created text layers start empty — drop straight into editing mode.
   useEffect(() => {
@@ -636,7 +664,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   shadowBlur={20}
                   shadowOpacity={0.6}
                 />
-                <KonvaImage image={image} width={image.width} height={image.height} />
+                <KonvaImage ref={bgImageNodeRef} image={image} width={image.width} height={image.height} />
                 {overlayImage && (
                   <KonvaImage
                     image={overlayImage}

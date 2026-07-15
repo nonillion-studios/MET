@@ -61,6 +61,46 @@ export interface TextLayerData {
   comment: string;
 }
 
+export type AdjustmentKind = 'brightness-contrast' | 'hue-saturation' | 'levels';
+
+/**
+ * Non-destructive adjustment applied to the background page image (not to layers above it —
+ * a real "affects everything below in the stack" compositor would need to flatten the whole
+ * layer tree into one raster per frame, a bigger change; see CLAUDE.md known gaps).
+ */
+export interface AdjustmentLayerData {
+  kind: AdjustmentKind;
+  /** -100..100 */
+  brightness: number;
+  /** -100..100 */
+  contrast: number;
+  /** -180..180 degrees */
+  hue: number;
+  /** -100..100 */
+  saturation: number;
+  /** -100..100 */
+  lightness: number;
+  levels: {
+    inBlack: number; // 0-255
+    inWhite: number; // 0-255
+    gamma: number; // 0.1-9.99
+    outBlack: number; // 0-255
+    outWhite: number; // 0-255
+  };
+}
+
+export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-contrast'): AdjustmentLayerData {
+  return {
+    kind,
+    brightness: 0,
+    contrast: 0,
+    hue: 0,
+    saturation: 0,
+    lightness: 0,
+    levels: { inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 },
+  };
+}
+
 export interface StudioLayer {
   id: string;
   type: StudioLayerType;
@@ -73,6 +113,8 @@ export interface StudioLayer {
   isBackground?: boolean;
   /** Only present when type === 'text'. */
   text?: TextLayerData;
+  /** Only present when type === 'adjustment'. */
+  adjustment?: AdjustmentLayerData;
 }
 
 export function createBackgroundLayer(): StudioLayer {
@@ -99,6 +141,21 @@ export function createLayer(type: StudioLayerType, name: string): StudioLayer {
     locked: false,
     opacity: 1,
     blendMode: 'normal',
+  };
+}
+
+export function createAdjustmentLayer(kind: AdjustmentKind = 'brightness-contrast'): StudioLayer {
+  layerCounter += 1;
+  const label = kind === 'brightness-contrast' ? 'Brightness/Contrast' : kind === 'hue-saturation' ? 'Hue/Saturation' : 'Levels';
+  return {
+    id: `layer-${Date.now()}-${layerCounter}`,
+    type: 'adjustment',
+    name: label,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blendMode: 'normal',
+    adjustment: createDefaultAdjustmentData(kind),
   };
 }
 
