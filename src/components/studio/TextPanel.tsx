@@ -1,6 +1,7 @@
 import { AlignLeft, AlignCenter, AlignRight, Bold, Italic, AlignCenterHorizontal } from 'lucide-react';
 import { IconButton, Textarea } from '../ui';
 import { cn } from '../ui/cn';
+import { StudioPanel } from './StudioPanel';
 import { FONT_FAMILIES, type StudioLayer, type TextAlign, type TextLayerData } from './studioTypes';
 
 interface TextPanelProps {
@@ -18,36 +19,35 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
   const set = (patch: Partial<TextLayerData>) => onUpdate(layer.id, patch);
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Text</span>
-        <IconButton size="sm" aria-label="Center horizontally" title="Center horizontally" onClick={() => onCenter(layer.id)} className="!bg-transparent">
+    <StudioPanel
+      title="Text"
+      actions={
+        <IconButton size="sm" aria-label="Center horizontally" title="Center in bubble" onClick={() => onCenter(layer.id)} className="!bg-transparent">
           <AlignCenterHorizontal size={14} />
         </IconButton>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+      }
+    >
         <Textarea
           value={text.content}
           onChange={(e) => set({ content: e.target.value })}
           placeholder="Type dialogue…"
           rows={3}
-          className="!text-sm"
+          className="!text-title"
         />
 
-        <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+        <label className="flex flex-col gap-1 text-micro text-ink-faint">
           <span>Font</span>
           <select
             value={text.fontFamily}
             onChange={(e) => set({ fontFamily: e.target.value })}
-            className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1.5 text-ink text-[11px]"
+            className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1.5 text-ink text-micro"
           >
             {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
         </label>
 
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 text-[11px] text-ink-faint flex-1">
+          <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
             <span className="shrink-0">Size</span>
             <input
               type="number"
@@ -55,16 +55,16 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
               max={200}
               value={Math.round(text.fontSize)}
               onChange={(e) => set({ fontSize: Number(e.target.value) || text.fontSize })}
-              className="w-full bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+              className="w-full bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
             />
           </label>
-          <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+          <label className="flex items-center gap-2 text-micro text-ink-faint">
             <span className="shrink-0">Color</span>
             <input
               type="color"
               value={text.color}
               onChange={(e) => set({ color: e.target.value })}
-              className="w-8 h-7 rounded-md border border-hairline bg-transparent"
+              className="w-8 h-7 rounded-control border border-hairline bg-transparent"
             />
           </label>
         </div>
@@ -95,7 +95,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
           ))}
         </div>
 
-        <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+        <label className="flex items-center gap-2 text-micro text-ink-faint">
           <span className="w-16 shrink-0">Line height</span>
           <input
             type="range"
@@ -110,13 +110,13 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
         </label>
 
         <div className={cn('flex flex-col gap-2 pt-2 border-t border-hairline/60')}>
-          <span className="text-[11px] text-ink-faint">Stroke</span>
+          <span className="text-micro text-ink-faint">Stroke</span>
           <div className="flex items-center gap-2">
             <input
               type="color"
               value={text.strokeColor}
               onChange={(e) => set({ strokeColor: e.target.value })}
-              className="w-8 h-7 rounded-md border border-hairline bg-transparent"
+              className="w-8 h-7 rounded-control border border-hairline bg-transparent"
             />
             <input
               type="range"
@@ -127,10 +127,9 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
               onChange={(e) => set({ strokeWidth: Number(e.target.value) })}
               className="flex-1 accent-[var(--color-accent)]"
             />
-            <span className="w-8 text-right tabular-nums text-[11px] text-ink-faint">{text.strokeWidth}</span>
+            <span className="w-8 text-right tabular-nums text-micro text-ink-faint">{text.strokeWidth}</span>
           </div>
         </div>
-      </div>
-    </div>
+    </StudioPanel>
   );
 }

@@ -752,7 +752,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   ];
 
   return (
-    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#0b0b0d] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {!panelsHidden && (
         <div className="hidden lg:block relative z-40">
           <MenuBar menus={menus} />
@@ -869,7 +869,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
                     key={t.id}
                     onClick={() => setTabletOverlayTab(prev => prev === t.id ? null : t.id)}
                     title={t.label}
-                    className={`w-11 h-11 rounded-lg text-[10px] font-semibold flex items-center justify-center transition-colors ${
+                    className={`w-11 h-11 rounded-control text-micro font-semibold flex items-center justify-center transition-colors ${
                       tabletOverlayTab === t.id ? 'bg-accent-soft text-accent' : 'text-ink-faint hover:text-ink hover:bg-ink/5'
                     }`}
                   >

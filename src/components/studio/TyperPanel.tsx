@@ -3,6 +3,7 @@ import { Target, RotateCcw, Plus, Trash2, Copy, Download, Upload, Layers as Laye
 import { Textarea, IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { swal, swalToast } from '../../lib/swalTheme';
+import { StudioPanel } from './StudioPanel';
 import { parseTyperScript, createTyperStyle, FONT_FAMILIES, type TyperStyle } from './studioTypes';
 
 interface TyperPanelProps {
@@ -97,10 +98,10 @@ export function TyperPanel({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">TypeR</span>
-        <div className="flex items-center gap-0.5">
+    <StudioPanel
+      title="TypeR"
+      actions={
+        <>
           <IconButton size="sm" aria-label="Import TypeR JSON" title="Import TypeR JSON" onClick={() => importInputRef.current?.click()} className="!bg-transparent">
             <Upload size={13} />
           </IconButton>
@@ -117,19 +118,18 @@ export function TyperPanel({
           >
             <RotateCcw size={13} />
           </IconButton>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
+        </>
+      }
+    >
         <Textarea
           value={script}
           onChange={(e) => { onScriptChange(e.target.value); onIndexChange(0); }}
           placeholder={'Paste a script, one line per bubble.\nPrefix lines to pick a style, e.g.\n!! for SFX, ~ for Thought.\n## note (ignored)\n// continuation of the previous line\nPage 3 (auto-switches when reached)'}
           rows={6}
-          className="!text-xs !font-mono"
+          className="!text-ui !font-mono"
         />
 
-        <div className="flex items-center justify-between text-[11px] text-ink-faint">
+        <div className="flex items-center justify-between text-micro text-ink-faint">
           <span>{lines.length > 0 ? `Line ${Math.min(index + 1, lines.length)} / ${lines.length}` : 'No lines yet'}</span>
           <div className="flex items-center gap-1.5">
             {current?.pageHint && <span className="px-1.5 py-0.5 rounded bg-ink/10 text-ink-faint">Page {current.pageHint}</span>}
@@ -138,11 +138,11 @@ export function TyperPanel({
         </div>
 
         {current && (
-          <div className="rounded-lg border border-hairline bg-ink/[0.03] px-2.5 py-2 text-xs text-ink truncate">
+          <div className="rounded-control border border-hairline bg-ink/5 px-2.5 py-2 text-ui text-ink truncate">
             {current.content}
           </div>
         )}
-        {done && <div className="text-[11px] text-ink-faint italic">All lines placed.</div>}
+        {done && <div className="text-micro text-ink-faint italic">All lines placed.</div>}
 
         <div className="flex items-center gap-1.5">
           <button
@@ -150,7 +150,7 @@ export function TyperPanel({
             disabled={lines.length === 0 || done}
             onClick={() => onArmedChange(!armed)}
             className={cn(
-              'flex-1 flex items-center justify-center gap-2 h-9 rounded-lg text-xs font-medium border transition-colors',
+              'flex-1 flex items-center justify-center gap-2 h-9 rounded-control text-ui font-medium border transition-colors',
               'disabled:opacity-40 disabled:pointer-events-none',
               armed ? 'bg-accent text-white border-accent' : 'bg-ink/5 border-hairline text-ink hover:bg-ink/10'
             )}
@@ -177,7 +177,7 @@ export function TyperPanel({
             <button
               type="button"
               onClick={onAddBubbleRect}
-              className="flex-1 h-8 rounded-lg text-[11px] font-medium border border-hairline bg-ink/5 text-ink hover:bg-ink/10 transition-colors"
+              className="flex-1 h-8 rounded-control text-micro font-medium border border-hairline bg-ink/5 text-ink hover:bg-ink/10 transition-colors"
             >
               Add Bubble ({queuedBubbleCount})
             </button>
@@ -185,7 +185,7 @@ export function TyperPanel({
               type="button"
               disabled={queuedBubbleCount === 0}
               onClick={onPlaceAllBubbles}
-              className="flex-1 h-8 rounded-lg text-[11px] font-medium border border-accent bg-accent text-white disabled:opacity-40 disabled:pointer-events-none hover:opacity-90 transition-colors"
+              className="flex-1 h-8 rounded-control text-micro font-medium border border-accent bg-accent text-white disabled:opacity-40 disabled:pointer-events-none hover:opacity-90 transition-colors"
             >
               Place All
             </button>
@@ -194,9 +194,9 @@ export function TyperPanel({
 
         <div className="flex flex-col gap-2 pt-2 border-t border-hairline/60">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-ink-faint">Styles</span>
+            <span className="text-micro text-ink-faint">Styles</span>
             <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1 text-[10px] text-ink-faint" title="Size step used by the +/- quick editor">
+              <label className="flex items-center gap-1 text-micro text-ink-faint" title="Size step used by the +/- quick editor">
                 <span>Step</span>
                 <input
                   type="number"
@@ -204,7 +204,7 @@ export function TyperPanel({
                   max={20}
                   value={sizeStep}
                   onChange={(e) => setSizeStep(Math.max(1, Number(e.target.value) || 1))}
-                  className="w-9 bg-ink/5 border border-hairline rounded px-1 py-0.5 text-ink text-[10px]"
+                  className="w-9 bg-ink/5 border border-hairline rounded px-1 py-0.5 text-ink text-micro"
                 />
               </label>
               <IconButton size="sm" aria-label="Add style" title="Add style" onClick={addStyle} className="!bg-transparent !w-6 !h-6">
@@ -215,29 +215,29 @@ export function TyperPanel({
 
           {folders.map(folder => (
             <details key={folder} open className="group">
-              <summary className="text-[10px] text-ink-faint uppercase tracking-wide cursor-pointer select-none py-1">{folder}</summary>
+              <summary className="text-micro text-ink-faint uppercase tracking-wide cursor-pointer select-none py-1">{folder}</summary>
               <div className="flex flex-col gap-2 pl-0.5">
                 {styles.filter(s => (s.folder || 'General') === folder).map(style => {
                   const expanded = editingStyleId === style.id;
                   return (
-                    <div key={style.id} className="rounded-lg border border-hairline bg-ink/[0.03]">
+                    <div key={style.id} className="rounded-control border border-hairline bg-ink/5">
                       <div className="w-full flex items-center gap-1 px-2.5 h-9">
                         <button
                           type="button"
                           onClick={() => setEditingStyleId(expanded ? null : style.id)}
                           className="flex-1 flex items-center gap-2 text-left min-w-0"
                         >
-                          <span className="text-xs font-medium text-ink flex-1 truncate">{style.name}</span>
-                          {style.prefix && <span className="text-[10px] font-mono text-ink-faint shrink-0">{style.prefix}</span>}
+                          <span className="text-ui font-medium text-ink flex-1 truncate">{style.name}</span>
+                          {style.prefix && <span className="text-micro font-mono text-ink-faint shrink-0">{style.prefix}</span>}
                         </button>
                         {/* Quick text-size editor — no need to expand the full style card just to bump a size. */}
                         <div className="flex items-center gap-0.5 shrink-0">
                           <IconButton size="sm" aria-label="Decrease size" onClick={() => updateStyle(style.id, { fontSize: Math.max(6, style.fontSize - sizeStep) })} className="!bg-transparent !w-6 !h-6">
-                            <span className="text-xs">−</span>
+                            <span className="text-ui">−</span>
                           </IconButton>
-                          <span className="text-[10px] font-mono text-ink-faint w-6 text-center">{style.fontSize}</span>
+                          <span className="text-micro font-mono text-ink-faint w-6 text-center">{style.fontSize}</span>
                           <IconButton size="sm" aria-label="Increase size" onClick={() => updateStyle(style.id, { fontSize: Math.min(200, style.fontSize + sizeStep) })} className="!bg-transparent !w-6 !h-6">
-                            <span className="text-xs">+</span>
+                            <span className="text-ui">+</span>
                           </IconButton>
                         </div>
                         <IconButton size="sm" aria-label="Duplicate style" title="Duplicate style" onClick={() => duplicateStyle(style.id)} className="!bg-transparent !w-6 !h-6">
@@ -250,45 +250,45 @@ export function TyperPanel({
                       {expanded && (
                         <div className="px-2.5 pb-2.5 flex flex-col gap-2 border-t border-hairline/60">
                           <div className="flex items-center gap-2 pt-2">
-                            <label className="flex items-center gap-2 text-[11px] text-ink-faint flex-1">
+                            <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
                               <span className="w-10 shrink-0">Name</span>
                               <input
                                 value={style.name}
                                 onChange={(e) => updateStyle(style.id, { name: e.target.value })}
-                                className="flex-1 bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+                                className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
                               />
                             </label>
                           </div>
                           <div className="flex items-center gap-2">
-                            <label className="flex items-center gap-2 text-[11px] text-ink-faint flex-1">
+                            <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
                               <span className="w-14 shrink-0">Folder</span>
                               <input
                                 value={style.folder ?? 'General'}
                                 onChange={(e) => updateStyle(style.id, { folder: e.target.value || 'General' })}
-                                className="flex-1 bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+                                className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
                               />
                             </label>
                           </div>
-                          <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+                          <label className="flex items-center gap-2 text-micro text-ink-faint">
                             <span className="w-14 shrink-0">Font</span>
                             <select
                               value={style.fontFamily}
                               onChange={(e) => updateStyle(style.id, { fontFamily: e.target.value })}
-                              className="flex-1 bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+                              className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
                             >
                               {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
                             </select>
                           </label>
-                          <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+                          <label className="flex items-center gap-2 text-micro text-ink-faint">
                             <span className="w-14 shrink-0">Prefix</span>
                             <input
                               value={style.prefix}
                               onChange={(e) => updateStyle(style.id, { prefix: e.target.value })}
-                              className="flex-1 bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px] font-mono"
+                              className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro font-mono"
                             />
                           </label>
                           <div className="flex items-center gap-2">
-                            <label className="flex items-center gap-2 text-[11px] text-ink-faint flex-1">
+                            <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
                               <span className="shrink-0">Size</span>
                               <input
                                 type="number"
@@ -296,22 +296,22 @@ export function TyperPanel({
                                 max={200}
                                 value={style.fontSize}
                                 onChange={(e) => updateStyle(style.id, { fontSize: Number(e.target.value) || style.fontSize })}
-                                className="w-full bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+                                className="w-full bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
                               />
                             </label>
                             <input
                               type="color"
                               value={style.color}
                               onChange={(e) => updateStyle(style.id, { color: e.target.value })}
-                              className="w-8 h-7 rounded-md border border-hairline bg-transparent"
+                              className="w-8 h-7 rounded-control border border-hairline bg-transparent"
                             />
                           </div>
                           <div className="flex items-center gap-1">
                             <IconButton size="sm" active={style.bold} aria-label="Bold" onClick={() => updateStyle(style.id, { bold: !style.bold })} className="!bg-transparent !w-7 !h-7">
-                              <span className="text-xs font-bold">B</span>
+                              <span className="text-ui font-bold">B</span>
                             </IconButton>
                             <IconButton size="sm" active={style.italic} aria-label="Italic" onClick={() => updateStyle(style.id, { italic: !style.italic })} className="!bg-transparent !w-7 !h-7">
-                              <span className="text-xs italic">I</span>
+                              <span className="text-ui italic">I</span>
                             </IconButton>
                             <div className="w-px h-5 bg-hairline mx-1" />
                             <input
@@ -319,7 +319,7 @@ export function TyperPanel({
                               title="Stroke color"
                               value={style.strokeColor}
                               onChange={(e) => updateStyle(style.id, { strokeColor: e.target.value })}
-                              className="w-7 h-7 rounded-md border border-hairline bg-transparent"
+                              className="w-7 h-7 rounded-control border border-hairline bg-transparent"
                             />
                             <input
                               type="range"
@@ -340,7 +340,6 @@ export function TyperPanel({
             </details>
           ))}
         </div>
-      </div>
-    </div>
+    </StudioPanel>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { Image as ImageIcon } from 'lucide-react';
 import { Stage, Layer, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer } from 'react-konva';
 import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
@@ -746,7 +747,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const cursorClass = panRef.current?.active || spaceDown ? 'cursor-grab' : '';
 
   return (
-    <div ref={containerRef} className={`relative w-full h-full overflow-hidden bg-[#0b0b0d] touch-none ${cursorClass}`}>
+    <div ref={containerRef} className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}>
       {containerSize.width > 0 && (
         <Stage
           ref={stageRef}
@@ -943,8 +944,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         />
       )}
       {!page && (
-        <div className="absolute inset-0 flex items-center justify-center text-white/40 text-sm">
-          Select a page to begin
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
+          <ImageIcon size={28} className="text-white/25" strokeWidth={1.5} />
+          <p className="text-title font-medium text-white/50">No page selected</p>
+          <p className="text-ui text-white/30 max-w-xs">Pick a page from the Pages panel to start cleaning and typesetting.</p>
         </div>
       )}
       {showRulers && image && (
@@ -964,7 +967,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
       )}
-      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg liquid-glass text-[11px] font-mono text-white/80">
+      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80">
         {Math.round(scale * 100)}%
       </div>
     </div>

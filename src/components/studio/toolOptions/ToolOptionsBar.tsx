@@ -44,10 +44,10 @@ const SYMMETRY_MODES: { id: SymmetryMode; label: string }[] = [
 
 function Slider({ label, value, min, max, step, onChange, format }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format?: (v: number) => string }) {
   return (
-    <label className="flex items-center gap-2 text-[11px] text-ink-faint shrink-0">
-      <span>{label}</span>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-24 accent-[var(--color-accent)]" />
-      <span className="w-8 text-right tabular-nums text-ink">{format ? format(value) : Math.round(value)}</span>
+    <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
+      <span className="uppercase tracking-wide text-[10px] opacity-70">{label}</span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="studio-focusable w-20 accent-[var(--color-accent)]" />
+      <span className="w-8 text-right tabular-nums text-ink font-mono text-[10px]">{format ? format(value) : Math.round(value)}</span>
     </label>
   );
 }
@@ -70,14 +70,15 @@ export function ToolOptionsBar({
 
   return (
     <div className="liquid-glass-bar flex items-center gap-4 px-3 h-10 shrink-0 border-b border-hairline overflow-x-auto">
-      <span className="text-xs font-medium text-ink shrink-0">{tool.label}</span>
+      <span className="text-ui font-medium text-ink shrink-0 min-w-[5.5rem]">{tool.label}</span>
+      <div className="w-px h-4 bg-hairline shrink-0" />
       {showLiquifyMode && (
-        <label className="flex items-center gap-2 text-[11px] text-ink-faint shrink-0">
+        <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
           <span>Mode</span>
           <select
             value={liquifyMode}
             onChange={(e) => onLiquifyModeChange(e.target.value as LiquifyMode)}
-            className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+            className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
           >
             {LIQUIFY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
@@ -89,12 +90,12 @@ export function ToolOptionsBar({
       {showOpacity && <Slider label="Opacity" value={opacity * 100} min={0} max={100} step={1} onChange={(v) => onOpacityChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
       {showTolerance && <Slider label="Tolerance" value={tolerance} min={0} max={100} step={1} onChange={onToleranceChange} />}
       {showSymmetry && (
-        <label className="flex items-center gap-2 text-[11px] text-ink-faint shrink-0">
+        <label className="flex items-center gap-2 text-micro text-ink-faint shrink-0">
           <span>Symmetry</span>
           <select
             value={symmetry}
             onChange={(e) => onSymmetryChange(e.target.value as SymmetryMode)}
-            className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+            className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
           >
             {SYMMETRY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>

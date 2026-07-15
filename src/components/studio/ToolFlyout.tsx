@@ -28,7 +28,7 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose }: 
     <div
       ref={ref}
       className={cn(
-        'absolute z-50 liquid-glass-heavy rounded-xl border border-hairline p-1 flex gap-0.5',
+        'absolute z-50 liquid-glass-heavy rounded-panel border border-hairline p-1 flex gap-0.5',
         isVertical ? 'left-full top-0 ml-1.5 flex-col' : 'bottom-full left-0 mb-1.5 flex-row'
       )}
     >

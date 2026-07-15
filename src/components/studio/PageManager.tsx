@@ -174,8 +174,8 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3 mt-5">
-          <div className="rounded-xl border border-hairline p-4 space-y-2.5">
-            <p className="text-xs font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5">
+          <div className="rounded-panel border border-hairline p-4 space-y-2.5">
+            <p className="text-ui font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5">
               <FileImage size={13} className="text-accent" /> Original Pages
             </p>
             <div className="flex gap-2 flex-wrap">
@@ -190,8 +190,8 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
             <input ref={originalFilesRef} type="file" accept="image/*" multiple className="hidden" onChange={handleOriginalFiles} />
           </div>
 
-          <div className="rounded-xl border border-hairline p-4 space-y-2.5">
-            <p className="text-xs font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5">
+          <div className="rounded-panel border border-hairline p-4 space-y-2.5">
+            <p className="text-ui font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5">
               <Sparkles size={13} className="text-accent" /> Cleaned / Bleached Pages
             </p>
             <div className="flex gap-2 flex-wrap">
@@ -208,7 +208,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
         </div>
 
         {pages.length > 0 && (
-          <div className="flex items-center gap-2 mt-4 text-xs text-ink-muted">
+          <div className="flex items-center gap-2 mt-4 text-ui text-ink-muted">
             <CheckCircle2 size={13} className="text-success" />
             {pairedCount} of {pages.length} page(s) have a synced cleaned version
           </div>
@@ -217,7 +217,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
 
       {unmatchedCleaned.length > 0 && (
         <GlassCard className="p-4 sm:p-5 border-warning/30">
-          <p className="text-xs font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5 mb-3">
+          <p className="text-ui font-semibold text-ink uppercase tracking-wide flex items-center gap-1.5 mb-3">
             <Link2Off size={13} className="text-warning" /> Unmatched Cleaned Pages — drag onto a page below to pair
           </p>
           <div className="flex gap-2.5 flex-wrap">
@@ -229,7 +229,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
                   startDrag(e, { source: 'pool' });
                   e.dataTransfer.setData('text/plain', img.id);
                 }}
-                className="w-16 h-22 aspect-[2/3] rounded-lg overflow-hidden border-2 border-dashed border-warning/50 cursor-grab active:cursor-grabbing shrink-0 bg-ink/5"
+                className="w-16 h-22 aspect-[2/3] rounded-control overflow-hidden border-2 border-dashed border-warning/50 cursor-grab active:cursor-grabbing shrink-0 bg-ink/5"
                 title={img.filename}
               >
                 <img src={img.dataUrl} alt={img.filename} className="w-full h-full object-cover pointer-events-none" draggable={false} />
@@ -246,7 +246,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
         </GlassCard>
       ) : (
         <GlassCard className="p-4 sm:p-5">
-          <p className="text-xs font-semibold text-ink uppercase tracking-wide mb-3">
+          <p className="text-ui font-semibold text-ink uppercase tracking-wide mb-3">
             {pages.length} Page{pages.length !== 1 ? 's' : ''} — drag the grip to reorder, drag thumbnails to pair
           </p>
           <Reorder.Group
@@ -292,9 +292,9 @@ function PageCard({
       value={page}
       dragListener={false}
       dragControls={dragControls}
-      className="rounded-xl border border-hairline bg-ink/[0.02] overflow-hidden"
+      className="rounded-panel border border-hairline bg-ink/[0.02] overflow-hidden"
     >
-      <div className="flex items-center gap-2 px-2.5 py-1.5 border-b border-hairline bg-ink/[0.03]">
+      <div className="flex items-center gap-2 px-2.5 py-1.5 border-b border-hairline bg-ink/5">
         <button
           onPointerDown={(e) => dragControls.start(e)}
           className="cursor-grab active:cursor-grabbing text-ink-faint hover:text-accent touch-none p-0.5"
@@ -302,26 +302,26 @@ function PageCard({
         >
           <GripVertical size={14} />
         </button>
-        <span className="text-xs font-mono text-ink-muted">#{index + 1}</span>
-        <span className="text-xs text-ink-faint truncate flex-1">{page.original.filename}</span>
+        <span className="text-ui font-mono text-ink-muted">#{index + 1}</span>
+        <span className="text-ui text-ink-faint truncate flex-1">{page.original.filename}</span>
         <IconButton size="sm" aria-label="Remove page" onClick={onRemove} className="!w-7 !h-7 !bg-transparent !border-0 hover:!text-danger">
           <Trash2 size={13} />
         </IconButton>
       </div>
       <div className="grid grid-cols-2 gap-2 p-2.5">
         <div className="space-y-1">
-          <p className="text-[10px] text-ink-faint uppercase tracking-wide text-center">Original</p>
-          <div className="aspect-[2/3] rounded-lg overflow-hidden border border-hairline bg-ink/5">
+          <p className="text-micro text-ink-faint uppercase tracking-wide text-center">Original</p>
+          <div className="aspect-[2/3] rounded-control overflow-hidden border border-hairline bg-ink/5">
             <img src={page.original.dataUrl} alt={page.original.filename} className="w-full h-full object-cover" draggable={false} />
           </div>
         </div>
         <div className="space-y-1">
-          <p className="text-[10px] text-ink-faint uppercase tracking-wide text-center">Cleaned</p>
+          <p className="text-micro text-ink-faint uppercase tracking-wide text-center">Cleaned</p>
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => { setDragOver(false); onDropCleaned(e); }}
-            className={`aspect-[2/3] rounded-lg overflow-hidden border-2 flex items-center justify-center relative group transition-colors ${
+            className={`aspect-[2/3] rounded-control overflow-hidden border-2 flex items-center justify-center relative group transition-colors ${
               dragOver ? 'border-accent bg-accent-soft' : 'border-dashed border-hairline bg-ink/5'
             }`}
           >
@@ -336,7 +336,7 @@ function PageCard({
                 />
                 <button
                   onClick={onUnassignCleaned}
-                  className="absolute top-1 right-1 p-1 rounded-md bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="absolute top-1 right-1 p-1 rounded-control bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
                   aria-label="Unpair cleaned page"
                 >
                   <Link2Off size={11} />

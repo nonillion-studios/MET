@@ -29,7 +29,7 @@ export function StudioToolbar({
         <ArrowLeft size={16} />
       </IconButton>
 
-      <span className="hidden md:inline text-sm font-display font-semibold text-ink truncate max-w-[10rem] shrink-0">
+      <span className="hidden md:inline text-title font-display font-semibold text-ink truncate max-w-[10rem] shrink-0">
         {chapterName}
       </span>
 
@@ -38,7 +38,7 @@ export function StudioToolbar({
       <button
         onClick={onToggleCleaned}
         disabled={!hasCleaned}
-        className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-lg border border-hairline bg-ink/5 text-xs font-medium text-ink disabled:opacity-40 disabled:pointer-events-none hover:bg-ink/10 transition-colors"
+        className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-control border border-hairline bg-ink/5 text-ui font-medium text-ink disabled:opacity-40 disabled:pointer-events-none hover:bg-ink/10 transition-colors"
       >
         <span className={showCleaned ? 'text-ink-faint' : 'text-accent'}>Original</span>
         <span className="text-ink-faint">/</span>
@@ -47,7 +47,7 @@ export function StudioToolbar({
 
       {hasCleaned && showCleaned && (
         <div className="hidden xl:flex items-center gap-1.5 shrink-0 pl-1" title="Blend the original page as an overlay above the cleaned page">
-          <span className="text-[10px] text-ink-faint uppercase tracking-wide">Overlay</span>
+          <span className="text-micro text-ink-faint uppercase tracking-wide">Overlay</span>
           <input
             type="range"
             min={0}
@@ -66,9 +66,9 @@ export function StudioToolbar({
       <div className="hidden lg:flex items-center gap-1 flex-1 min-w-0 overflow-x-auto">
         {workflowStages.map((stage, i) => (
           <div key={stage.id} className="flex items-center gap-1 shrink-0">
-            {i > 0 && <span className="text-ink-faint/30 text-[11px] px-0.5">›</span>}
+            {i > 0 && <span className="text-ink-faint/30 text-micro px-0.5">›</span>}
             <span
-              className={`px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap transition-colors ${
+              className={`px-2 py-0.5 rounded-full text-micro font-medium whitespace-nowrap transition-colors ${
                 !stage.tracked
                   ? 'text-ink-faint/40'
                   : stage.active

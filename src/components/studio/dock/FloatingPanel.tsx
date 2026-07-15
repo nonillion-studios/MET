@@ -55,14 +55,14 @@ export function FloatingPanel({ label, rect, onRectChange, onDockBack, children 
 
   return (
     <div
-      className="fixed z-40 liquid-glass-heavy rounded-2xl border border-hairline flex flex-col overflow-hidden shadow-2xl"
+      className="fixed z-40 studio-panel-floating flex flex-col overflow-hidden"
       style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
     >
       <div
         onPointerDown={startDrag}
         className="flex items-center justify-between h-9 px-3 shrink-0 border-b border-hairline cursor-move select-none"
       >
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">{label}</span>
+        <span className="text-ui font-display font-semibold text-ink-faint uppercase tracking-wide">{label}</span>
         <div className="flex items-center gap-1">
           <IconButton size="sm" aria-label="Dock back" title="Dock back" onClick={onDockBack} className="!bg-transparent !w-6 !h-6">
             <PanelRightClose size={12} />

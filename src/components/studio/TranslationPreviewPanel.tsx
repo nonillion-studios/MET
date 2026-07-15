@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Search, ArrowRight, MessageSquare } from 'lucide-react';
 import type { Page } from '../../types';
+import { StudioPanel } from './StudioPanel';
 import type { StudioLayer, TranslationStatus } from './studioTypes';
 
 interface DialogueRow {
@@ -68,12 +69,11 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Translation Preview</span>
-        <span className="text-[11px] text-ink-faint">{rows.length} dialogue{rows.length !== 1 ? 's' : ''}</span>
-      </div>
-
+    <StudioPanel
+      title="Translation Preview"
+      bare
+      actions={<span className="text-micro text-ink-faint pr-1">{rows.length} dialogue{rows.length !== 1 ? 's' : ''}</span>}
+    >
       <div className="px-3 py-2.5 border-b border-hairline flex flex-col gap-1.5">
         <div className="flex items-center gap-1.5">
           <Search size={12} className="text-ink-faint shrink-0" />
@@ -81,7 +81,7 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search all pages…"
-            className="flex-1 bg-ink/5 border border-hairline rounded-md px-2 py-1 text-xs text-ink"
+            className="flex-1 bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ui text-ink"
           />
         </div>
         <div className="flex items-center gap-1.5">
@@ -90,12 +90,12 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
             value={replaceWith}
             onChange={(e) => setReplaceWith(e.target.value)}
             placeholder="Replace with…"
-            className="flex-1 bg-ink/5 border border-hairline rounded-md px-2 py-1 text-xs text-ink"
+            className="flex-1 bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ui text-ink"
           />
           <button
             onClick={replaceAll}
             disabled={!query.trim()}
-            className="shrink-0 px-2 py-1 rounded-md text-[11px] font-medium bg-ink/5 border border-hairline text-ink disabled:opacity-40 disabled:pointer-events-none hover:bg-ink/10"
+            className="shrink-0 px-2 py-1 rounded-control text-micro font-medium bg-ink/5 border border-hairline text-ink disabled:opacity-40 disabled:pointer-events-none hover:bg-ink/10"
           >
             Replace All
           </button>
@@ -104,7 +104,7 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {filtered.length === 0 && (
-          <div className="p-4 text-center text-xs text-ink-faint">
+          <div className="p-4 text-center text-ui text-ink-faint">
             {rows.length === 0 ? 'No dialogue placed yet.' : 'No matches.'}
           </div>
         )}
@@ -122,15 +122,15 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
                   title="Jump to this bubble"
                 >
                   <div className="flex items-center gap-1.5 mb-0.5">
-                    <span className="text-[10px] text-ink-faint font-mono">{row.pageLabel}</span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${STATUS_CLASS[row.status]}`}>{STATUS_LABEL[row.status]}</span>
+                    <span className="text-micro text-ink-faint font-mono">{row.pageLabel}</span>
+                    <span className={`text-micro px-1.5 py-0.5 rounded-full ${STATUS_CLASS[row.status]}`}>{STATUS_LABEL[row.status]}</span>
                     {row.comment && <MessageSquare size={10} className="text-ink-faint" />}
                   </div>
-                  <p className="text-xs text-ink truncate">{row.content || <span className="italic text-ink-faint">(empty)</span>}</p>
+                  <p className="text-ui text-ink truncate">{row.content || <span className="italic text-ink-faint">(empty)</span>}</p>
                 </button>
                 <button
                   onClick={() => setExpandedId(expanded ? null : `${row.pageId}:${row.layerId}`)}
-                  className="text-[10px] text-ink-faint hover:text-ink shrink-0 px-1"
+                  className="text-micro text-ink-faint hover:text-ink shrink-0 px-1"
                 >
                   {expanded ? 'Hide' : 'Edit'}
                 </button>
@@ -142,7 +142,7 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
                       <button
                         key={s}
                         onClick={() => onUpdateText(row.pageId, row.layerId, { status: s })}
-                        className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                        className={`flex-1 text-micro py-1 rounded-control border transition-colors ${
                           row.status === s ? 'border-accent bg-accent-soft text-accent' : 'border-hairline text-ink-faint hover:bg-ink/5'
                         }`}
                       >
@@ -155,7 +155,7 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
                     onChange={(e) => onUpdateText(row.pageId, row.layerId, { comment: e.target.value })}
                     placeholder="Translator comment…"
                     rows={2}
-                    className="bg-ink/5 border border-hairline rounded-md px-2 py-1 text-[11px] text-ink resize-none"
+                    className="bg-ink/5 border border-hairline rounded-control px-2 py-1 text-micro text-ink resize-none"
                   />
                 </div>
               )}
@@ -163,6 +163,6 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
           );
         })}
       </div>
-    </div>
+    </StudioPanel>
   );
 }

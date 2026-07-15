@@ -1,3 +1,4 @@
+import { StudioPanel } from './StudioPanel';
 import type { AdjustmentKind, AdjustmentLayerData, StudioLayer } from './studioTypes';
 
 interface AdjustmentPanelProps {
@@ -15,7 +16,7 @@ function Slider({ label, min, max, step = 1, value, onChange }: {
   label: string; min: number; max: number; step?: number; value: number; onChange: (v: number) => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+    <label className="flex items-center gap-2 text-micro text-ink-faint">
       <span className="w-16 shrink-0">{label}</span>
       <input
         type="range"
@@ -39,22 +40,17 @@ export function AdjustmentPanel({ layer, onUpdate }: AdjustmentPanelProps) {
   const setLevels = (patch: Partial<AdjustmentLayerData['levels']>) => set({ levels: { ...data.levels, ...patch } });
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Adjustment</span>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
-        <p className="text-[10px] text-ink-faint/70 leading-snug">
+    <StudioPanel title="Adjustment">
+        <p className="text-micro text-ink-faint/70 leading-snug">
           Applies to the page background. Text and paint layers above it aren't affected.
         </p>
 
-        <label className="flex flex-col gap-1 text-[11px] text-ink-faint">
+        <label className="flex flex-col gap-1 text-micro text-ink-faint">
           <span>Type</span>
           <select
             value={data.kind}
             onChange={(e) => set({ kind: e.target.value as AdjustmentKind })}
-            className="bg-ink/5 border border-hairline rounded-md px-1.5 py-1.5 text-ink text-[11px]"
+            className="studio-interactive bg-ink/5 border border-hairline rounded-control px-2 py-1.5 text-ink text-micro"
           >
             {(Object.keys(KIND_LABELS) as AdjustmentKind[]).map(k => (
               <option key={k} value={k}>{KIND_LABELS[k]}</option>
@@ -86,7 +82,6 @@ export function AdjustmentPanel({ layer, onUpdate }: AdjustmentPanelProps) {
             <Slider label="Out white" min={1} max={255} value={data.levels.outWhite} onChange={(v) => setLevels({ outWhite: Math.max(v, data.levels.outBlack + 1) })} />
           </div>
         )}
-      </div>
-    </div>
+    </StudioPanel>
   );
 }
