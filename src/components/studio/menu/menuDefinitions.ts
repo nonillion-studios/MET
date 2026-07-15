@@ -48,6 +48,11 @@ export interface MenuActions {
   toggleGrid: () => void;
   showRulers: boolean;
   toggleRulers: () => void;
+  hasSelection: boolean;
+  deselect: () => void;
+  featherSelection: () => void;
+  expandSelection: () => void;
+  contractSelection: () => void;
 }
 
 export function buildMenus(a: MenuActions): MenuDef[] {
@@ -67,6 +72,17 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       items: [
         { id: 'undo', label: 'Undo', shortcut: 'Ctrl+Z', action: a.undo, disabled: !a.canUndo },
         { id: 'redo', label: 'Redo', shortcut: 'Ctrl+Shift+Z', action: a.redo, disabled: !a.canRedo },
+      ],
+    },
+    {
+      id: 'select',
+      label: 'Select',
+      items: [
+        { id: 'deselect', label: 'Deselect', shortcut: 'Ctrl+D', action: a.deselect, disabled: !a.hasSelection },
+        { id: 'sep1', label: '', separator: true },
+        { id: 'feather', label: 'Feather…', action: a.featherSelection, disabled: !a.hasSelection },
+        { id: 'expand', label: 'Expand…', action: a.expandSelection, disabled: !a.hasSelection },
+        { id: 'contract', label: 'Contract…', action: a.contractSelection, disabled: !a.hasSelection },
       ],
     },
     {

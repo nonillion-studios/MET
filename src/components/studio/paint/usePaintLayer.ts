@@ -3,7 +3,7 @@ import {
   applyFilterBrush, applyGradient, cloneSegment, contentAwareFill, drawShape, floodFillAt, strokeSegment, liquify,
   type PaintSettings, type PaintTool,
 } from './paintEngine';
-import { magicWandMask, NO_SELECTION, type Selection } from './selection';
+import { magicWandMask, refineMaskedRegion, combineSelections, NO_SELECTION, type Selection, type SelectionCombineMode } from './selection';
 
 export const PAINT_TOOLS: PaintTool[] = [
   'brush', 'pencil', 'eraser', 'bucket', 'gradient', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
@@ -61,6 +61,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     if (tool === 'bucket') {
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
       floodFillAt(ctx, canvas.width, canvas.height, x, y, settings, selection);
+      if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
       onStrokeEnd(before);
       return;
     }
@@ -122,6 +123,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
       // Foreground-to-background, matching Photoshop's default Gradient tool convention.
       applyGradient(ctx, canvas.width, canvas.height, gradientStartRef.current.x, gradientStartRef.current.y, x, y, settings.color, settings.bgColor, selection);
+      if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
       gradientStartRef.current = null;
       onStrokeEnd(before);
       return;
@@ -133,6 +135,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       if (rect.width > 4 && rect.height > 4) {
         const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
         contentAwareFill(ctx, rect);
+        if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
         onStrokeEnd(before);
       }
       return;
@@ -142,6 +145,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       shapeStartRef.current = null;
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
       drawShape(ctx, tool, start.x, start.y, x, y, { fillColor: tool === 'shape-line' ? null : settings.color, strokeColor: settings.color, strokeWidth: Math.max(2, settings.size / 6) }, selection);
+      if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
       onStrokeEnd(before);
       return;
     }
@@ -149,19 +153,23 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     if (drawingRef.current) {
       drawingRef.current = false;
       lastRef.current = null;
-      if (strokeBeforeRef.current) onStrokeEnd(strokeBeforeRef.current);
+      if (strokeBeforeRef.current) {
+        if (selection.kind === 'mask' && ctx) refineMaskedRegion(ctx, selection, strokeBeforeRef.current);
+        onStrokeEnd(strokeBeforeRef.current);
+      }
       strokeBeforeRef.current = null;
     }
   }, [getCanvas, settings, selection, onStrokeEnd]);
 
-  const pickMagicWand = useCallback((x: number, y: number) => {
+  const pickMagicWand = useCallback((x: number, y: number, combineMode: SelectionCombineMode = 'replace') => {
     const canvas = getCanvas();
     if (!canvas || !onSelectionChange) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const mask = magicWandMask(ctx, canvas.width, canvas.height, x, y, settings.tolerance);
-    onSelectionChange(mask.kind === 'mask' ? mask : NO_SELECTION);
-  }, [getCanvas, settings.tolerance, onSelectionChange]);
+    const picked = mask.kind === 'mask' ? mask : NO_SELECTION;
+    onSelectionChange(combineMode === 'replace' ? picked : combineSelections(selection, picked, combineMode, canvas.width, canvas.height));
+  }, [getCanvas, settings.tolerance, selection, onSelectionChange]);
 
   const setCloneSource = useCallback((x: number, y: number) => {
     cloneSourceRef.current = { x, y };

@@ -7,7 +7,7 @@ import { detectBubbleCenter } from './bubbleDetect';
 import { swalToast } from '../../lib/swalTheme';
 import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
 import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
-import type { Selection } from './paint/selection';
+import { NO_SELECTION, combineModeFromModifiers, combineSelections, type Selection, type SelectionCombineMode } from './paint/selection';
 import { strokePenPath, type PaintSettings } from './paint/paintEngine';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
 import { filterForAdjustment } from '../../lib/adjustments';
@@ -103,6 +103,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
+  /** Selection to combine against and how, captured from Shift/Alt at the start of a marquee/lasso drag. */
+  const combineBaseRef = useRef<Selection>(NO_SELECTION);
+  const combineModeRef = useRef<SelectionCombineMode>('replace');
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
   const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
@@ -378,7 +381,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (activeTool === 'lasso-polygon') {
       const p = imageSpacePointer();
       if (!p) return;
-      setLassoPolyPoints(prev => [...prev, p]);
+      setLassoPolyPoints(prev => {
+        if (prev.length === 0) {
+          combineBaseRef.current = selection;
+          combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
+        }
+        return [...prev, p];
+      });
       return;
     }
 
@@ -409,7 +418,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (activeTool === 'wand') {
       const p = imageSpacePointer();
-      if (p) paint.pickMagicWand(p.x, p.y);
+      if (p) paint.pickMagicWand(p.x, p.y, combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey));
       return;
     }
     if (activeTool === 'eyedropper') {
@@ -425,20 +434,27 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (MARQUEE_TOOLS.has(activeTool)) {
       const p = imageSpacePointer();
       if (!p || !image) return;
+      const mode = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
       if (activeTool === 'marquee-row') {
-        onSelectionChange({ kind: 'rect', x: 0, y: p.y - 2, width: image.width, height: 4 });
+        const rect: Selection = { kind: 'rect', x: 0, y: p.y - 2, width: image.width, height: 4 };
+        onSelectionChange(mode === 'replace' ? rect : combineSelections(selection, rect, mode, image.width, image.height));
         return;
       }
       if (activeTool === 'marquee-col') {
-        onSelectionChange({ kind: 'rect', x: p.x - 2, y: 0, width: 4, height: image.height });
+        const rect: Selection = { kind: 'rect', x: p.x - 2, y: 0, width: 4, height: image.height };
+        onSelectionChange(mode === 'replace' ? rect : combineSelections(selection, rect, mode, image.width, image.height));
         return;
       }
+      combineBaseRef.current = selection;
+      combineModeRef.current = mode;
       marqueeStartRef.current = p;
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
       const p = imageSpacePointer();
       if (!p) return;
+      combineBaseRef.current = selection;
+      combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
       lassoPointsRef.current = [p];
       return;
     }
@@ -513,8 +529,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (panRef.current?.active) { panRef.current = null; return; }
-    if (MARQUEE_TOOLS.has(activeTool)) { marqueeStartRef.current = null; return; }
-    if (LASSO_TOOLS.has(activeTool)) { lassoPointsRef.current = null; return; }
+    if (MARQUEE_TOOLS.has(activeTool)) {
+      if (marqueeStartRef.current && combineModeRef.current !== 'replace' && image) {
+        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      }
+      marqueeStartRef.current = null;
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool)) {
+      if (lassoPointsRef.current && combineModeRef.current !== 'replace' && image) {
+        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      }
+      lassoPointsRef.current = null;
+      return;
+    }
     if (!isPaintTool) return;
     const p = imageSpacePointer();
     if (!p) return;
@@ -537,7 +565,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   };
 
   const commitLassoPolygon = () => {
-    if (lassoPolyPoints.length > 2) onSelectionChange({ kind: 'polygon', points: lassoPolyPoints });
+    if (lassoPolyPoints.length > 2 && image) {
+      const shape: Selection = { kind: 'polygon', points: lassoPolyPoints };
+      onSelectionChange(combineModeRef.current === 'replace' ? shape : combineSelections(combineBaseRef.current, shape, combineModeRef.current, image.width, image.height));
+    }
     setLassoPolyPoints([]);
   };
 

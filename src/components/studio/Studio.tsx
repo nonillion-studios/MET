@@ -17,7 +17,7 @@ import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
 import { FloatingPanel } from './dock/FloatingPanel';
 import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
-import { NO_SELECTION, type Selection } from './paint/selection';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
 import type { PaintSettings, LiquifyMode } from './paint/paintEngine';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
@@ -82,6 +82,40 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     color: foreground, bgColor: background, tolerance, liquifyMode,
   };
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
+
+  async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
+    const result = await swal({
+      title,
+      input: 'number',
+      inputLabel: label,
+      inputValue: 10,
+      showCancelButton: true,
+      confirmButtonText: 'Apply',
+    });
+    if (!result.isConfirmed || result.value === undefined || result.value === '') return null;
+    return Number(result.value);
+  }
+
+  async function handleFeatherSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Feather Selection', 'Radius (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => featherSelection(sel, amount, activePage.original.width, activePage.original.height));
+  }
+
+  async function handleExpandSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Expand Selection', 'Amount (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => growSelection(sel, amount, activePage.original.width, activePage.original.height));
+  }
+
+  async function handleContractSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Contract Selection', 'Amount (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => growSelection(sel, -amount, activePage.original.width, activePage.original.height));
+  }
 
   const studioRootRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -565,6 +599,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleGrid: () => setShowGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
+    hasSelection: hasSelection(selection),
+    deselect: () => setSelection(NO_SELECTION),
+    featherSelection: handleFeatherSelection,
+    expandSelection: handleExpandSelection,
+    contractSelection: handleContractSelection,
   });
 
   const [layoutMode, setLayoutMode] = useState<'desktop' | 'tablet' | 'phone'>(() => {

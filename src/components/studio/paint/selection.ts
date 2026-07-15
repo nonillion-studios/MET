@@ -61,7 +61,10 @@ export function clipToSelection(ctx: CanvasRenderingContext2D, sel: Selection): 
 /**
  * After a masked stroke commits, re-applies the bitmap mask's exact alpha to
  * the bounding-box region that was just painted (undoes the bbox-only
- * approximation used for live feedback during the stroke).
+ * approximation used for live feedback during the stroke). Blends
+ * proportionally to each mask pixel's alpha rather than a hard threshold, so
+ * feathered selections (see `featherSelection`) actually produce a soft edge
+ * instead of a stair-stepped one.
  */
 export function refineMaskedRegion(ctx: CanvasRenderingContext2D, sel: Selection, before: ImageData): void {
   if (sel.kind !== 'mask') return;
@@ -71,17 +74,188 @@ export function refineMaskedRegion(ctx: CanvasRenderingContext2D, sel: Selection
   for (let row = 0; row < height; row++) {
     for (let col = 0; col < width; col++) {
       const maskIdx = (y + row) * sel.width + (x + col);
-      const inSelection = sel.data[maskIdx] > 127;
-      if (!inSelection) {
+      const alpha = sel.data[maskIdx] / 255;
+      if (alpha < 1) {
         const i = (row * width + col) * 4;
-        after.data[i] = before.data[i];
-        after.data[i + 1] = before.data[i + 1];
-        after.data[i + 2] = before.data[i + 2];
-        after.data[i + 3] = before.data[i + 3];
+        after.data[i] = before.data[i] * (1 - alpha) + after.data[i] * alpha;
+        after.data[i + 1] = before.data[i + 1] * (1 - alpha) + after.data[i + 1] * alpha;
+        after.data[i + 2] = before.data[i + 2] * (1 - alpha) + after.data[i + 2] * alpha;
+        after.data[i + 3] = before.data[i + 3] * (1 - alpha) + after.data[i + 3] * alpha;
       }
     }
   }
   ctx.putImageData(after, x, y);
+}
+
+/** Shift/Alt-driven combine mode when starting a new marquee/lasso/wand selection over an existing one. */
+export type SelectionCombineMode = 'replace' | 'add' | 'subtract' | 'intersect';
+
+export function combineModeFromModifiers(shiftKey: boolean, altKey: boolean): SelectionCombineMode {
+  if (shiftKey) return 'add';
+  if (altKey) return 'subtract';
+  return 'replace';
+}
+
+/** Rasterizes any selection kind to a full-canvas-sized mask (empty mask for 'none'). */
+export function rasterizeSelectionMask(sel: Selection, width: number, height: number): Selection & { kind: 'mask' } {
+  if (sel.kind === 'mask' && sel.width === width && sel.height === height) return sel;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  if (sel.kind === 'mask') {
+    // Different-sized mask (shouldn't normally happen) — draw its bounds region as an opaque box.
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(sel.bounds.x, sel.bounds.y, sel.bounds.width, sel.bounds.height);
+  } else {
+    const path = pathForSelection(sel);
+    if (path) { ctx.fillStyle = '#fff'; ctx.fill(path); }
+  }
+  const data = ctx.getImageData(0, 0, width, height);
+  const mask = new Uint8ClampedArray(width * height);
+  let minX = width, maxX = 0, minY = height, maxY = 0;
+  let any = false;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = data.data[(y * width + x) * 4 + 3];
+      mask[y * width + x] = a;
+      if (a > 0) {
+        any = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const bounds = any
+    ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+    : { x: 0, y: 0, width: 0, height: 0 };
+  return { kind: 'mask', data: mask, width, height, bounds };
+}
+
+/** Combines an existing selection with a newly-drawn one (Photoshop Shift=add / Alt=subtract convention). */
+export function combineSelections(base: Selection, incoming: Selection, mode: SelectionCombineMode, width: number, height: number): Selection {
+  if (mode === 'replace' || base.kind === 'none') return incoming;
+  const baseMask = rasterizeSelectionMask(base, width, height);
+  const incomingMask = rasterizeSelectionMask(incoming, width, height);
+  const result = new Uint8ClampedArray(width * height);
+  let minX = width, maxX = 0, minY = height, maxY = 0;
+  let any = false;
+  for (let i = 0; i < result.length; i++) {
+    const b = baseMask.data[i], n = incomingMask.data[i];
+    const v = mode === 'add' ? Math.max(b, n) : mode === 'subtract' ? Math.max(0, b - n) : Math.min(b, n);
+    result[i] = v;
+    if (v > 0) {
+      any = true;
+      const x = i % width, y = Math.floor(i / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  const bounds = any
+    ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+    : { x: 0, y: 0, width: 0, height: 0 };
+  return { kind: 'mask', data: result, width, height, bounds };
+}
+
+/** Grows (positive) or shrinks (negative) a selection's edge by `amount` pixels via iterative 1px morphology. */
+export function growSelection(sel: Selection, amount: number, width: number, height: number): Selection {
+  if (amount === 0 || sel.kind === 'none') return sel;
+  const rasterized = rasterizeSelectionMask(sel, width, height);
+  let data = rasterized.data;
+  const dilate = amount > 0;
+  const passes = Math.abs(Math.round(amount));
+  for (let pass = 0; pass < passes; pass++) {
+    const next = new Uint8ClampedArray(data.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        let v = data[i];
+        const neighbors = [
+          x > 0 ? data[i - 1] : (dilate ? 0 : 255),
+          x < width - 1 ? data[i + 1] : (dilate ? 0 : 255),
+          y > 0 ? data[i - width] : (dilate ? 0 : 255),
+          y < height - 1 ? data[i + width] : (dilate ? 0 : 255),
+        ];
+        v = dilate ? Math.max(v, ...neighbors) : Math.min(v, ...neighbors);
+        next[i] = v;
+      }
+    }
+    data = next;
+  }
+  let minX = width, maxX = 0, minY = height, maxY = 0, any = false;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[y * width + x] > 0) {
+        any = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const bounds = any
+    ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+    : { x: 0, y: 0, width: 0, height: 0 };
+  return { kind: 'mask', data, width, height, bounds };
+}
+
+/** Softens a selection's edge with a 3-pass box blur (approximates a Gaussian) over the given radius. */
+export function featherSelection(sel: Selection, radius: number, width: number, height: number): Selection {
+  if (radius <= 0 || sel.kind === 'none') return sel;
+  const rasterized = rasterizeSelectionMask(sel, width, height);
+  let data = rasterized.data;
+  const r = Math.max(1, Math.round(radius));
+  for (let pass = 0; pass < 3; pass++) {
+    data = boxBlurPass(data, width, height, r);
+  }
+  let minX = width, maxX = 0, minY = height, maxY = 0, any = false;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (data[y * width + x] > 0) {
+        any = true;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  const bounds = any
+    ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+    : { x: 0, y: 0, width: 0, height: 0 };
+  return { kind: 'mask', data, width, height, bounds };
+}
+
+function boxBlurPass(src: Uint8ClampedArray, width: number, height: number, r: number): Uint8ClampedArray {
+  const horiz = new Uint8ClampedArray(src.length);
+  const windowSize = r * 2 + 1;
+  for (let y = 0; y < height; y++) {
+    let sum = 0;
+    for (let x = -r; x <= r; x++) sum += src[y * width + Math.min(width - 1, Math.max(0, x))];
+    for (let x = 0; x < width; x++) {
+      horiz[y * width + x] = sum / windowSize;
+      const addX = Math.min(width - 1, x + r + 1);
+      const removeX = Math.max(0, x - r);
+      sum += src[y * width + addX] - src[y * width + removeX];
+    }
+  }
+  const out = new Uint8ClampedArray(src.length);
+  for (let x = 0; x < width; x++) {
+    let sum = 0;
+    for (let y = -r; y <= r; y++) sum += horiz[Math.min(height - 1, Math.max(0, y)) * width + x];
+    for (let y = 0; y < height; y++) {
+      out[y * width + x] = sum / windowSize;
+      const addY = Math.min(height - 1, y + r + 1);
+      const removeY = Math.max(0, y - r);
+      sum += horiz[addY * width + x] - horiz[removeY * width + x];
+    }
+  }
+  return out;
 }
 
 /** Flood-fills a selection mask by color similarity, starting at (x, y). Shared core with Paint Bucket's fill. */
