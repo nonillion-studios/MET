@@ -10,6 +10,9 @@ export interface Team {
   created_at: string;
 }
 
+export type JobTitle = 'Cleaning' | 'Translation' | 'Typesetting' | 'Proofreading' | 'Coloring' | 'Design';
+export const JOB_TITLES: JobTitle[] = ['Cleaning', 'Translation', 'Typesetting', 'Proofreading', 'Coloring', 'Design'];
+
 export interface TeamMember {
   id: string;
   team_id: string;
@@ -18,7 +21,19 @@ export interface TeamMember {
   role: 'member' | 'leader';
   status: 'pending' | 'active';
   created_at: string;
+  job_title: JobTitle | null;
+  priority: number | null;
+  balance: number;
+  is_active: boolean;
+  member_status: 'active' | 'on_leave' | 'resigned';
+  streak_count: number;
+  last_check_in: string | null;
   profile?: { name: string; avatar: string; email: string } | null;
+}
+
+export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember, 'job_title' | 'priority' | 'balance'>>): Promise<string | null> {
+  const { error } = await supabase.from('team_members').update(fields).eq('id', memberRowId);
+  return error ? error.message : null;
 }
 
 export async function createTeam(name: string, logo: string): Promise<{ team: Team | null; error: string | null }> {
@@ -126,6 +141,17 @@ export async function promoteToLeader(memberRowId: string): Promise<string | nul
 
 export async function demoteToMember(memberRowId: string): Promise<string | null> {
   return setRole(memberRowId, 'member', 'Role updated');
+}
+
+export async function getLeaderboard(teamId: string): Promise<TeamMember[]> {
+  const { data } = await supabase
+    .from('team_members')
+    .select('*, profile:profiles(name, avatar, email)')
+    .eq('team_id', teamId)
+    .eq('status', 'active')
+    .order('balance', { ascending: false })
+    .limit(5);
+  return (data as unknown as TeamMember[]) ?? [];
 }
 
 export async function listTeamMembers(teamId: string): Promise<TeamMember[]> {

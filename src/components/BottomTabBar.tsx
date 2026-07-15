@@ -22,7 +22,6 @@ function TabButton({ tab, active, onClick }: { tab: NavTab; active: boolean; onC
       >
         <Icon size={19} strokeWidth={1.8} />
       </div>
-      <span className="hidden xs:block text-[10px] font-medium tracking-wide">{tab.label}</span>
     </button>
   );
 }

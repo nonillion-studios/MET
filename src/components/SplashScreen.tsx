@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import splashVideoWebm from '../assets/splash-intro.webm';
 import splashVideoMp4 from '../assets/splash-intro.mp4';
-import logo from '../assets/logo-new.jpg';
 
 type Phase = 'loading' | 'playing' | 'leaving';
 
@@ -77,15 +76,6 @@ export function SplashScreen({ onFinish }: { onFinish: () => void }) {
 
   return (
     <div className={`fixed inset-0 z-[999] bg-black overflow-hidden ${phase === 'leaving' ? 'pointer-events-none' : ''}`}>
-      {/* Quiet pulsing logo while the video downloads, so the screen isn't a dead black void */}
-      <div
-        className={`absolute inset-0 flex items-center justify-center transition-opacity duration-500 ${
-          phase === 'loading' ? 'opacity-100' : 'opacity-0'
-        }`}
-      >
-        <img src={logo} alt="MET" className="w-20 h-20 rounded-2xl object-cover animate-splash-breathe" draggable={false} />
-      </div>
-
       <video
         ref={videoRef}
         preload="auto"

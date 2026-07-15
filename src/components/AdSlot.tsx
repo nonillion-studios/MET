@@ -75,7 +75,7 @@ export function AdSlot({ placement, className }: { placement?: string; className
       rel="noopener noreferrer sponsored"
       aria-label="Advertisement"
       data-placement={placement}
-      className={`relative block w-full overflow-hidden transition-[padding-top] duration-500 ease-out ${className || ''}`}
+      className={`relative block w-full max-w-xl mx-auto overflow-hidden transition-[padding-top] duration-500 ease-out ${className || ''}`}
       style={{ paddingTop: `${ratio ?? 20.4}%` }}
     >
       <img
