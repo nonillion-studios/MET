@@ -15,7 +15,7 @@ export function StudioPagesPanel({ pages, activePageId, onSelect, orientation }:
       className={cn(
         'liquid-glass-bar shrink-0 overflow-auto',
         orientation === 'vertical'
-          ? 'w-32 sm:w-36 h-full border-l border-hairline flex flex-col gap-2 p-2.5'
+          ? 'w-32 sm:w-36 h-full border-r border-hairline flex flex-col gap-2 p-2.5'
           : 'w-full h-24 border-t border-hairline flex flex-row gap-2 p-2 items-center'
       )}
     >

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes, Download, Upload,
-  UploadCloud, FileArchive, Tag, X
+  UploadCloud, FileArchive, Tag, X, PackagePlus
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { MangaSeries, Volume, Chapter, Workspace, Page } from './types';
@@ -29,7 +29,11 @@ import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
 import { migrateWorkspace } from './lib/migrate';
 import { exportWorkspaceToMsp, downloadMsp, importMspFile, saveImportedStudioData } from './lib/mspFile';
-import { exportWorkspaceToZip, downloadWorkspaceZip } from './lib/workspaceZip';
+import {
+  exportWorkspaceToZip, exportMangaToZip, exportVolumeToZip, exportChapterToZip,
+  downloadZip, importWorkspaceFromZip,
+} from './lib/workspaceZip';
+import { CloudConfig } from './components/cloud/CloudConfig';
 import { interleaveWithAds } from './lib/interleaveAds';
 import type { NavTabId } from './config/navTabs';
 
@@ -54,6 +58,7 @@ export default function App() {
   const [newWorkspaceCoverUrl, setNewWorkspaceCoverUrl] = useState('');
   const workspaceCoverInputRef = useRef<HTMLInputElement>(null);
   const mspImportInputRef = useRef<HTMLInputElement>(null);
+  const zipImportInputRef = useRef<HTMLInputElement>(null);
 
   // Tag editor modal
   const [tagEditorWorkspaceId, setTagEditorWorkspaceId] = useState<string | null>(null);
@@ -61,6 +66,10 @@ export default function App() {
 
   // Studio entrance transition
   const [studioBuilding, setStudioBuilding] = useState(false);
+
+  // Cloud connect modal (shown from Library when uploading without an active Telegram session)
+  const [showCloudConnectModal, setShowCloudConnectModal] = useState(false);
+  const [pendingCloudUpload, setPendingCloudUpload] = useState<{ workspace: Workspace; scope: 'workspace' | 'series' | 'volume' | 'chapter' } | null>(null);
 
   // Create series modal
   const [showCreateSeriesModal, setShowCreateSeriesModal] = useState(false);
@@ -312,23 +321,103 @@ export default function App() {
     }
   };
 
+  const handleImportZipFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const imported = await importWorkspaceFromZip(file);
+      setWorkspaces(prev => [...prev, imported]);
+      swalToast({ icon: 'success', title: `Imported "${imported.name}"` });
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Import Failed', text: err instanceof Error ? err.message : 'That ZIP could not be imported.' });
+    }
+  };
+
   const handleDownloadWorkspaceZip = async (workspace: Workspace) => {
     try {
       const blob = await exportWorkspaceToZip(workspace);
-      downloadWorkspaceZip(blob, workspace.name);
+      downloadZip(blob, workspace.name);
     } catch (err) {
       console.error(err);
       swal({ icon: 'error', title: 'Download Failed', text: err instanceof Error ? err.message : 'Could not build the ZIP for this workspace.' });
     }
   };
 
-  const handleUploadWorkspaceToCloud = async (workspace: Workspace) => {
+  const handleDownloadMangaZip = async (manga: MangaSeries) => {
     try {
-      await cloudClient.uploadWorkspaceBackup(workspace, { notes: '', tags: workspace.tags ?? [], folderId: null });
+      const blob = await exportMangaToZip(manga);
+      downloadZip(blob, manga.title);
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Download Failed', text: err instanceof Error ? err.message : 'Could not build the ZIP for this series.' });
+    }
+  };
+
+  const handleDownloadVolumeZip = async (volume: Volume) => {
+    try {
+      const blob = await exportVolumeToZip(volume);
+      downloadZip(blob, volume.name);
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Download Failed', text: err instanceof Error ? err.message : 'Could not build the ZIP for this volume.' });
+    }
+  };
+
+  const handleDownloadChapterZip = async (chapter: Chapter) => {
+    try {
+      const blob = await exportChapterToZip(chapter);
+      downloadZip(blob, chapter.name);
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Download Failed', text: err instanceof Error ? err.message : 'Could not build the ZIP for this chapter.' });
+    }
+  };
+
+  // Sub-tree cloud backups are wrapped in a synthetic single-branch Workspace so
+  // uploadWorkspaceBackup/restoreWorkspaceFromCloud need no scope-specific logic —
+  // `scope` metadata just controls the badge/label shown in Cloud Storage.
+  const wrapMangaBackup = (manga: MangaSeries): Workspace => ({
+    id: genId('workspace'), name: manga.title, description: manga.description, coverUrl: manga.coverUrl, tags: [], mangas: [manga],
+  });
+  const wrapVolumeBackup = (manga: MangaSeries, volume: Volume): Workspace => ({
+    id: genId('workspace'), name: volume.name, description: '', coverUrl: volume.coverUrl, tags: [],
+    mangas: [{ ...manga, volumes: [volume] }],
+  });
+  const wrapChapterBackup = (manga: MangaSeries, volume: Volume, chapter: Chapter): Workspace => ({
+    id: genId('workspace'), name: chapter.name, description: '', coverUrl: chapter.coverUrl, tags: [],
+    mangas: [{ ...manga, volumes: [{ ...volume, chapters: [chapter] }] }],
+  });
+
+  const uploadNodeToCloud = async (workspace: Workspace, scope: 'workspace' | 'series' | 'volume' | 'chapter') => {
+    if (!cloudClient.isConnected) {
+      setPendingCloudUpload({ workspace, scope });
+      setShowCloudConnectModal(true);
+      return;
+    }
+    try {
+      await cloudClient.uploadWorkspaceBackup(workspace, { notes: '', tags: workspace.tags ?? [], folderId: null, scope });
     } catch {
       // uploadWorkspaceBackup already surfaces its own error toast
     }
   };
+
+  const handleUploadWorkspaceToCloud = (workspace: Workspace) => uploadNodeToCloud(workspace, 'workspace');
+  const handleUploadMangaToCloud = (manga: MangaSeries) => uploadNodeToCloud(wrapMangaBackup(manga), 'series');
+  const handleUploadVolumeToCloud = (manga: MangaSeries, volume: Volume) => uploadNodeToCloud(wrapVolumeBackup(manga, volume), 'volume');
+  const handleUploadChapterToCloud = (manga: MangaSeries, volume: Volume, chapter: Chapter) => uploadNodeToCloud(wrapChapterBackup(manga, volume, chapter), 'chapter');
+
+  // Once the user connects from the Library-triggered modal, retry whichever upload was pending.
+  useEffect(() => {
+    if (cloudClient.isConnected && showCloudConnectModal && pendingCloudUpload) {
+      const { workspace, scope } = pendingCloudUpload;
+      setShowCloudConnectModal(false);
+      setPendingCloudUpload(null);
+      uploadNodeToCloud(workspace, scope);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudClient.isConnected]);
 
   const handleAddTag = (workspaceId: string, tag: string) => {
     const clean = tag.trim();
@@ -549,13 +638,31 @@ export default function App() {
                             <p className="text-[11px] text-ink-faint">{chap.pages.length} page(s)</p>
                           </div>
                         </GlassCard>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteChapter(chap); }}
-                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                          aria-label="Delete chapter"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownloadChapterZip(chap); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Download chapter as ZIP"
+                            title="Download as ZIP"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleUploadChapterToCloud(activeManga, activeVolume, chap); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Upload chapter to Telecloud"
+                            title="Upload to Telecloud"
+                          >
+                            <UploadCloud size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteChapter(chap); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Delete chapter"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </button>
                     ), 'library-chapters')}
                   </div>
@@ -592,13 +699,31 @@ export default function App() {
                             <p className="text-[11px] text-ink-faint">{vol.chapters.length} chapter(s)</p>
                           </div>
                         </GlassCard>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteVolume(vol); }}
-                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                          aria-label="Delete volume"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownloadVolumeZip(vol); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Download volume as ZIP"
+                            title="Download as ZIP"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleUploadVolumeToCloud(activeManga, vol); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Upload volume to Telecloud"
+                            title="Upload to Telecloud"
+                          >
+                            <UploadCloud size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteVolume(vol); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Delete volume"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </button>
                     ), 'library-volumes')}
                   </div>
@@ -635,13 +760,31 @@ export default function App() {
                             <p className="text-[11px] text-ink-faint uppercase tracking-wide">{manga.type} · {manga.volumes.length} vol(s)</p>
                           </div>
                         </GlassCard>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteManga(manga); }}
-                          className="absolute top-2 right-2 p-1.5 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                          aria-label="Delete series"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownloadMangaZip(manga); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Download series as ZIP"
+                            title="Download as ZIP"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleUploadMangaToCloud(manga); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Upload series to Telecloud"
+                            title="Upload to Telecloud"
+                          >
+                            <UploadCloud size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteManga(manga); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Delete series"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </button>
                     ), 'library-series')}
                   </div>
@@ -658,6 +801,10 @@ export default function App() {
                         <Upload size={14} /> Import Project
                       </Button>
                       <input ref={mspImportInputRef} type="file" accept=".msp" className="hidden" onChange={handleImportMspFile} />
+                      <Button size="sm" variant="secondary" onClick={() => zipImportInputRef.current?.click()}>
+                        <PackagePlus size={14} /> Import ZIP
+                      </Button>
+                      <input ref={zipImportInputRef} type="file" accept=".zip" className="hidden" onChange={handleImportZipFile} />
                       <Button size="sm" onClick={() => setShowCreateWorkspaceModal(true)}><Plus size={14} /> New Workspace</Button>
                     </div>
                   </div>
@@ -819,6 +966,15 @@ export default function App() {
             </div>
           );
         })()}
+      </Modal>
+
+      {/* Cloud Connect Modal — shown when uploading to Telecloud from Library without an active session */}
+      <Modal
+        open={showCloudConnectModal}
+        onClose={() => { setShowCloudConnectModal(false); setPendingCloudUpload(null); }}
+        title="Connect to Telecloud"
+      >
+        <CloudConfig cc={cloudClient} />
       </Modal>
 
       {/* Create Series Modal */}

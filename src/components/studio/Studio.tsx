@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import type { Page } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
 import { StudioCanvas, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
@@ -15,8 +14,6 @@ import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
-import { FloatingPanel } from './dock/FloatingPanel';
-import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
 import type { PaintSettings, LiquifyMode, SymmetryMode } from './paint/paintEngine';
 import type { BrushShape } from './paint/brushTip';
@@ -222,20 +219,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
-  const [dockOpen, setDockOpen] = useState(true);
-  const [tabletOverlayTab, setTabletOverlayTab] = useState<string | null>(null);
-  const tabletOverlayRef = useRef<HTMLDivElement>(null);
+  // Left (Pages) / right (Tools) sidebar visibility. Desktop keeps both open as fixed columns by
+  // default; tablet/phone treat these as slide-out sheets, so opening one there closes the other
+  // to avoid covering the whole canvas.
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const leftSidebarRef = useRef<HTMLDivElement>(null);
+  const rightSidebarRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!tabletOverlayTab) return;
-    function onPointerDown(e: PointerEvent) {
-      if (tabletOverlayRef.current && !tabletOverlayRef.current.contains(e.target as Node)) {
-        setTabletOverlayTab(null);
-      }
-    }
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => window.removeEventListener('pointerdown', onPointerDown);
-  }, [tabletOverlayTab]);
+  function toggleLeftSidebar() {
+    setLeftOpen(v => {
+      const next = !v;
+      if (next && layoutMode !== 'desktop') setRightOpen(false);
+      return next;
+    });
+  }
+
+  function toggleRightSidebar() {
+    setRightOpen(v => {
+      const next = !v;
+      if (next && layoutMode !== 'desktop') setLeftOpen(false);
+      return next;
+    });
+  }
 
   // Per-page layer stacks. Each page always has a locked "Background" layer at index 0.
   const [layersByPage, setLayersByPage] = useState<Record<string, StudioLayer[]>>({});
@@ -688,10 +694,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
-  const pagesPanel = (
-    <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
-  );
-
   const textPanel = activeLayer?.type === 'text' ? (
     <TextPanel
       layer={activeLayer}
@@ -772,14 +774,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'fonts', label: 'Fonts', content: fontsPanel },
     { id: 'history', label: 'History', content: historyPanel },
     { id: 'layers', label: 'Layers', content: layersPanel },
-    { id: 'pages', label: 'Pages', content: pagesPanel },
+    { id: 'pages', label: 'Pages', content: null },
   ];
-  const mobileTabs = allTabs.map(t => t.id === 'pages'
-    ? { ...t, content: <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" /> }
-    : t);
-
-  const dockedTabs = (region: 'top' | 'bottom') =>
-    allTabs.filter(t => !dock.isFloating(t.id) && (dock.homeRegion[t.id] ?? 'bottom') === region);
+  const toolTabs = allTabs.filter(t => t.id !== 'pages');
+  const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" />;
 
   const menus = buildMenus({
     onBack: onBack,
@@ -792,7 +790,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     zoomIn: () => canvasRef.current?.zoomIn(),
     zoomOut: () => canvasRef.current?.zoomOut(),
     fit: () => setFitSignal(s => s + 1),
-    toggleDock: () => setDockOpen(v => !v),
+    toggleDock: () => setRightOpen(v => !v),
     addLayer: handleAddLayer,
     duplicateLayer: () => activeLayerId && handleDuplicateLayer(activeLayerId),
     // Delete removes the whole selection, not just the primary layer.
@@ -804,8 +802,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
     hasActiveTextLayer: activeLayer?.type === 'text',
     panelTabs: allTabs.map(t => ({ id: t.id, label: t.label })),
-    showPanel: (id) => dock.selectTab(id),
-    isPanelVisible: (id) => dock.isFloating(id) || dock.activeTab.top === id || dock.activeTab.bottom === id,
+    showPanel: (id) => { if (id === 'pages') { setLeftOpen(true); } else { dock.selectTab(id); setRightOpen(true); } },
+    isPanelVisible: (id) => id === 'pages' ? leftOpen : (rightOpen && dock.activeTab === id),
     showShortcutsHelp: () => swal({
       title: 'Keyboard Shortcuts',
       html: `<div style="text-align:left;font-size:13px;line-height:1.8">${FIXED_SHORTCUTS_HELP.map(s => `<div><b>${s.keys}</b> — ${s.description}</div>`).join('')}</div>`,
@@ -844,6 +842,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }, []);
   const isDesktop = layoutMode === 'desktop';
 
+  useEffect(() => {
+    if (isDesktop) return;
+    function onPointerDown(e: PointerEvent) {
+      if (leftOpen && leftSidebarRef.current && !leftSidebarRef.current.contains(e.target as Node)) setLeftOpen(false);
+      if (rightOpen && rightSidebarRef.current && !rightSidebarRef.current.contains(e.target as Node)) setRightOpen(false);
+    }
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [isDesktop, leftOpen, rightOpen]);
+
   const workflowStages = [
     { id: 'chapter', label: 'Chapter', active: true, tracked: true },
     { id: 'page', label: 'Page', active: !!activePage, tracked: true },
@@ -855,10 +863,47 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'export', label: 'Export', active: false, tracked: false },
   ];
 
+  const canvasNode = (
+    <StudioCanvas
+      ref={canvasRef}
+      page={activePage}
+      showCleaned={showCleaned}
+      overlayOpacity={overlayOpacity}
+      showGrid={showGrid}
+      showRulers={showRulers}
+      activeTool={activeTool}
+      fitSignal={fitSignal}
+      layers={layers}
+      activeLayerId={activeLayerId}
+      selectedLayerIds={selectedLayerIds}
+      onSelectLayer={selectLayer}
+      onSelectLayers={selectLayers}
+      onAddTextLayer={handleAddTextLayer}
+      onUpdateTextLayer={handleUpdateTextLayer}
+      onTextSelectionChange={setTextSelection}
+      paintSettings={paintSettings}
+      selection={selection}
+      onSelectionChange={setSelection}
+      onPaintStrokeEnd={handlePaintStrokeEnd}
+      onEyedropperPick={setForeground}
+      onCommitCrop={handleCommitCrop}
+      queuedBubbleRects={multiBubbleRects}
+    />
+  );
+
+  const toolsSidebar = (
+    <div className="h-full flex">
+      <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
+      <div className="w-64 sm:w-72 h-full">
+        <RightDock activeTab={dock.activeTab ?? undefined} onTabChange={dock.selectTab} tabs={toolTabs} />
+      </div>
+    </div>
+  );
+
   return (
     <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {!panelsHidden && (
-        <div className="hidden lg:block relative z-40">
+        <div className="relative z-40 overflow-x-auto">
           <MenuBar menus={menus} />
         </div>
       )}
@@ -870,7 +915,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onOverlayOpacityChange={setOverlayOpacity}
         onFit={() => setFitSignal(s => s + 1)}
         onBack={onBack}
-        onToggleDock={() => setDockOpen(v => !v)}
+        onToggleLeftSidebar={toggleLeftSidebar}
+        onToggleRightSidebar={toggleRightSidebar}
         hasCleaned={!!activePage?.cleaned}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
@@ -909,138 +955,70 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         />
       )}
 
-      <div className="flex-1 flex min-h-0 flex-col-reverse lg:flex-row">
-        {!panelsHidden && (
-          <>
-            <div className="lg:hidden relative z-40">
-              <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="horizontal" />
-            </div>
-            <div className="hidden lg:block h-full relative z-40">
-              <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
-            </div>
-          </>
+      {/* Fixed 3-column body: Pages (left) | Canvas (center) | Tools (right). Desktop keeps all
+          three as permanent columns; tablet/phone collapse the sidebars into slide-out sheets
+          triggered from the top bar's Pages/Tools buttons. */}
+      <div className="flex-1 flex min-h-0 relative">
+        {!panelsHidden && isDesktop && leftOpen && (
+          <div className="h-full shrink-0 relative z-30">
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+          </div>
         )}
 
-        {/* Single shared canvas instance — desktop wraps it in a resizable split with the dock,
-            tablet collapses the dock to a tap-to-open icon strip overlay, phone uses a bottom sheet. */}
         <div className="flex-1 min-h-0 min-w-0 relative">
-          <PanelGroup direction="horizontal" autoSaveId={isDesktop && dockOpen && !panelsHidden ? DOCK_PANEL_GROUP_AUTOSAVE_ID : undefined}>
-            <Panel minSize={30} defaultSize={75}>
-              <StudioCanvas
-                ref={canvasRef}
-                page={activePage}
-                showCleaned={showCleaned}
-                overlayOpacity={overlayOpacity}
-                showGrid={showGrid}
-                showRulers={showRulers}
-                activeTool={activeTool}
-                fitSignal={fitSignal}
-                layers={layers}
-                activeLayerId={activeLayerId}
-                selectedLayerIds={selectedLayerIds}
-                onSelectLayer={selectLayer}
-                onSelectLayers={selectLayers}
-                onAddTextLayer={handleAddTextLayer}
-                onUpdateTextLayer={handleUpdateTextLayer}
-                onTextSelectionChange={setTextSelection}
-                paintSettings={paintSettings}
-                selection={selection}
-                onSelectionChange={setSelection}
-                onPaintStrokeEnd={handlePaintStrokeEnd}
-                onEyedropperPick={setForeground}
-                onCommitCrop={handleCommitCrop}
-                queuedBubbleRects={multiBubbleRects}
-              />
-            </Panel>
-            {!panelsHidden && isDesktop && dockOpen && (
-              <>
-                <PanelResizeHandle className="w-1 bg-hairline hover:bg-accent/50 transition-colors" />
-                <Panel minSize={16} defaultSize={25} maxSize={40}>
-                  <PanelGroup direction="vertical" autoSaveId={`${DOCK_PANEL_GROUP_AUTOSAVE_ID}-v`}>
-                    <Panel minSize={20} defaultSize={55}>
-                      <RightDock
-                        activeTab={dock.activeTab.top}
-                        onTabChange={(id) => dock.setActiveTab('top', id)}
-                        onFloatTab={dock.floatTab}
-                        tabs={dockedTabs('top')}
-                      />
-                    </Panel>
-                    <PanelResizeHandle className="h-1 bg-hairline hover:bg-accent/50 transition-colors" />
-                    <Panel minSize={20} defaultSize={45}>
-                      <RightDock
-                        activeTab={dock.activeTab.bottom}
-                        onTabChange={(id) => dock.setActiveTab('bottom', id)}
-                        onFloatTab={dock.floatTab}
-                        tabs={dockedTabs('bottom')}
-                      />
-                    </Panel>
-                  </PanelGroup>
-                </Panel>
-              </>
-            )}
-          </PanelGroup>
-
-          {!panelsHidden && layoutMode === 'tablet' && dockOpen && (
-            <div className="absolute inset-y-0 right-0 z-20 flex">
-              <div className="liquid-glass-bar w-12 shrink-0 border-l border-hairline flex flex-col items-center py-2 gap-1">
-                {allTabs.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => setTabletOverlayTab(prev => prev === t.id ? null : t.id)}
-                    title={t.label}
-                    className={`w-11 h-11 rounded-control text-micro font-semibold flex items-center justify-center transition-colors ${
-                      tabletOverlayTab === t.id ? 'bg-accent-soft text-accent' : 'text-ink-faint hover:text-ink hover:bg-ink/5'
-                    }`}
-                  >
-                    {t.label.slice(0, 2).toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              {tabletOverlayTab && (
-                <div ref={tabletOverlayRef} className="w-72 max-w-[75vw] h-full liquid-glass-heavy border-l border-hairline shadow-2xl">
-                  {allTabs.find(t => t.id === tabletOverlayTab)?.content}
-                </div>
-              )}
-            </div>
-          )}
-
-          {!panelsHidden && layoutMode === 'phone' && dockOpen && (
-            <div className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
-              <button
-                aria-label="Close panel"
-                onClick={() => setDockOpen(false)}
-                className="h-6 shrink-0 flex items-center justify-center liquid-glass-bar !bg-transparent border-x border-t border-hairline rounded-t-2xl"
-              >
-                <span className="w-10 h-1 rounded-full bg-ink/20" />
-              </button>
-              <div className="flex-1 min-h-0">
-                <RightDock
-                  activeTab={dock.activeTab.bottom}
-                  onTabChange={(id) => dock.setActiveTab('bottom', id)}
-                  className="!w-full !h-full !border-l-0 border-x border-hairline"
-                  tabs={mobileTabs}
-                />
-              </div>
-            </div>
-          )}
+          {canvasNode}
         </div>
-      </div>
 
-      {!panelsHidden && Object.entries(dock.floating).map(([tabId, rect]) => {
-        const tab = allTabs.find(t => t.id === tabId);
-        if (!tab) return null;
-        return (
-          <FloatingPanel
-            key={tabId}
-            label={tab.label}
-            rect={rect}
-            onRectChange={(r) => dock.updateFloatingRect(tabId, r)}
-            onDockBack={() => dock.dockBack(tabId)}
-          >
-            {tab.content}
-          </FloatingPanel>
-        );
-      })}
+        {!panelsHidden && isDesktop && rightOpen && (
+          <div className="h-full shrink-0 relative z-30">
+            {toolsSidebar}
+          </div>
+        )}
+
+        {!panelsHidden && layoutMode === 'tablet' && leftOpen && (
+          <div ref={leftSidebarRef} className="absolute inset-y-0 left-0 z-20 w-72 max-w-[75vw] h-full liquid-glass-heavy border-r border-hairline shadow-2xl">
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+          </div>
+        )}
+        {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
+          <div ref={rightSidebarRef} className="absolute inset-y-0 right-0 z-20 h-full liquid-glass-heavy border-l border-hairline shadow-2xl">
+            {toolsSidebar}
+          </div>
+        )}
+
+        {!panelsHidden && layoutMode === 'phone' && leftOpen && (
+          <div ref={leftSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+            <button
+              aria-label="Close panel"
+              onClick={() => setLeftOpen(false)}
+              className="h-6 shrink-0 flex items-center justify-center liquid-glass-bar !bg-transparent border-x border-t border-hairline rounded-t-2xl"
+            >
+              <span className="w-10 h-1 rounded-full bg-ink/20" />
+            </button>
+            <div className="flex-1 min-h-0">{pagesTabHorizontal}</div>
+          </div>
+        )}
+        {!panelsHidden && layoutMode === 'phone' && rightOpen && (
+          <div ref={rightSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+            <button
+              aria-label="Close panel"
+              onClick={() => setRightOpen(false)}
+              className="h-6 shrink-0 flex items-center justify-center liquid-glass-bar !bg-transparent border-x border-t border-hairline rounded-t-2xl"
+            >
+              <span className="w-10 h-1 rounded-full bg-ink/20" />
+            </button>
+            <div className="flex-1 min-h-0 flex flex-col-reverse">
+              <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="horizontal" />
+              <RightDock
+                activeTab={dock.activeTab ?? undefined}
+                onTabChange={dock.selectTab}
+                className="!w-full !h-full !border-l-0 border-x border-hairline"
+                tabs={toolTabs}
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       <ExportDialog
         open={exportOpen}

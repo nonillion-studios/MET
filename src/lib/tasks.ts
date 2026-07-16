@@ -2,6 +2,7 @@ import { supabase } from './supabaseClient';
 import { notify } from './notifications';
 
 export type TaskStatus = 'todo' | 'in_progress' | 'under_review' | 'done' | 'cancelled';
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export interface Task {
   id: string;
@@ -23,6 +24,10 @@ export interface Task {
   submission_content: string | null;
   rating: number | null;
   priority_index: number;
+  priority: TaskPriority;
+  tags: string[];
+  recurrence: 'none' | 'daily' | 'weekly' | 'monthly';
+  recurrence_parent_id: string | null;
   assignee?: { name: string; avatar: string; email: string } | null;
 }
 
@@ -34,11 +39,19 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<string | 
 export async function createTaskWithWorkflow(input: {
   teamId: string; title: string; description: string;
   jobTypes: string[]; dueDate: string | null; reward?: number;
+  attachment?: { msgId: number; name: string; size: number };
+  priority?: TaskPriority; tags?: string[]; recurrence?: 'none' | 'daily' | 'weekly' | 'monthly';
 }): Promise<string | null> {
   const { data, error } = await supabase.rpc('task_create', {
     _team_id: input.teamId, _title: input.title, _description: input.description,
     _difficulty: 'Medium', _job_types: input.jobTypes, _due_date: input.dueDate,
     _reward: input.reward ?? null,
+    _attachment_msg_id: input.attachment?.msgId ?? null,
+    _attachment_name: input.attachment?.name ?? null,
+    _attachment_size: input.attachment?.size ?? null,
+    _priority: input.priority ?? 'normal',
+    _tags: input.tags ?? [],
+    _recurrence: input.recurrence ?? 'none',
   });
   if (error) return error.message;
   const created = data as Task | null;
@@ -83,6 +96,10 @@ export async function notifyUpcomingTaskDeadlines(teamId: string): Promise<void>
   await supabase.rpc('notify_upcoming_task_deadlines', { _team_id: teamId });
 }
 
+export async function spawnRecurringTasks(teamId: string): Promise<void> {
+  await supabase.rpc('spawn_recurring_tasks', { _team_id: teamId });
+}
+
 export async function listTeamTasks(teamId: string): Promise<Task[]> {
   const { data } = await supabase
     .from('tasks')
@@ -110,11 +127,131 @@ export async function deleteTask(taskId: string): Promise<string | null> {
   return error ? error.message : null;
 }
 
-export async function attachFileToTask(taskId: string, attachment: { msgId: number; name: string; size: number }): Promise<string | null> {
-  const { error } = await supabase
-    .from('tasks')
-    .update({ attachment_msg_id: attachment.msgId, attachment_name: attachment.name, attachment_size: attachment.size })
-    .eq('id', taskId);
+export interface TaskAttachment {
+  id: string;
+  task_id: string;
+  uploader_id: string;
+  msg_id: number;
+  name: string;
+  size: number;
+  kind: 'reference' | 'submission';
+  created_at: string;
+}
+
+/** Records a task attachment as its own row (task_attachments), tagged by kind, instead of
+ *  overwriting the legacy single-slot tasks.attachment_* columns shared between creator/assignee. */
+export async function attachFileToTask(taskId: string, attachment: { msgId: number; name: string; size: number }, kind: 'reference' | 'submission' = 'submission'): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  const uploaderId = userData.user?.id;
+  if (!uploaderId) return 'Not signed in.';
+  const { error } = await supabase.from('task_attachments').insert({
+    task_id: taskId, uploader_id: uploaderId, msg_id: attachment.msgId, name: attachment.name, size: attachment.size, kind,
+  });
+  return error ? error.message : null;
+}
+
+export async function listTaskAttachments(taskId: string): Promise<TaskAttachment[]> {
+  const { data } = await supabase.from('task_attachments').select('*').eq('task_id', taskId).order('created_at', { ascending: true });
+  return (data as TaskAttachment[]) ?? [];
+}
+
+export interface TaskChecklistItem {
+  id: string;
+  task_id: string;
+  label: string;
+  done: boolean;
+  position: number;
+  created_by: string;
+  created_at: string;
+}
+
+export async function listChecklistItems(taskId: string): Promise<TaskChecklistItem[]> {
+  const { data } = await supabase.from('task_checklist_items').select('*').eq('task_id', taskId).order('position', { ascending: true });
+  return (data as TaskChecklistItem[]) ?? [];
+}
+
+export async function addChecklistItem(taskId: string, label: string, position: number): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return 'Not signed in.';
+  const { error } = await supabase.from('task_checklist_items').insert({ task_id: taskId, label, position, created_by: userId });
+  return error ? error.message : null;
+}
+
+export async function toggleChecklistItem(id: string, done: boolean): Promise<string | null> {
+  const { error } = await supabase.from('task_checklist_items').update({ done }).eq('id', id);
+  return error ? error.message : null;
+}
+
+export async function deleteChecklistItem(id: string): Promise<string | null> {
+  const { error } = await supabase.from('task_checklist_items').delete().eq('id', id);
+  return error ? error.message : null;
+}
+
+export interface TaskHistoryEntry {
+  id: string;
+  task_id: string;
+  actor_id: string | null;
+  event: string;
+  detail: string | null;
+  created_at: string;
+}
+
+export async function listTaskHistory(taskId: string): Promise<TaskHistoryEntry[]> {
+  const { data } = await supabase.from('task_history').select('*').eq('task_id', taskId).order('created_at', { ascending: true });
+  return (data as TaskHistoryEntry[]) ?? [];
+}
+
+export interface TaskTimeEntry {
+  id: string;
+  task_id: string;
+  user_id: string;
+  started_at: string;
+  ended_at: string | null;
+}
+
+export async function listTimeEntries(taskId: string): Promise<TaskTimeEntry[]> {
+  const { data } = await supabase.from('task_time_entries').select('*').eq('task_id', taskId).order('started_at', { ascending: true });
+  return (data as TaskTimeEntry[]) ?? [];
+}
+
+export async function getMyOpenTimeEntry(taskId: string): Promise<TaskTimeEntry | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return null;
+  const { data } = await supabase.from('task_time_entries').select('*').eq('task_id', taskId).eq('user_id', userId).is('ended_at', null).maybeSingle();
+  return (data as TaskTimeEntry) ?? null;
+}
+
+export async function startTimer(taskId: string): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return 'Not signed in.';
+  const { error } = await supabase.from('task_time_entries').insert({ task_id: taskId, user_id: userId });
+  return error ? error.message : null;
+}
+
+export async function stopTimer(entryId: string): Promise<string | null> {
+  const { error } = await supabase.from('task_time_entries').update({ ended_at: new Date().toISOString() }).eq('id', entryId);
+  return error ? error.message : null;
+}
+
+export function totalTrackedMs(entries: TaskTimeEntry[]): number {
+  return entries.reduce((sum, e) => sum + ((e.ended_at ? new Date(e.ended_at).getTime() : Date.now()) - new Date(e.started_at).getTime()), 0);
+}
+
+export async function listDependencies(taskId: string): Promise<{ depends_on_task_id: string }[]> {
+  const { data } = await supabase.from('task_dependencies').select('depends_on_task_id').eq('task_id', taskId);
+  return data ?? [];
+}
+
+export async function addDependency(taskId: string, dependsOnTaskId: string): Promise<string | null> {
+  const { error } = await supabase.from('task_dependencies').insert({ task_id: taskId, depends_on_task_id: dependsOnTaskId });
+  return error ? error.message : null;
+}
+
+export async function removeDependency(taskId: string, dependsOnTaskId: string): Promise<string | null> {
+  const { error } = await supabase.from('task_dependencies').delete().eq('task_id', taskId).eq('depends_on_task_id', dependsOnTaskId);
   return error ? error.message : null;
 }
 

@@ -1,4 +1,4 @@
-import { ArrowLeft, Maximize2, Minimize2, PanelRight } from 'lucide-react';
+import { Home, Maximize2, Minimize2, PanelLeft, PanelRight } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { WorkflowStage } from './WorkflowBar';
 
@@ -10,7 +10,8 @@ interface StudioToolbarProps {
   onOverlayOpacityChange: (opacity: number) => void;
   onFit: () => void;
   onBack: () => void;
-  onToggleDock: () => void;
+  onToggleLeftSidebar: () => void;
+  onToggleRightSidebar: () => void;
   hasCleaned: boolean;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -21,12 +22,16 @@ interface StudioToolbarProps {
 
 export function StudioToolbar({
   chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
-  onFit, onBack, onToggleDock, hasCleaned, isFullscreen, onToggleFullscreen, workflowStages,
+  onFit, onBack, onToggleLeftSidebar, onToggleRightSidebar, hasCleaned, isFullscreen, onToggleFullscreen, workflowStages,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline">
-      <IconButton size="sm" aria-label="Back to pages" onClick={onBack} className="!bg-transparent !border-0 shrink-0">
-        <ArrowLeft size={16} />
+      <IconButton size="sm" aria-label="Return home" title="Return home" onClick={onBack} className="!bg-transparent !border-0 shrink-0">
+        <Home size={16} />
+      </IconButton>
+
+      <IconButton size="sm" aria-label="Toggle pages panel" title="Pages" onClick={onToggleLeftSidebar} className="!bg-transparent shrink-0">
+        <PanelLeft size={15} />
       </IconButton>
 
       <span className="hidden md:inline text-title font-display font-semibold text-ink truncate max-w-[10rem] shrink-0">
@@ -95,7 +100,7 @@ export function StudioToolbar({
       >
         {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
       </IconButton>
-      <IconButton size="sm" aria-label="Toggle layers & pages panel" onClick={onToggleDock} className="!bg-transparent shrink-0">
+      <IconButton size="sm" aria-label="Toggle tools panel" title="Tools" onClick={onToggleRightSidebar} className="!bg-transparent shrink-0">
         <PanelRight size={15} />
       </IconButton>
     </div>

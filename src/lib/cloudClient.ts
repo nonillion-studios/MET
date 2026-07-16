@@ -7,10 +7,13 @@ import { migrateWorkspace } from './migrate';
 import { loadTelegramCredentials, saveTelegramCredentials } from './telegramSync';
 import type { Workspace } from '../types';
 
+export type BackupScope = 'workspace' | 'series' | 'volume' | 'chapter';
+
 export interface CloudFile {
   id: number;
   msg: any;
   type: 'workspace_backup' | 'team_file';
+  scope: BackupScope;
   name: string;
   description: string;
   tags: string[];
@@ -197,6 +200,7 @@ export function useCloudClient() {
               id: m.id,
               msg: m,
               type: data.type,
+              scope: (['workspace', 'series', 'volume', 'chapter'].includes(data.scope) ? data.scope : 'workspace') as BackupScope,
               name: data.name || 'Untitled',
               description: data.description || '',
               tags: Array.isArray(data.tags) ? data.tags : [],
@@ -282,6 +286,7 @@ export function useCloudClient() {
     try {
       const metadata = {
         type: file.type,
+        scope: file.scope,
         name: file.name,
         description: file.description,
         tags: file.tags,
@@ -298,7 +303,7 @@ export function useCloudClient() {
     }
   };
 
-  const uploadWorkspaceBackup = async (workspace: Workspace, opts: { notes: string; tags: string[]; folderId: number | null }) => {
+  const uploadWorkspaceBackup = async (workspace: Workspace, opts: { notes: string; tags: string[]; folderId: number | null; scope?: BackupScope }) => {
     if (!client || !chatId) {
       swal({ title: 'Error', text: 'Connect to Telegram and set a Chat ID first', icon: 'error' });
       return;
@@ -332,6 +337,7 @@ export function useCloudClient() {
 
       const metadata = {
         type: 'workspace_backup',
+        scope: opts.scope || 'workspace',
         name: workspace.name,
         description: opts.notes || workspace.description || '',
         tags: opts.tags,
@@ -534,6 +540,7 @@ export function useCloudClient() {
           id: m.id,
           msg: m,
           type: meta?.type === 'workspace_backup' ? 'workspace_backup' : 'team_file',
+          scope: (['workspace', 'series', 'volume', 'chapter'].includes(meta?.scope) ? meta.scope : 'workspace') as BackupScope,
           name: meta?.name || m.message || (m as any).file?.name || 'Untitled',
           description: meta?.description || '',
           tags: Array.isArray(meta?.tags) ? meta.tags : [],

@@ -59,7 +59,7 @@ export function AdSlot({ placement, className }: { placement?: string; className
       rel="noopener noreferrer sponsored"
       aria-label="Advertisement"
       data-placement={placement}
-      className={`relative block w-full max-w-2xl mx-auto aspect-[2/1] rounded-2xl overflow-hidden ${className || ''}`}
+      className={`relative block w-full aspect-[16/6] sm:aspect-[16/5] rounded-2xl overflow-hidden ${className || ''}`}
     >
       <img
         key={validIndex}

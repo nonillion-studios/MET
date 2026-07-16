@@ -38,6 +38,13 @@ function TagChip({ tag, onRemove, onClick, active }: { tag: string; onRemove?: (
   );
 }
 
+const SCOPE_LABELS: Record<string, string> = {
+  workspace: 'Workspace',
+  series: 'Series',
+  volume: 'Volume',
+  chapter: 'Chapter',
+};
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -358,7 +365,7 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
                     </>
                   )}
                   <span className="absolute top-2 left-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-black/50 text-white backdrop-blur-sm">
-                    <Boxes size={10} /> Workspace
+                    <Boxes size={10} /> {SCOPE_LABELS[file.scope] ?? 'Workspace'}
                   </span>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleMoveFile(file); }}

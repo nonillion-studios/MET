@@ -17,10 +17,16 @@ import {
   updateTeamSettings, deleteTeam, broadcastToTeam, updateMyNotificationPrefs,
 } from '../lib/teams';
 import {
-  Task, createTaskWithWorkflow, listTeamTasks, listMyTasks, deleteTask, attachFileToTask,
+  Task, TaskPriority, TaskStatus, TaskAttachment, createTaskWithWorkflow, listTeamTasks, listMyTasks, deleteTask, attachFileToTask, listTaskAttachments,
   setTeamTelegramChannel, acceptTask, declineTask, submitTask, approveTask, rejectSubmission,
-  checkIn, setMemberActive, expireStaleOffers, reassignMemberTasks, notifyUpcomingTaskDeadlines,
+  checkIn, setMemberActive, expireStaleOffers, reassignMemberTasks, notifyUpcomingTaskDeadlines, spawnRecurringTasks,
+  TaskChecklistItem, listChecklistItems, addChecklistItem, toggleChecklistItem, deleteChecklistItem,
+  TaskHistoryEntry, listTaskHistory,
+  TaskTimeEntry, listTimeEntries, getMyOpenTimeEntry, startTimer, stopTimer, totalTrackedMs,
+  listDependencies, addDependency, removeDependency,
 } from '../lib/tasks';
+import { TaskComment, listTaskComments, postTaskComment, subscribeToTaskComments } from '../lib/taskComments';
+import { TaskTemplate, listTemplates, saveAsTemplate } from '../lib/taskTemplates';
 import { deposit, penalize, transfer, requestWithdrawal, decideWithdrawal, listPendingWithdrawals, listTransactions, Transaction, Withdrawal } from '../lib/wallet';
 import {
   requestLeave, decideLeave, requestResignation, decideResignation,
@@ -35,9 +41,13 @@ import {
 import {
   sendTeamMessage, listTeamMessages, subscribeToTeamMessages, TeamMessage,
   sendDirectMessage, listDirectMessages, subscribeToDirectMessages, listConversations, markDirectMessagesRead, DirectMessage, Conversation,
+  editTeamMessage, deleteTeamMessage, pinTeamMessage, editDirectMessage, deleteDirectMessage,
+  listReactions, subscribeToReactions, toggleReaction, MessageReaction,
+  parseMentions, subscribeToTyping, markTeamChatRead, getTeamChatUnreadCount,
 } from '../lib/chat';
+import { notify } from '../lib/notifications';
 import { requestOwnerTransfer, decideOwnerTransfer, getMyPendingOwnerTransfers, OwnerTransferRequest } from '../lib/ownerTransfer';
-import { listTeamBadges, TeamBadge } from '../lib/teamBadges';
+import { listTeamBadges, TeamBadge, listMemberBadges, MemberBadge } from '../lib/teamBadges';
 import { getCurrentSeasonLeaderboard, closeCurrentSeason, SeasonLeaderboardRow } from '../lib/seasons';
 import { exportTeamReportDocx } from '../lib/teamReport';
 import type { CloudClient, CloudFile, CloudFolder } from '../lib/cloudClient';
@@ -147,11 +157,12 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Users; forOwnerOnly
 
 interface Perms {
   isOwner: boolean;
-  canManage: boolean; // owner or leader (blanket — invites, telegram channel, task creation)
+  canManage: boolean; // owner or leader (blanket — invites, telegram channel)
   canReviewTasks: boolean;
   canManageBank: boolean;
   canManageJoinRequests: boolean;
   canManageVacations: boolean;
+  canManageTasks: boolean; // delegable, in addition to blanket leader access
 }
 
 function SectionHeader({ icon: Icon, title, description }: { icon: typeof Users; title: string; description?: string }) {
@@ -198,13 +209,11 @@ function TeamWorkspace({
     canManageBank: isOwner || !!myMember?.can_manage_bank,
     canManageJoinRequests: isOwner || !!myMember?.can_manage_join_requests,
     canManageVacations: isOwner || !!myMember?.can_manage_vacations,
+    canManageTasks: canManage || !!myMember?.can_manage_tasks,
   };
 
   const visibleSections = SECTIONS.filter(s => !s.forOwnerOnly || isOwner);
-
-  const jumpTo = (id: SectionId) => {
-    document.getElementById(`team-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
+  const [activeSection, setActiveSection] = useState<SectionId>('dashboard');
 
   return (
     <div className="space-y-10">
@@ -215,8 +224,10 @@ function TeamWorkspace({
             <button
               key={s.id}
               type="button"
-              onClick={() => jumpTo(s.id)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 bg-ink/5 text-ink-muted hover:bg-accent-soft hover:text-accent transition-colors"
+              onClick={() => setActiveSection(s.id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                activeSection === s.id ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-accent-soft hover:text-accent'
+              }`}
             >
               <Icon size={13} /> {s.label}
             </button>
@@ -224,51 +235,67 @@ function TeamWorkspace({
         })}
       </nav>
 
-      <section id="team-section-dashboard" className="scroll-mt-20">
-        <SectionHeader icon={Home} title="Dashboard" description={SECTION_DESCRIPTIONS.dashboard} />
-        <DashboardSection team={team} myMember={myMember} canManage={canManage} members={members} onChanged={onChanged} />
-      </section>
+      {activeSection === 'dashboard' && (
+        <div>
+          <SectionHeader icon={Home} title="Dashboard" description={SECTION_DESCRIPTIONS.dashboard} />
+          <DashboardSection team={team} myMember={myMember} canManage={canManage} members={members} onChanged={onChanged} />
+        </div>
+      )}
 
-      <section id="team-section-tasks" className="scroll-mt-20">
-        <SectionHeader icon={ListTodo} title="Tasks" description={SECTION_DESCRIPTIONS.tasks} />
-        <TasksSection team={team} members={members} canManageTasks={canManage} canReviewTasks={perms.canReviewTasks} myMember={myMember} cc={cc} />
-      </section>
+      {activeSection === 'tasks' && (
+        <div>
+          <SectionHeader icon={ListTodo} title="Tasks" description={SECTION_DESCRIPTIONS.tasks} />
+          <TasksSection team={team} members={members} canManageTasks={perms.canManageTasks} canReviewTasks={perms.canReviewTasks} myMember={myMember} cc={cc} />
+        </div>
+      )}
 
-      <section id="team-section-bank" className="scroll-mt-20">
-        <SectionHeader icon={Wallet} title="Bank" description={SECTION_DESCRIPTIONS.bank} />
-        <BankTab team={team} members={members} myMember={myMember} canManageBank={perms.canManageBank} />
-      </section>
+      {activeSection === 'bank' && (
+        <div>
+          <SectionHeader icon={Wallet} title="Bank" description={SECTION_DESCRIPTIONS.bank} />
+          <BankTab team={team} members={members} myMember={myMember} canManageBank={perms.canManageBank} />
+        </div>
+      )}
 
-      <section id="team-section-chat" className="scroll-mt-20">
-        <SectionHeader icon={MessageCircle} title="Chat" description={SECTION_DESCRIPTIONS.chat} />
-        <ChatSection team={team} members={members} myMember={myMember} />
-      </section>
+      {activeSection === 'chat' && (
+        <div>
+          <SectionHeader icon={MessageCircle} title="Chat" description={SECTION_DESCRIPTIONS.chat} />
+          <ChatSection team={team} members={members} myMember={myMember} isOwner={isOwner} canManage={canManage} onChanged={onChanged} cc={cc} />
+        </div>
+      )}
 
-      <section id="team-section-files" className="scroll-mt-20">
-        <SectionHeader icon={FolderIcon} title="Files" description={SECTION_DESCRIPTIONS.files} />
-        <TeamFilesSection team={team} canManage={canManage} cc={cc} />
-      </section>
+      {activeSection === 'files' && (
+        <div>
+          <SectionHeader icon={FolderIcon} title="Files" description={SECTION_DESCRIPTIONS.files} />
+          <TeamFilesSection team={team} canManage={canManage} cc={cc} />
+        </div>
+      )}
 
-      <section id="team-section-requests" className="scroll-mt-20">
-        <SectionHeader icon={CalendarClock} title="Requests" description={SECTION_DESCRIPTIONS.requests} />
-        <RequestsTab team={team} myMember={myMember} canManageVacations={perms.canManageVacations} canManageJoinRequests={perms.canManageJoinRequests} onChanged={onChanged} />
-      </section>
+      {activeSection === 'requests' && (
+        <div>
+          <SectionHeader icon={CalendarClock} title="Requests" description={SECTION_DESCRIPTIONS.requests} />
+          <RequestsTab team={team} myMember={myMember} canManageVacations={perms.canManageVacations} canManageJoinRequests={perms.canManageJoinRequests} onChanged={onChanged} />
+        </div>
+      )}
 
-      <section id="team-section-roster" className="scroll-mt-20">
-        <SectionHeader icon={Users} title="Roster" description={SECTION_DESCRIPTIONS.roster} />
-        <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} onChanged={onChanged} />
-      </section>
+      {activeSection === 'roster' && (
+        <div>
+          <SectionHeader icon={Users} title="Roster" description={SECTION_DESCRIPTIONS.roster} />
+          <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} onChanged={onChanged} />
+        </div>
+      )}
 
-      <section id="team-section-analytics" className="scroll-mt-20">
-        <SectionHeader icon={BarChart3} title="Analytics" description={SECTION_DESCRIPTIONS.analytics} />
-        <AnalyticsSection team={team} members={members} />
-      </section>
+      {activeSection === 'analytics' && (
+        <div>
+          <SectionHeader icon={BarChart3} title="Analytics" description={SECTION_DESCRIPTIONS.analytics} />
+          <AnalyticsSection team={team} members={members} />
+        </div>
+      )}
 
-      {isOwner && (
-        <section id="team-section-admin" className="scroll-mt-20">
+      {activeSection === 'admin' && isOwner && (
+        <div>
           <SectionHeader icon={ShieldCheck} title="Admin" description={SECTION_DESCRIPTIONS.admin} />
           <AdminSection team={team} members={members} onChanged={onChanged} />
-        </section>
+        </div>
       )}
     </div>
   );
@@ -387,11 +414,12 @@ function MyNotificationPrefsCard({ team, myMember, onChanged }: { team: Team; my
 // Roster
 // ---------------------------------------------------------------------------
 
-const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations'; label: string }[] = [
+const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks'; label: string }[] = [
   { key: 'can_review_tasks', label: 'Review tasks' },
   { key: 'can_manage_bank', label: 'Manage bank' },
   { key: 'can_manage_join_requests', label: 'Manage join requests' },
   { key: 'can_manage_vacations', label: 'Manage vacations' },
+  { key: 'can_manage_tasks', label: 'Create/manage tasks' },
 ];
 
 function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onClose: () => void; onSaved: () => void }) {
@@ -403,6 +431,7 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
     can_manage_bank: member.can_manage_bank,
     can_manage_join_requests: member.can_manage_join_requests,
     can_manage_vacations: member.can_manage_vacations,
+    can_manage_tasks: member.can_manage_tasks,
   });
   const [saving, setSaving] = useState(false);
 
@@ -1118,9 +1147,9 @@ function TeamDirectory() {
             <p className="text-sm text-ink-muted">No public teams yet.</p>
           </GlassCard>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="flex flex-wrap justify-center gap-3">
             {sortedTeams.map(t => (
-              <GlassCard key={t.id} className="overflow-hidden flex flex-col">
+              <GlassCard key={t.id} className="overflow-hidden flex flex-col w-full sm:w-[300px]">
                 {t.join_ad_url && (
                   <div className="w-full aspect-[16/7] overflow-hidden border-b border-hairline bg-ink/[0.03]">
                     <img src={t.join_ad_url} alt="" className="w-full h-full object-cover" />
@@ -1207,9 +1236,24 @@ const STATUS_LABEL: Record<Task['status'], string> = {
   cancelled: 'Cancelled',
 };
 
+const PRIORITY_COLORS: Record<TaskPriority, string> = {
+  urgent: 'bg-danger text-white',
+  high: 'bg-orange-500 text-white',
+  normal: 'bg-ink/10 text-ink-muted',
+  low: 'bg-ink/5 text-ink-faint',
+};
+
+const PRIORITY_RANK: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
 function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team: Team; cc: CloudClient; onChanged: () => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+
+  const reload = () => { listTaskAttachments(task.id).then(setAttachments); };
+  useEffect(reload, [task.id]);
+
+  const submission = attachments.find(a => a.kind === 'submission');
 
   const handleAttach = async (file: File) => {
     if (!team.telegram_channel_id) {
@@ -1219,40 +1263,43 @@ function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team
     setBusy(true);
     const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
     if (result) {
-      await attachFileToTask(task.id, result);
+      await attachFileToTask(task.id, result, 'submission');
       await submitTask(task.id, 'file', result.name);
     }
     setBusy(false);
-    if (result) { swalToast({ icon: 'success', title: 'File submitted' }); onChanged(); }
+    if (result) { swalToast({ icon: 'success', title: 'File submitted' }); reload(); onChanged(); }
   };
 
-  const handleDownload = async () => {
-    if (!team.telegram_channel_id || task.attachment_msg_id === null) return;
-    setBusy(true);
-    await cc.downloadTaskAttachment(team.telegram_channel_id, task.attachment_msg_id, task.attachment_name || 'attachment');
-    setBusy(false);
+  const handleDownload = (a: TaskAttachment) => {
+    cc.downloadTaskAttachment(team.telegram_channel_id, a.msg_id, a.name);
   };
-
-  if (task.attachment_msg_id) {
-    return (
-      <button onClick={handleDownload} disabled={busy} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold">
-        <Paperclip size={11} /> {task.attachment_name || 'Attachment'}
-      </button>
-    );
-  }
 
   return (
-    <>
-      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
-      <button
-        onClick={() => cc.isConnected ? fileInputRef.current?.click() : swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect your Telegram account in Cloud Storage to attach files.' })}
-        disabled={busy}
-        className="text-[11px] text-ink-faint hover:text-accent flex items-center gap-1 font-semibold"
-        title={cc.isConnected ? 'Submit a file' : 'Connect Telegram in Cloud Storage first'}
-      >
-        <Paperclip size={11} /> {busy ? 'Uploading...' : 'Submit file'}
-      </button>
-    </>
+    <div className="flex flex-wrap items-center gap-2">
+      {task.attachment_msg_id && (
+        <button onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, task.attachment_msg_id!, task.attachment_name || 'attachment')} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold">
+          <Paperclip size={11} /> {task.attachment_name || 'Reference'}
+        </button>
+      )}
+      {attachments.map(a => (
+        <button key={a.id} onClick={() => handleDownload(a)} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold">
+          <Paperclip size={11} /> {a.kind === 'reference' ? 'Reference: ' : ''}{a.name}
+        </button>
+      ))}
+      {!submission && (
+        <>
+          <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
+          <button
+            onClick={() => cc.isConnected ? fileInputRef.current?.click() : swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect your Telegram account in Cloud Storage to attach files.' })}
+            disabled={busy}
+            className="text-[11px] text-ink-faint hover:text-accent flex items-center gap-1 font-semibold"
+            title={cc.isConnected ? 'Submit a file' : 'Connect Telegram in Cloud Storage first'}
+          >
+            <Paperclip size={11} /> {busy ? 'Uploading...' : 'Submit file'}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1336,11 +1383,67 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
   const [reward, setReward] = useState('');
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<{ msgId: number; name: string; size: number } | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const [priority, setPriority] = useState<TaskPriority>('normal');
+  const [tagInput, setTagInput] = useState('');
+  const [tags, setTags] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all');
+  const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all');
+  const [sortBy, setSortBy] = useState<'created' | 'due' | 'priority'>('created');
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [templateId, setTemplateId] = useState('');
+  const [recurrence, setRecurrence] = useState<'none' | 'daily' | 'weekly' | 'monthly'>('none');
+
+  useEffect(() => { if (canManageTasks) listTemplates(team.id).then(setTemplates); }, [team.id, canManageTasks]);
+
+  const applyTemplate = (id: string) => {
+    setTemplateId(id);
+    const t = templates.find(x => x.id === id);
+    if (!t) return;
+    setTitle(t.title); setDescription(t.description); setJobTypes(t.job_types);
+    setReward(t.reward != null ? String(t.reward) : ''); setPriority(t.priority); setTags(t.tags);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!title.trim()) { swal({ icon: 'error', title: 'Add a title first' }); return; }
+    const { value: name } = await swal({ title: 'Template name', input: 'text', showCancelButton: true });
+    if (!name) return;
+    const error = await saveAsTemplate({ teamId: team.id, name, title: title.trim(), description: description.trim(), jobTypes, reward: reward ? Number(reward) : null, priority, tags });
+    if (error) { swal({ icon: 'error', title: 'Could not save template', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Template saved' });
+    listTemplates(team.id).then(setTemplates);
+  };
+
+  const addTag = () => {
+    const t = tagInput.trim();
+    if (t && !tags.includes(t)) setTags(prev => [...prev, t]);
+    setTagInput('');
+  };
+
+  const handleAttachReference = async (file: File) => {
+    if (!team.telegram_channel_id) {
+      swal({ icon: 'error', title: 'No Channel Set', text: 'Set the team Telegram channel first.' });
+      return;
+    }
+    if (!cc.isConnected) {
+      swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect your Telegram account in Cloud Storage to attach files.' });
+      return;
+    }
+    setAttaching(true);
+    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    setAttaching(false);
+    if (result) setAttachment(result);
+  };
 
   const refresh = async () => {
     setLoading(true);
     await expireStaleOffers(team.id);
     await notifyUpcomingTaskDeadlines(team.id);
+    if (canManageTasks) await spawnRecurringTasks(team.id);
     setTasks(canManageTasks ? await listTeamTasks(team.id) : await listMyTasks(team.id));
     setLoading(false);
   };
@@ -1360,10 +1463,11 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
     const error = await createTaskWithWorkflow({
       teamId: team.id, title: title.trim(), description: description.trim(),
       jobTypes, dueDate: dueDate || null, reward: reward ? Number(reward) : undefined,
+      attachment: attachment ?? undefined, priority, tags, recurrence,
     });
     setCreating(false);
     if (error) { swal({ icon: 'error', title: 'Could not create task', text: error }); return; }
-    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setReward('');
+    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setReward(''); setAttachment(null); setPriority('normal'); setTags([]); setTagInput(''); setTemplateId(''); setRecurrence('none');
     swalToast({ icon: 'success', title: 'Task created and auto-assigned' });
     refresh();
   };
@@ -1376,6 +1480,19 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
     swalToast({ icon: 'success', title: successTitle });
     refresh();
   };
+
+  let filteredTasks = tasks;
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    filteredTasks = filteredTasks.filter(t => t.title.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q) || t.tags?.some(tag => tag.toLowerCase().includes(q)));
+  }
+  if (statusFilter !== 'all') filteredTasks = filteredTasks.filter(t => t.status === statusFilter);
+  if (priorityFilter !== 'all') filteredTasks = filteredTasks.filter(t => t.priority === priorityFilter);
+  filteredTasks = [...filteredTasks].sort((a, b) => {
+    if (sortBy === 'due') return (a.due_date ? new Date(a.due_date).getTime() : Infinity) - (b.due_date ? new Date(b.due_date).getTime() : Infinity);
+    if (sortBy === 'priority') return PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
 
   const handleDelete = async (id: string) => {
     const result = await swal({ icon: 'warning', title: 'Delete this task?', showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
@@ -1404,6 +1521,12 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
       <div className="p-6 space-y-4">
         {canManageTasks && (
           <div className="space-y-2 pb-4 border-b border-hairline">
+            {templates.length > 0 && (
+              <select value={templateId} onChange={e => applyTemplate(e.target.value)} className="w-full text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+                <option value="">Start from a template...</option>
+                {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            )}
             <Input placeholder="Task title" value={title} onChange={(e) => setTitle(e.target.value)} />
             <Textarea placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
             <div className="flex flex-wrap gap-1.5">
@@ -1422,27 +1545,104 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
               <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
               <Input type="number" step="0.01" placeholder="Reward ($, optional)" value={reward} onChange={(e) => setReward(e.target.value)} />
             </div>
-            <Button onClick={handleCreate} disabled={creating} className="w-full">
-              <Plus size={14} /> {creating ? 'Creating...' : 'Create Task'}
-            </Button>
+            <div className="flex flex-wrap gap-1.5">
+              {(['low', 'normal', 'high', 'urgent'] as TaskPriority[]).map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPriority(p)}
+                  className={`text-[10px] font-semibold px-2 py-1 rounded-full border transition-colors capitalize ${priority === p ? PRIORITY_COLORS[p] + ' border-transparent' : 'border-hairline text-ink-muted hover:border-accent/40'}`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            <select value={recurrence} onChange={e => setRecurrence(e.target.value as typeof recurrence)} className="w-full text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+              <option value="none">Does not repeat</option>
+              <option value="daily">Repeats daily</option>
+              <option value="weekly">Repeats weekly</option>
+              <option value="monthly">Repeats monthly</option>
+            </select>
+            <div className="flex gap-2">
+              <Input placeholder="Add a tag..." value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTag())} className="flex-1" />
+              <Button type="button" variant="secondary" size="sm" onClick={addTag}>Add</Button>
+            </div>
+            {tags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {tags.map(t => (
+                  <span key={t} className="text-[10px] font-semibold px-2 py-1 rounded-full bg-ink/5 text-ink-muted flex items-center gap-1">
+                    {t} <button type="button" onClick={() => setTags(prev => prev.filter(x => x !== t))} className="hover:text-danger">✕</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <input ref={attachmentInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleAttachReference(f); }} />
+            {attachment ? (
+              <div className="flex items-center justify-between gap-2 text-[11px] text-ink-muted px-1">
+                <span className="flex items-center gap-1 truncate"><Paperclip size={11} /> {attachment.name}</span>
+                <button type="button" onClick={() => setAttachment(null)} className="text-ink-faint hover:text-danger shrink-0">Remove</button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={attaching}
+                className="text-[11px] text-ink-faint hover:text-accent flex items-center gap-1 font-semibold px-1"
+              >
+                <Paperclip size={11} /> {attaching ? 'Uploading...' : 'Attach reference file (optional)'}
+              </button>
+            )}
+            <div className="flex gap-2">
+              <Button onClick={handleCreate} disabled={creating} className="flex-1">
+                <Plus size={14} /> {creating ? 'Creating...' : 'Create Task'}
+              </Button>
+              <Button variant="secondary" onClick={handleSaveTemplate} disabled={creating}>Save as Template</Button>
+            </div>
           </div>
         )}
 
+        <div className="space-y-2 pb-3 border-b border-hairline">
+          <Input placeholder="Search tasks..." value={search} onChange={e => setSearch(e.target.value)} />
+          <div className="flex flex-wrap gap-1.5 items-center">
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as TaskStatus | 'all')} className="text-[11px] px-2 py-1 rounded-lg border border-hairline bg-transparent text-ink">
+              <option value="all">All statuses</option>
+              {Object.entries(STATUS_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <select value={priorityFilter} onChange={e => setPriorityFilter(e.target.value as TaskPriority | 'all')} className="text-[11px] px-2 py-1 rounded-lg border border-hairline bg-transparent text-ink">
+              <option value="all">All priorities</option>
+              {(['urgent', 'high', 'normal', 'low'] as TaskPriority[]).map(p => <option key={p} value={p} className="capitalize">{p}</option>)}
+            </select>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value as 'created' | 'due' | 'priority')} className="text-[11px] px-2 py-1 rounded-lg border border-hairline bg-transparent text-ink">
+              <option value="created">Sort: Newest</option>
+              <option value="due">Sort: Due date</option>
+              <option value="priority">Sort: Priority</option>
+            </select>
+          </div>
+        </div>
+
         <div className="space-y-2">
-          {tasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3">{canManageTasks ? 'No tasks yet.' : 'No tasks assigned to you.'}</p>}
-          {tasks.map(t => {
+          {filteredTasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3">{canManageTasks ? 'No tasks match.' : 'No tasks assigned to you.'}</p>}
+          {filteredTasks.map(t => {
             const isMine = myMember && t.assignee_id === myMember.user_id;
             return (
               <div key={t.id} className={`p-3 rounded-xl border transition-colors ${t.status === 'done' || t.status === 'cancelled' ? 'border-hairline bg-ink/[0.02]' : 'border-hairline hover:border-accent/20'}`}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className={`text-sm font-semibold truncate ${t.status === 'done' ? 'text-ink-faint line-through' : 'text-ink'}`}>{t.title}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className={`text-sm font-semibold truncate ${t.status === 'done' ? 'text-ink-faint line-through' : 'text-ink'}`}>{t.title}</p>
+                      {t.priority !== 'normal' && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full capitalize ${PRIORITY_COLORS[t.priority]}`}>{t.priority}</span>}
+                    </div>
                     {t.description && <p className="text-xs text-ink-muted mt-0.5 whitespace-pre-line">{t.description}</p>}
                     <p className="text-[10px] text-ink-faint mt-1 flex flex-wrap items-center gap-x-2">
                       {canManageTasks && <span>{t.assignee?.name || 'Unassigned'}</span>}
                       {t.reward != null && <span>${t.reward}</span>}
                       {t.job_types?.length > 0 && <span>{t.job_types.join(', ')}</span>}
                     </p>
+                    {t.tags?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {t.tags.map(tag => <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded-full bg-ink/5 text-ink-faint">{tag}</span>)}
+                      </div>
+                    )}
                   </div>
                   {canManageTasks && (
                     <button onClick={() => handleDelete(t.id)} disabled={busyId === t.id} aria-label="Delete task" className="p-1.5 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors shrink-0">
@@ -1457,7 +1657,12 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
                       <span className="text-[10px] text-ink-faint flex items-center gap-1"><CalendarClock size={11} /> {formatDue(t.due_date)}</span>
                     )}
                     <span className="text-[10px] font-semibold text-ink-faint">{STATUS_LABEL[t.status]}</span>
-                    {t.status === 'in_progress' && <TaskAttachmentControl task={t} team={team} cc={cc} onChanged={refresh} />}
+                    {t.status !== 'todo' && <TaskAttachmentControl task={t} team={team} cc={cc} onChanged={refresh} />}
+                    {t.status === 'todo' && t.attachment_msg_id && (
+                      <button onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, t.attachment_msg_id!, t.attachment_name || 'attachment')} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold">
+                        <Paperclip size={11} /> {t.attachment_name || 'Reference'}
+                      </button>
+                    )}
                   </div>
                   {t.status === 'done' && (
                     <span className="text-[10px] font-semibold text-success flex items-center gap-1"><Check size={11} /> {t.rating ? `${t.rating}★` : 'Done'}</span>
@@ -1476,12 +1681,175 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
                 {canReviewTasks && t.status === 'under_review' && (
                   <RateSubmissionControl task={t} onChanged={refresh} />
                 )}
+
+                <button
+                  onClick={() => setExpandedId(id => id === t.id ? null : t.id)}
+                  className="text-[10px] text-ink-faint hover:text-accent font-semibold mt-2"
+                >
+                  {expandedId === t.id ? 'Hide details' : 'Checklist, comments & history'}
+                </button>
+                {expandedId === t.id && <TaskDetailPanel task={t} canManage={canManageTasks || !!isMine} allTasks={tasks} />}
               </div>
             );
           })}
         </div>
       </div>
     </GlassCard>
+  );
+}
+
+function TaskDetailPanel({ task, canManage, allTasks }: { task: Task; canManage: boolean; allTasks: Task[] }) {
+  const [checklist, setChecklist] = useState<TaskChecklistItem[]>([]);
+  const [newItem, setNewItem] = useState('');
+  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [commentBody, setCommentBody] = useState('');
+  const [history, setHistory] = useState<TaskHistoryEntry[]>([]);
+  const [timeEntries, setTimeEntries] = useState<TaskTimeEntry[]>([]);
+  const [openEntry, setOpenEntry] = useState<TaskTimeEntry | null>(null);
+  const [, forceTick] = useState(0);
+  const [dependsOn, setDependsOn] = useState<string[]>([]);
+  const [depPick, setDepPick] = useState('');
+
+  const reload = () => {
+    listChecklistItems(task.id).then(setChecklist);
+    listTaskComments(task.id).then(setComments);
+    listTaskHistory(task.id).then(setHistory);
+    listTimeEntries(task.id).then(setTimeEntries);
+    getMyOpenTimeEntry(task.id).then(setOpenEntry);
+    listDependencies(task.id).then(rows => setDependsOn(rows.map(r => r.depends_on_task_id)));
+  };
+
+  const handleAddDependency = async () => {
+    if (!depPick) return;
+    await addDependency(task.id, depPick);
+    setDepPick('');
+    reload();
+  };
+  useEffect(() => {
+    reload();
+    const unsubscribe = subscribeToTaskComments(task.id, c => setComments(prev => upsertById(prev, c)));
+    return unsubscribe;
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!openEntry) return;
+    const interval = setInterval(() => forceTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [openEntry]);
+
+  const handleToggleTimer = async () => {
+    if (openEntry) {
+      await stopTimer(openEntry.id);
+    } else {
+      await startTimer(task.id);
+    }
+    reload();
+  };
+
+  const formatDuration = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+  };
+
+  const handleAddItem = async () => {
+    if (!newItem.trim()) return;
+    await addChecklistItem(task.id, newItem.trim(), checklist.length);
+    setNewItem('');
+    reload();
+  };
+
+  const handlePostComment = async () => {
+    if (!commentBody.trim()) return;
+    await postTaskComment(task.id, commentBody.trim());
+    setCommentBody('');
+  };
+
+  const done = checklist.filter(c => c.done).length;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-hairline space-y-3">
+      <div>
+        <p className="text-[10px] font-semibold text-accent mb-1">Checklist {checklist.length > 0 && `(${done}/${checklist.length})`}</p>
+        <div className="space-y-1">
+          {checklist.map(item => (
+            <div key={item.id} className="flex items-center gap-2">
+              <input type="checkbox" checked={item.done} onChange={e => { toggleChecklistItem(item.id, e.target.checked); reload(); }} className="accent-[var(--color-accent)]" />
+              <span className={`text-xs flex-1 ${item.done ? 'line-through text-ink-faint' : 'text-ink'}`}>{item.label}</span>
+              {canManage && <button onClick={() => { deleteChecklistItem(item.id); reload(); }} className="text-ink-faint hover:text-danger text-xs">✕</button>}
+            </div>
+          ))}
+        </div>
+        {canManage && (
+          <div className="flex gap-1.5 mt-1.5">
+            <Input placeholder="Add checklist item..." value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddItem()} className="flex-1 text-xs" />
+            <Button size="sm" variant="secondary" onClick={handleAddItem}>Add</Button>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="text-[10px] font-semibold text-accent mb-1">Comments</p>
+        <div className="space-y-1.5 max-h-40 overflow-y-auto">
+          {comments.map(c => (
+            <div key={c.id} className="flex items-start gap-1.5">
+              <ChatAvatar name={c.author?.name || 'Member'} avatar={c.author?.avatar} size={18} />
+              <div className="min-w-0"><span className="text-[10px] font-semibold text-accent">{c.author?.name}</span> <span className="text-xs text-ink">{c.body}</span></div>
+            </div>
+          ))}
+          {comments.length === 0 && <p className="text-[10px] text-ink-faint">No comments yet.</p>}
+        </div>
+        <div className="flex gap-1.5 mt-1.5">
+          <Input placeholder="Add a comment..." value={commentBody} onChange={e => setCommentBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePostComment()} className="flex-1 text-xs" />
+          <Button size="sm" variant="secondary" onClick={handlePostComment}>Post</Button>
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-semibold text-accent">Time Tracked: {formatDuration(totalTrackedMs(timeEntries))}</p>
+          <Button size="sm" variant={openEntry ? 'danger' : 'secondary'} onClick={handleToggleTimer}>{openEntry ? 'Stop Timer' : 'Start Timer'}</Button>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-[10px] font-semibold text-accent mb-1">Depends On</p>
+        <div className="space-y-1">
+          {dependsOn.map(id => {
+            const dep = allTasks.find(t => t.id === id);
+            return (
+              <div key={id} className="flex items-center justify-between text-xs">
+                <span className={dep?.status === 'done' ? 'text-ink-faint line-through' : 'text-ink'}>{dep?.title || 'Unknown task'}</span>
+                {canManage && <button onClick={() => { removeDependency(task.id, id); reload(); }} className="text-ink-faint hover:text-danger">✕</button>}
+              </div>
+            );
+          })}
+          {dependsOn.length === 0 && <p className="text-[10px] text-ink-faint">No dependencies.</p>}
+        </div>
+        {canManage && (
+          <div className="flex gap-1.5 mt-1.5">
+            <select value={depPick} onChange={e => setDepPick(e.target.value)} className="flex-1 text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+              <option value="">Select a task...</option>
+              {allTasks.filter(t => t.id !== task.id && !dependsOn.includes(t.id)).map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+            </select>
+            <Button size="sm" variant="secondary" onClick={handleAddDependency}>Add</Button>
+          </div>
+        )}
+      </div>
+
+      {history.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-accent mb-1">History</p>
+          <div className="space-y-0.5">
+            {history.map(h => (
+              <p key={h.id} className="text-[10px] text-ink-faint">{new Date(h.created_at).toLocaleString()} · {h.event}{h.detail ? ` — ${h.detail}` : ''}</p>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2005,11 +2373,13 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
 // Chat (team channel + DMs)
 // ---------------------------------------------------------------------------
 
-function ChatSection({ team, members, myMember }: { team: Team; members: TeamMember[]; myMember: TeamMember | null }) {
+function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, cc }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; isOwner: boolean; canManage: boolean; onChanged: () => void; cc: CloudClient }) {
   const [mode, setMode] = useState<'team' | 'dm'>('team');
   const [activePartner, setActivePartner] = useState<string | null>(null);
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
 
   const partnerMember = members.find(m => m.user_id === activePartner);
+  const profileMember = members.find(m => m.user_id === profileUserId);
 
   return (
     <GlassCard className="overflow-hidden h-[70vh] flex flex-col">
@@ -2030,51 +2400,285 @@ function ChatSection({ team, members, myMember }: { team: Team; members: TeamMem
         </button>
       </div>
 
-      {mode === 'team' && <TeamChatThread team={team} />}
+      {mode === 'team' && <TeamChatThread team={team} members={members} myMember={myMember} canManage={canManage} onOpenProfile={setProfileUserId} cc={cc} />}
       {mode === 'dm' && !activePartner && <ConversationList team={team} members={members} myMember={myMember} onSelect={setActivePartner} />}
       {mode === 'dm' && activePartner && (
-        <DirectThread team={team} partnerId={activePartner} partnerName={partnerMember?.profile?.name || partnerMember?.invited_email || 'Member'} onBack={() => setActivePartner(null)} />
+        <DirectThread
+          team={team}
+          partnerId={activePartner}
+          partnerName={partnerMember?.profile?.name || partnerMember?.invited_email || 'Member'}
+          partnerAvatar={partnerMember?.profile?.avatar || ''}
+          onBack={() => setActivePartner(null)}
+          onOpenProfile={setProfileUserId}
+          cc={cc}
+        />
+      )}
+
+      {profileMember && (
+        <MemberProfileModal
+          team={team}
+          member={profileMember}
+          canManage={canManage}
+          isOwner={isOwner}
+          onClose={() => setProfileUserId(null)}
+          onChanged={onChanged}
+        />
       )}
     </GlassCard>
   );
 }
 
-function TeamChatThread({ team }: { team: Team }) {
+function ChatAvatar({ name, avatar, size = 28 }: { name: string; avatar?: string; size?: number }) {
+  return (
+    <div
+      className="rounded-full overflow-hidden bg-ink/5 border border-hairline shrink-0 flex items-center justify-center"
+      style={{ width: size, height: size }}
+    >
+      {avatar ? <img src={avatar} alt="" className="w-full h-full object-cover" /> : <span className="text-[10px] text-ink-faint font-semibold">{(name || '?')[0]?.toUpperCase()}</span>}
+    </div>
+  );
+}
+
+function hydrateSender(msg: TeamMessage, members: TeamMember[]): TeamMessage {
+  if (msg.sender?.name) return msg;
+  const m = members.find(mm => mm.user_id === msg.sender_id);
+  return { ...msg, sender: { name: m?.profile?.name || m?.invited_email || 'Member', avatar: m?.profile?.avatar || '' } };
+}
+
+function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
+  const idx = list.findIndex(x => x.id === item.id);
+  if (idx === -1) return [...list, item];
+  const next = [...list];
+  next[idx] = item;
+  return next;
+}
+
+const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+
+function ReactionBar({ reactions, myUserId, onToggle }: { reactions: MessageReaction[]; myUserId: string | undefined; onToggle: (emoji: string) => void }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const grouped = new Map<string, MessageReaction[]>();
+  for (const r of reactions) {
+    const list = grouped.get(r.emoji) ?? [];
+    list.push(r);
+    grouped.set(r.emoji, list);
+  }
+  return (
+    <div className="flex items-center gap-1 flex-wrap mt-1">
+      {Array.from(grouped.entries()).map(([emoji, list]) => (
+        <button
+          key={emoji}
+          type="button"
+          onClick={() => onToggle(emoji)}
+          className={`text-[11px] px-1.5 py-0.5 rounded-full border transition-colors ${
+            list.some(r => r.user_id === myUserId) ? 'bg-accent-soft border-accent text-accent' : 'bg-ink/5 border-hairline text-ink-muted hover:border-accent/40'
+          }`}
+        >
+          {emoji} {list.length}
+        </button>
+      ))}
+      <div className="relative">
+        <button type="button" onClick={() => setPickerOpen(o => !o)} className="text-[11px] px-1.5 py-0.5 rounded-full border border-hairline text-ink-faint hover:border-accent/40">+</button>
+        {pickerOpen && (
+          <div className="absolute z-10 top-full left-0 mt-1 flex gap-1 p-1.5 rounded-xl bg-surface border border-hairline shadow-lg">
+            {QUICK_EMOJIS.map(e => (
+              <button key={e} type="button" onClick={() => { onToggle(e); setPickerOpen(false); }} className="text-sm hover:scale-125 transition-transform">{e}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc }: {
+  team: Team; members: TeamMember[]; myMember: TeamMember | null; canManage: boolean; onOpenProfile: (userId: string) => void; cc: CloudClient;
+}) {
   const [messages, setMessages] = useState<TeamMessage[]>([]);
+  const [reactions, setReactions] = useState<MessageReaction[]>([]);
   const [body, setBody] = useState('');
+  const [replyTo, setReplyTo] = useState<TeamMessage | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [typingLabel, setTypingLabel] = useState('');
+  const [attaching, setAttaching] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const typingRef = useRef<ReturnType<typeof subscribeToTyping> | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { session } = useTeamAuth();
+  const myUserId = session?.user.id;
+
+  const reload = () => { listTeamMessages(team.id, search ? { search } : undefined).then(setMessages); };
 
   useEffect(() => {
     let mounted = true;
-    listTeamMessages(team.id).then(msgs => { if (mounted) setMessages(msgs); });
-    const unsubscribe = subscribeToTeamMessages(team.id, msg => setMessages(prev => [...prev, msg]));
-    return () => { mounted = false; unsubscribe(); };
-  }, [team.id]);
+    reload();
+    listReactions(team.id, 'team_messages').then(r => { if (mounted) setReactions(r); });
+    const unsubMsgs = subscribeToTeamMessages(team.id, msg => setMessages(prev => upsertById(prev, hydrateSender(msg, members))));
+    const unsubReactions = subscribeToReactions(team.id, () => listReactions(team.id, 'team_messages').then(setReactions));
+    typingRef.current = subscribeToTyping(team.id, (userId, name) => {
+      if (userId === myUserId) return;
+      setTypingLabel(`${name} is typing...`);
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => setTypingLabel(''), 3000);
+    });
+    return () => { mounted = false; unsubMsgs(); unsubReactions(); typingRef.current?.unsubscribe(); };
+  }, [team.id, members, search]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
+
+  useEffect(() => {
+    if (messages.length > 0 && myUserId) markTeamChatRead(team.id, messages[messages.length - 1].id);
+  }, [messages.length, team.id, myUserId]);
+
+  const pinned = messages.filter(m => m.pinned && !m.deleted).slice(0, 3);
+  const messageById = new Map(messages.map(m => [m.id, m]));
+
+  const handleBodyChange = (v: string) => {
+    setBody(v);
+    const atMatch = v.match(/@([\w.-]*)$/);
+    setMentionQuery(atMatch ? atMatch[1] : null);
+    if (myMember?.profile?.name) typingRef.current?.notifyTyping(myUserId || '', myMember.profile.name);
+  };
+
+  const insertMention = (name: string) => {
+    setBody(b => b.replace(/@([\w.-]*)$/, `@${name.replace(/\s+/g, '')} `));
+    setMentionQuery(null);
+  };
+
+  const handleAttach = async (file: File) => {
+    if (!team.telegram_channel_id || !cc.isConnected) {
+      swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect Telegram and set the team channel to send files in chat.' });
+      return;
+    }
+    setAttaching(true);
+    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    setAttaching(false);
+    if (result) {
+      await sendTeamMessage(team.id, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      setBody(''); setReplyTo(null);
+    }
+  };
 
   const handleSend = async () => {
     if (!body.trim()) return;
     const text = body.trim();
-    setBody('');
-    await sendTeamMessage(team.id, text);
+    setBody(''); setMentionQuery(null);
+    if (editingId) {
+      await editTeamMessage(editingId, text);
+      setEditingId(null);
+      return;
+    }
+    await sendTeamMessage(team.id, text, { replyToId: replyTo?.id });
+    setReplyTo(null);
+
+    const mentioned = parseMentions(text, members);
+    for (const userId of mentioned) {
+      notify(userId, 'Mentioned you', `${myMember?.profile?.name || 'Someone'} mentioned you: "${text.slice(0, 80)}"`);
+    }
+    const others = members.filter(m => m.status === 'active' && m.user_id && m.user_id !== myUserId && !mentioned.includes(m.user_id!));
+    for (const m of others) {
+      if (m.notification_prefs?.chat !== false) notify(m.user_id!, `New message in ${team.name}`, text.slice(0, 80));
+    }
   };
+
+  const mentionCandidates = mentionQuery !== null
+    ? members.filter(m => m.status === 'active' && (m.profile?.name || m.invited_email).toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 5)
+    : [];
+
+  const reactionsFor = (id: string) => reactions.filter(r => r.message_id === id);
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      {pinned.length > 0 && (
+        <div className="px-3 py-2 border-b border-hairline bg-accent-soft/40 space-y-1 shrink-0">
+          {pinned.map(p => (
+            <p key={p.id} className="text-[11px] text-ink-muted truncate flex items-center gap-1">📌 <span className="font-semibold">{p.sender?.name}:</span> {p.body}</p>
+          ))}
+        </div>
+      )}
+      <div className="px-3 py-2 border-b border-hairline shrink-0">
+        <Input placeholder="Search messages..." value={search} onChange={e => setSearch(e.target.value)} className="text-xs" />
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
-        {messages.map(m => (
-          <div key={m.id} className="p-2.5 rounded-xl bg-ink/[0.03] max-w-md">
-            <p className="text-[10px] font-semibold text-accent">{m.sender?.name || 'Member'}</p>
-            <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
-          </div>
-        ))}
+        {messages.map(m => {
+          const replied = m.reply_to_id ? messageById.get(m.reply_to_id) : null;
+          const isMine = m.sender_id === myUserId;
+          return (
+            <div key={m.id} className="flex items-start gap-2 max-w-md group">
+              <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="shrink-0">
+                <ChatAvatar name={m.sender?.name || 'Member'} avatar={m.sender?.avatar} />
+              </button>
+              <div className="min-w-0 flex-1">
+                <div className="p-2.5 rounded-xl bg-ink/[0.03] min-w-0">
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="text-[10px] font-semibold text-accent hover:underline">{m.sender?.name || 'Member'}</button>
+                    {m.pinned && <span className="text-[9px] text-ink-faint">📌</span>}
+                    {m.edited_at && !m.deleted && <span className="text-[9px] text-ink-faint">(edited)</span>}
+                    <span className="text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity ml-auto flex gap-1.5">
+                      {!m.deleted && <button onClick={() => setReplyTo(m)} className="hover:text-accent">Reply</button>}
+                      {!m.deleted && isMine && <button onClick={() => { setEditingId(m.id); setBody(m.body); }} className="hover:text-accent">Edit</button>}
+                      {!m.deleted && isMine && <button onClick={() => deleteTeamMessage(m.id)} className="hover:text-danger">Delete</button>}
+                      {!m.deleted && canManage && <button onClick={() => pinTeamMessage(m.id, !m.pinned)} className="hover:text-accent">{m.pinned ? 'Unpin' : 'Pin'}</button>}
+                    </span>
+                  </div>
+                  {replied && (
+                    <div className="mt-1 mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
+                      {replied.sender?.name}: {replied.deleted ? 'Message deleted' : replied.body}
+                    </div>
+                  )}
+                  {m.deleted ? (
+                    <p className="text-sm text-ink-faint italic">This message was deleted</p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+                      {m.attachment_msg_id && (
+                        <button
+                          onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                          className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
+                        >
+                          <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {!m.deleted && <ReactionBar reactions={reactionsFor(m.id)} myUserId={myUserId} onToggle={emoji => toggleReaction(team.id, 'team_messages', m.id, emoji)} />}
+              </div>
+            </div>
+          );
+        })}
         <div ref={bottomRef} />
       </div>
-      <div className="p-3 border-t border-hairline flex gap-2 shrink-0">
-        <Input placeholder="Message the team..." value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
-        <Button onClick={handleSend}><Send size={14} /></Button>
+      {typingLabel && <p className="px-3 text-[11px] text-ink-faint italic shrink-0">{typingLabel}</p>}
+      {replyTo && (
+        <div className="px-3 py-1.5 border-t border-hairline bg-ink/[0.02] flex items-center justify-between gap-2 shrink-0">
+          <p className="text-[11px] text-ink-muted truncate">Replying to <span className="font-semibold">{replyTo.sender?.name}</span>: {replyTo.body}</p>
+          <button onClick={() => setReplyTo(null)} className="text-ink-faint hover:text-danger text-xs shrink-0">✕</button>
+        </div>
+      )}
+      <div className="p-3 border-t border-hairline shrink-0 relative">
+        {mentionCandidates.length > 0 && (
+          <div className="absolute bottom-full left-3 mb-1 flex flex-col rounded-xl bg-surface border border-hairline shadow-lg overflow-hidden">
+            {mentionCandidates.map(m => (
+              <button key={m.id} onClick={() => insertMention(m.profile?.name || m.invited_email)} className="px-3 py-1.5 text-xs text-left hover:bg-accent-soft">
+                {m.profile?.name || m.invited_email}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching} className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+            <Paperclip size={16} />
+          </button>
+          <Input placeholder={editingId ? 'Edit message...' : 'Message the team...'} value={body} onChange={e => handleBodyChange(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+          <Button onClick={handleSend}><Send size={14} /></Button>
+        </div>
       </div>
     </>
   );
@@ -2096,8 +2700,9 @@ function ConversationList({ team, members, myMember, onSelect }: { team: Team; m
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
       {conversations.map(c => (
-        <button key={c.otherUserId} onClick={() => onSelect(c.otherUserId)} className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
-          <div className="min-w-0">
+        <button key={c.otherUserId} onClick={() => onSelect(c.otherUserId)} className="w-full flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
+          <ChatAvatar name={c.otherName} avatar={c.otherAvatar} />
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-ink truncate">{c.otherName}</p>
             <p className="text-xs text-ink-faint truncate">{c.lastMessage}</p>
           </div>
@@ -2105,7 +2710,8 @@ function ConversationList({ team, members, myMember, onSelect }: { team: Team; m
         </button>
       ))}
       {others.filter(m => !contacted.has(m.user_id!)).map(m => (
-        <button key={m.id} onClick={() => onSelect(m.user_id!)} className="w-full flex items-center gap-2 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
+        <button key={m.id} onClick={() => onSelect(m.user_id!)} className="w-full flex items-center gap-2.5 p-2.5 rounded-xl hover:bg-ink/5 transition-colors text-left">
+          <ChatAvatar name={m.profile?.name || m.invited_email} avatar={m.profile?.avatar} />
           <p className="text-sm text-ink">{m.profile?.name || m.invited_email}</p>
         </button>
       ))}
@@ -2114,28 +2720,63 @@ function ConversationList({ team, members, myMember, onSelect }: { team: Team; m
   );
 }
 
-function DirectThread({ team, partnerId, partnerName, onBack }: { team: Team; partnerId: string; partnerName: string; onBack: () => void }) {
+function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onOpenProfile, cc }: {
+  team: Team; partnerId: string; partnerName: string; partnerAvatar?: string; onBack: () => void; onOpenProfile: (userId: string) => void; cc: CloudClient;
+}) {
   const [messages, setMessages] = useState<DirectMessage[]>([]);
+  const [reactions, setReactions] = useState<MessageReaction[]>([]);
   const [body, setBody] = useState('');
+  const [replyTo, setReplyTo] = useState<DirectMessage | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { session } = useTeamAuth();
+  const myUserId = session?.user.id;
 
   useEffect(() => {
     let mounted = true;
     listDirectMessages(team.id, partnerId).then(msgs => { if (mounted) setMessages(msgs); });
+    listReactions(team.id, 'direct_messages').then(r => { if (mounted) setReactions(r); });
     markDirectMessagesRead(team.id, partnerId);
     const unsubscribe = subscribeToDirectMessages(team.id, msg => {
-      if (msg.sender_id === partnerId || msg.receiver_id === partnerId) setMessages(prev => [...prev, msg]);
+      if (msg.sender_id === partnerId || msg.receiver_id === partnerId) setMessages(prev => upsertById(prev, msg));
     });
-    return () => { mounted = false; unsubscribe(); };
+    const unsubReactions = subscribeToReactions(team.id, () => listReactions(team.id, 'direct_messages').then(setReactions));
+    return () => { mounted = false; unsubscribe(); unsubReactions(); };
   }, [team.id, partnerId]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length]);
+
+  const messageById = new Map(messages.map(m => [m.id, m]));
+  const reactionsFor = (id: string) => reactions.filter(r => r.message_id === id);
+
+  const handleAttach = async (file: File) => {
+    if (!team.telegram_channel_id || !cc.isConnected) {
+      swal({ icon: 'info', title: 'Connect Telegram', text: 'Connect Telegram and set the team channel to send files in chat.' });
+      return;
+    }
+    setAttaching(true);
+    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    setAttaching(false);
+    if (result) {
+      await sendDirectMessage(team.id, partnerId, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      setBody(''); setReplyTo(null);
+    }
+  };
 
   const handleSend = async () => {
     if (!body.trim()) return;
     const text = body.trim();
     setBody('');
-    await sendDirectMessage(team.id, partnerId, text);
+    if (editingId) {
+      await editDirectMessage(editingId, text);
+      setEditingId(null);
+      return;
+    }
+    await sendDirectMessage(team.id, partnerId, text, { replyToId: replyTo?.id });
+    setReplyTo(null);
+    notify(partnerId, `New message from ${session?.user.email || 'a teammate'}`, text.slice(0, 80));
   };
 
   return (
@@ -2144,21 +2785,137 @@ function DirectThread({ team, partnerId, partnerName, onBack }: { team: Team; pa
         <button onClick={onBack} aria-label="Back" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
           <ArrowLeft size={14} />
         </button>
-        <p className="text-sm font-semibold text-ink">{partnerName}</p>
+        <button type="button" onClick={() => onOpenProfile(partnerId)} className="flex items-center gap-2 hover:opacity-80">
+          <ChatAvatar name={partnerName} avatar={partnerAvatar} size={24} />
+          <p className="text-sm font-semibold text-ink">{partnerName}</p>
+        </button>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
-        {messages.map(m => (
-          <div key={m.id} className={`p-2.5 rounded-xl max-w-md ${m.sender_id === partnerId ? 'bg-ink/[0.03]' : 'bg-accent-soft ml-auto'}`}>
-            <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
-          </div>
-        ))}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {messages.map(m => {
+          const replied = m.reply_to_id ? messageById.get(m.reply_to_id) : null;
+          const isMine = m.sender_id !== partnerId;
+          return (
+            <div key={m.id} className={`flex items-end gap-2 max-w-md group ${isMine ? 'ml-auto flex-row-reverse' : ''}`}>
+              <ChatAvatar name={partnerName} avatar={m.sender_id === partnerId ? partnerAvatar : undefined} size={22} />
+              <div className="min-w-0">
+                <div className={`p-2.5 rounded-xl min-w-0 ${m.sender_id === partnerId ? 'bg-ink/[0.03]' : 'bg-accent-soft'}`}>
+                  {(m.edited_at || isMine) && !m.deleted && (
+                    <div className="flex items-center gap-1.5 justify-end mb-0.5">
+                      {m.edited_at && <span className="text-[9px] text-ink-faint">(edited)</span>}
+                      <span className="text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
+                        <button onClick={() => setReplyTo(m)} className="hover:text-accent">Reply</button>
+                        {isMine && <button onClick={() => { setEditingId(m.id); setBody(m.body); }} className="hover:text-accent">Edit</button>}
+                        {isMine && <button onClick={() => deleteDirectMessage(m.id)} className="hover:text-danger">Delete</button>}
+                      </span>
+                    </div>
+                  )}
+                  {replied && (
+                    <div className="mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
+                      {replied.deleted ? 'Message deleted' : replied.body}
+                    </div>
+                  )}
+                  {m.deleted ? (
+                    <p className="text-sm text-ink-faint italic">This message was deleted</p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+                      {m.attachment_msg_id && (
+                        <button
+                          onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                          className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
+                        >
+                          <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+                {!m.deleted && <ReactionBar reactions={reactionsFor(m.id)} myUserId={myUserId} onToggle={emoji => toggleReaction(team.id, 'direct_messages', m.id, emoji)} />}
+              </div>
+            </div>
+          );
+        })}
         <div ref={bottomRef} />
       </div>
+      {replyTo && (
+        <div className="px-3 py-1.5 border-t border-hairline bg-ink/[0.02] flex items-center justify-between gap-2 shrink-0">
+          <p className="text-[11px] text-ink-muted truncate">Replying to: {replyTo.body}</p>
+          <button onClick={() => setReplyTo(null)} className="text-ink-faint hover:text-danger text-xs shrink-0">✕</button>
+        </div>
+      )}
       <div className="p-3 border-t border-hairline flex gap-2 shrink-0">
-        <Input placeholder="Type a message..." value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+        <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
+        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching} className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+          <Paperclip size={16} />
+        </button>
+        <Input placeholder={editingId ? 'Edit message...' : 'Type a message...'} value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
         <Button onClick={handleSend}><Send size={14} /></Button>
       </div>
     </>
+  );
+}
+
+function MemberProfileModal({ team, member, canManage, isOwner, onClose, onChanged }: {
+  team: Team; member: TeamMember; canManage: boolean; isOwner: boolean; onClose: () => void; onChanged: () => void;
+}) {
+  const [badges, setBadges] = useState<MemberBadge[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (member.user_id) listMemberBadges(team.id, member.user_id).then(setBadges); }, [team.id, member.user_id]);
+
+  const withBusy = (fn: () => Promise<string | null>) => async () => {
+    setBusy(true);
+    const error = await fn();
+    setBusy(false);
+    if (error) { swal({ icon: 'error', title: 'Action failed', text: error }); return; }
+    onChanged();
+    onClose();
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Member Profile" size="sm">
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <ChatAvatar name={member.profile?.name || member.invited_email} avatar={member.profile?.avatar} size={52} />
+          <div className="min-w-0">
+            <p className="text-base font-semibold text-ink truncate flex items-center gap-1.5">
+              {member.profile?.name || member.invited_email}
+              {member.role === 'leader' && <Crown size={13} className="text-accent shrink-0" />}
+            </p>
+            <p className="text-xs text-ink-faint">{member.job_title || 'No job title'}{member.priority != null ? ` · P${member.priority}` : ''}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div><p className="text-ink-faint text-xs">Streak</p><p className="font-bold text-ink flex items-center gap-1"><Flame size={13} className="text-accent" /> {member.streak_count} days</p></div>
+          <div><p className="text-ink-faint text-xs">Balance</p><p className="font-bold text-ink">${member.balance.toFixed(2)}</p></div>
+          <div><p className="text-ink-faint text-xs">Status</p><p className="font-semibold text-ink">{member.member_status.replace('_', ' ')}</p></div>
+          <div><p className="text-ink-faint text-xs">Available</p><p className="font-semibold text-ink">{member.is_active ? 'Yes' : 'No'}</p></div>
+        </div>
+
+        {badges.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs text-accent font-semibold">Badges</p>
+            <div className="flex flex-wrap gap-1.5">
+              {badges.map(b => (
+                <span key={b.code} className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-accent-soft text-accent flex items-center gap-1"><Trophy size={11} /> {b.label}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {canManage && isOwner && (
+          <div className="flex gap-2 pt-2 border-t border-hairline">
+            {member.role === 'leader' ? (
+              <Button size="sm" variant="secondary" onClick={withBusy(() => demoteToMember(member.id))} disabled={busy}><ArrowDownCircle size={13} /> Demote</Button>
+            ) : (
+              <Button size="sm" variant="secondary" onClick={withBusy(() => promoteToLeader(member.id))} disabled={busy}><ArrowUpCircle size={13} /> Promote</Button>
+            )}
+            <Button size="sm" variant="danger" onClick={withBusy(() => removeMember(member.id))} disabled={busy}><UserMinus size={13} /> Remove</Button>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

@@ -6,6 +6,13 @@ export interface TeamMessage {
   sender_id: string;
   body: string;
   created_at: string;
+  reply_to_id: string | null;
+  edited_at: string | null;
+  deleted: boolean;
+  pinned: boolean;
+  attachment_msg_id: number | null;
+  attachment_name: string | null;
+  attachment_size: number | null;
   sender?: { name: string; avatar: string } | null;
 }
 
@@ -17,6 +24,12 @@ export interface DirectMessage {
   body: string;
   read: boolean;
   created_at: string;
+  reply_to_id: string | null;
+  edited_at: string | null;
+  deleted: boolean;
+  attachment_msg_id: number | null;
+  attachment_name: string | null;
+  attachment_size: number | null;
 }
 
 export interface Conversation {
@@ -28,21 +41,32 @@ export interface Conversation {
   unread: number;
 }
 
-export async function sendTeamMessage(teamId: string, body: string): Promise<string | null> {
+export interface MessageAttachment { msgId: number; name: string; size: number }
+
+export async function sendTeamMessage(teamId: string, body: string, opts?: { replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
   const { data: userData } = await supabase.auth.getUser();
   const senderId = userData.user?.id;
   if (!senderId) return 'Not signed in.';
-  const { error } = await supabase.from('team_messages').insert({ team_id: teamId, sender_id: senderId, body });
+  const { error } = await supabase.from('team_messages').insert({
+    team_id: teamId, sender_id: senderId, body,
+    reply_to_id: opts?.replyToId ?? null,
+    attachment_msg_id: opts?.attachment?.msgId ?? null,
+    attachment_name: opts?.attachment?.name ?? null,
+    attachment_size: opts?.attachment?.size ?? null,
+  });
   return error ? error.message : null;
 }
 
-export async function listTeamMessages(teamId: string, limit = 100): Promise<TeamMessage[]> {
-  const { data } = await supabase
+export async function listTeamMessages(teamId: string, opts?: { limit?: number; before?: string; search?: string }): Promise<TeamMessage[]> {
+  let query = supabase
     .from('team_messages')
     .select('*, sender:profiles!team_messages_sender_id_fkey(name, avatar)')
     .eq('team_id', teamId)
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(opts?.limit ?? 100);
+  if (opts?.before) query = query.lt('created_at', opts.before);
+  if (opts?.search) query = query.ilike('body', `%${opts.search}%`);
+  const { data } = await query;
   return ((data as unknown as TeamMessage[]) ?? []).reverse();
 }
 
@@ -51,15 +75,38 @@ export function subscribeToTeamMessages(teamId: string, onMessage: (msg: TeamMes
     .channel(`team_messages:${teamId}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'team_messages', filter: `team_id=eq.${teamId}` },
       payload => onMessage(payload.new as TeamMessage))
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'team_messages', filter: `team_id=eq.${teamId}` },
+      payload => onMessage(payload.new as TeamMessage))
     .subscribe();
   return () => { supabase.removeChannel(channel); };
 }
 
-export async function sendDirectMessage(teamId: string, toUserId: string, body: string): Promise<string | null> {
+export async function editTeamMessage(id: string, body: string): Promise<string | null> {
+  const { error } = await supabase.from('team_messages').update({ body, edited_at: new Date().toISOString() }).eq('id', id);
+  return error ? error.message : null;
+}
+
+export async function deleteTeamMessage(id: string): Promise<string | null> {
+  const { error } = await supabase.from('team_messages').update({ deleted: true, body: '' }).eq('id', id);
+  return error ? error.message : null;
+}
+
+export async function pinTeamMessage(id: string, pinned: boolean): Promise<string | null> {
+  const { error } = await supabase.from('team_messages').update({ pinned }).eq('id', id);
+  return error ? error.message : null;
+}
+
+export async function sendDirectMessage(teamId: string, toUserId: string, body: string, opts?: { replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
   const { data: userData } = await supabase.auth.getUser();
   const senderId = userData.user?.id;
   if (!senderId) return 'Not signed in.';
-  const { error } = await supabase.from('direct_messages').insert({ team_id: teamId, sender_id: senderId, receiver_id: toUserId, body });
+  const { error } = await supabase.from('direct_messages').insert({
+    team_id: teamId, sender_id: senderId, receiver_id: toUserId, body,
+    reply_to_id: opts?.replyToId ?? null,
+    attachment_msg_id: opts?.attachment?.msgId ?? null,
+    attachment_name: opts?.attachment?.name ?? null,
+    attachment_size: opts?.attachment?.size ?? null,
+  });
   return error ? error.message : null;
 }
 
@@ -81,8 +128,20 @@ export function subscribeToDirectMessages(teamId: string, onMessage: (msg: Direc
     .channel(`direct_messages:${teamId}`)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'direct_messages', filter: `team_id=eq.${teamId}` },
       payload => onMessage(payload.new as DirectMessage))
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'direct_messages', filter: `team_id=eq.${teamId}` },
+      payload => onMessage(payload.new as DirectMessage))
     .subscribe();
   return () => { supabase.removeChannel(channel); };
+}
+
+export async function editDirectMessage(id: string, body: string): Promise<string | null> {
+  const { error } = await supabase.from('direct_messages').update({ body, edited_at: new Date().toISOString() }).eq('id', id);
+  return error ? error.message : null;
+}
+
+export async function deleteDirectMessage(id: string): Promise<string | null> {
+  const { error } = await supabase.from('direct_messages').update({ deleted: true, body: '' }).eq('id', id);
+  return error ? error.message : null;
 }
 
 export async function markDirectMessagesRead(teamId: string, otherUserId: string): Promise<void> {
@@ -116,7 +175,7 @@ export async function listConversations(teamId: string): Promise<Conversation[]>
         otherUserId: otherId,
         otherName: otherProfile?.name || 'Unknown',
         otherAvatar: otherProfile?.avatar || '',
-        lastMessage: row.body,
+        lastMessage: row.deleted ? 'Message deleted' : row.body,
         lastAt: row.created_at,
         unread: 0,
       });
@@ -126,4 +185,101 @@ export async function listConversations(teamId: string): Promise<Conversation[]>
     }
   }
   return Array.from(byPartner.values());
+}
+
+// ---------------------------------------------------------------------------
+// Reactions
+// ---------------------------------------------------------------------------
+
+export interface MessageReaction {
+  id: string;
+  message_id: string;
+  message_table: 'team_messages' | 'direct_messages';
+  team_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+}
+
+export async function listReactions(teamId: string, messageTable: 'team_messages' | 'direct_messages'): Promise<MessageReaction[]> {
+  const { data } = await supabase.from('message_reactions').select('*').eq('team_id', teamId).eq('message_table', messageTable);
+  return (data as MessageReaction[]) ?? [];
+}
+
+export async function toggleReaction(teamId: string, messageTable: 'team_messages' | 'direct_messages', messageId: string, emoji: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return;
+  const { data: existing } = await supabase
+    .from('message_reactions')
+    .select('id')
+    .eq('message_id', messageId).eq('user_id', userId).eq('emoji', emoji)
+    .maybeSingle();
+  if (existing) {
+    await supabase.from('message_reactions').delete().eq('id', existing.id);
+  } else {
+    await supabase.from('message_reactions').insert({ team_id: teamId, message_table: messageTable, message_id: messageId, user_id: userId, emoji });
+  }
+}
+
+export function subscribeToReactions(teamId: string, onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`message_reactions:${teamId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'message_reactions', filter: `team_id=eq.${teamId}` }, () => onChange())
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
+}
+
+// ---------------------------------------------------------------------------
+// Mentions
+// ---------------------------------------------------------------------------
+
+export function parseMentions(body: string, members: { user_id: string | null; profile?: { name: string } | null; invited_email: string }[]): string[] {
+  const matches = body.match(/@[\w.-]+/g) || [];
+  const ids = new Set<string>();
+  for (const raw of matches) {
+    const handle = raw.slice(1).toLowerCase();
+    const hit = members.find(m => {
+      const name = (m.profile?.name || m.invited_email || '').toLowerCase().replace(/\s+/g, '');
+      return name && (name === handle || name.startsWith(handle));
+    });
+    if (hit?.user_id) ids.add(hit.user_id);
+  }
+  return Array.from(ids);
+}
+
+// ---------------------------------------------------------------------------
+// Typing indicator (ephemeral, Realtime Broadcast — no table)
+// ---------------------------------------------------------------------------
+
+export function subscribeToTyping(teamId: string, onTyping: (userId: string, name: string) => void) {
+  const channel = supabase.channel(`typing:${teamId}`);
+  channel.on('broadcast', { event: 'typing' }, ({ payload }) => onTyping(payload.userId, payload.name));
+  channel.subscribe();
+  return {
+    notifyTyping: (userId: string, name: string) => channel.send({ type: 'broadcast', event: 'typing', payload: { userId, name } }),
+    unsubscribe: () => { supabase.removeChannel(channel); },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Read state (team chat unread badge)
+// ---------------------------------------------------------------------------
+
+export async function markTeamChatRead(teamId: string, lastMessageId: string): Promise<void> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return;
+  await supabase.from('team_chat_read_state').upsert({ team_id: teamId, user_id: userId, last_read_message_id: lastMessageId, updated_at: new Date().toISOString() });
+}
+
+export async function getTeamChatUnreadCount(teamId: string): Promise<number> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return 0;
+  const { data: state } = await supabase.from('team_chat_read_state').select('last_read_message_id, updated_at').eq('team_id', teamId).eq('user_id', userId).maybeSingle();
+  let query = supabase.from('team_messages').select('id', { count: 'exact', head: true }).eq('team_id', teamId).neq('sender_id', userId);
+  if (state?.updated_at) query = query.gt('created_at', state.updated_at);
+  const { count } = await query;
+  return count ?? 0;
 }
