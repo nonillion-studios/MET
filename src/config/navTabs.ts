@@ -10,7 +10,6 @@ export interface NavTab {
 
 export const NAV_TABS: NavTab[] = [
   { id: 'library', label: 'Library', icon: LayoutGrid },
-  { id: 'text-editor', label: 'Text Editor', icon: FileText },
   { id: 'settings', label: 'Settings', icon: Settings },
   { id: 'teams', label: 'Teams', icon: Users },
   { id: 'cloud', label: 'Cloud', icon: CloudCog },

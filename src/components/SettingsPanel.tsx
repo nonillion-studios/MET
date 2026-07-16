@@ -5,8 +5,10 @@ import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
 import { GlassCard, Button, Input } from './ui';
 import { AdSlot } from './AdSlot';
 import { swal, swalToast } from '../lib/swalTheme';
-import { readAvatarFile } from '../lib/image';
+import { readAvatarFile, uploadImageToStorage } from '../lib/image';
 import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
+import { requestNotificationPermission } from '../lib/notifications';
+import { Bell } from 'lucide-react';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -29,6 +31,14 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
   const [avatar, setAvatar] = useState(profile.avatar);
   const [saving, setSaving] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | null>(
+    typeof Notification !== 'undefined' ? Notification.permission : null
+  );
+
+  const handleEnableNotifications = async () => {
+    const result = await requestNotificationPermission();
+    if (result) setNotifPermission(result);
+  };
 
   const handleSaveProfile = async () => {
     if (!name.trim()) {
@@ -36,7 +46,12 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
       return;
     }
     setSaving(true);
-    const error = await updateProfile(name.trim(), avatar);
+    let avatarUrl = avatar;
+    if (avatar.startsWith('data:') && session?.user.id) {
+      const uploaded = await uploadImageToStorage(avatar, `${session.user.id}/avatar.jpg`);
+      if (uploaded) avatarUrl = uploaded;
+    }
+    const error = await updateProfile(name.trim(), avatarUrl);
     setSaving(false);
     if (error) {
       swal({ icon: 'error', title: 'Update failed', text: error });
@@ -117,6 +132,27 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
           ))}
         </div>
       </GlassCard>
+
+      {notifPermission !== null && (
+        <GlassCard className="p-6 space-y-3">
+          <h3 className="text-base font-semibold text-ink font-display">Notifications</h3>
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex flex-col">
+              <span className="flex items-center gap-2 text-sm font-medium text-ink">
+                <Bell size={16} className="text-ink-faint" /> Browser Notifications
+              </span>
+              <span className="text-[10px] text-ink-faint font-normal">Get notified when a team invite, join request, or broadcast arrives</span>
+            </span>
+            {notifPermission === 'granted' ? (
+              <span className="text-xs font-semibold text-accent">Enabled</span>
+            ) : notifPermission === 'denied' ? (
+              <span className="text-xs text-ink-faint">Blocked in browser settings</span>
+            ) : (
+              <Button size="sm" onClick={handleEnableNotifications}>Enable</Button>
+            )}
+          </div>
+        </GlassCard>
+      )}
 
       <GlassCard className="p-6 space-y-4">
         <h3 className="text-base font-semibold text-ink font-display">System</h3>

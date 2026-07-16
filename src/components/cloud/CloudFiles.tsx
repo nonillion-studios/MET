@@ -236,6 +236,21 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
         </div>
       </Modal>
 
+      {/* Restore progress modal */}
+      <Modal open={cc.isRestoring} onClose={() => {}} dismissible={false} title="Fetching from Cloud" size="sm">
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-ink truncate">{cc.restoreLabel}</p>
+            <p className="text-xs text-ink-faint font-mono mt-0.5">{cc.formatSize(Math.round(cc.restoreTotalBytes * (cc.restoreProgress / 100)))} / {cc.formatSize(cc.restoreTotalBytes)}</p>
+          </div>
+          <div className="w-full bg-ink/10 border border-hairline h-3 rounded-full overflow-hidden relative">
+            <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.restoreProgress}%` }} />
+            <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.restoreProgress}%</span>
+          </div>
+          <AdSlot placement="restore-progress" />
+        </div>
+      </Modal>
+
       <ScheduleTransferModal
         open={showScheduleModal}
         onClose={() => setShowScheduleModal(false)}

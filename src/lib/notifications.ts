@@ -50,3 +50,28 @@ export async function notify(userId: string, title: string, body = ''): Promise<
   const { error } = await supabase.from('notifications').insert({ user_id: userId, title, body });
   return error ? error.message : null;
 }
+
+// Live-updates the topbar badge as rows land, and (if the user has granted
+// permission) fires a browser Notification — this is the "web" half of the
+// accept/reject notify requirement. There's no native mobile shell in this
+// codebase, so an "app" push notification isn't implemented here.
+export function subscribeToNotifications(userId: string, onNotification: (n: AppNotification) => void): () => void {
+  const channel = supabase
+    .channel(`notifications:${userId}`)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${userId}` },
+      payload => {
+        const n = payload.new as AppNotification;
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          new Notification(n.title, { body: n.body });
+        }
+        onNotification(n);
+      })
+    .subscribe();
+  return () => { supabase.removeChannel(channel); };
+}
+
+export function requestNotificationPermission(): Promise<NotificationPermission> | null {
+  if (typeof Notification === 'undefined') return null;
+  if (Notification.permission !== 'default') return Promise.resolve(Notification.permission);
+  return Notification.requestPermission();
+}

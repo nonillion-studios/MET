@@ -7,19 +7,19 @@ import {
 } from 'lucide-react';
 import { GlassCard, Button, Input, Textarea, Modal, Switch } from './ui';
 import { swal, swalToast } from '../lib/swalTheme';
-import { readAvatarFile } from '../lib/image';
+import { readAvatarFile, uploadImageToStorage } from '../lib/image';
 import { useTeamAuth } from '../lib/teamAuth';
 import {
   Team, TeamMember, JOB_TITLES, JobTitle,
   createTeam, getMyOwnedTeam, getMyMembership, getPendingInvitesForMe,
   inviteMember, acceptInvite, declineInvite, listTeamMembers, updateMemberFields,
   promoteToLeader, demoteToMember, removeMember, getLeaderboard,
-  updateTeamSettings, deleteTeam, broadcastToTeam,
+  updateTeamSettings, deleteTeam, broadcastToTeam, updateMyNotificationPrefs,
 } from '../lib/teams';
 import {
   Task, createTaskWithWorkflow, listTeamTasks, listMyTasks, deleteTask, attachFileToTask,
   setTeamTelegramChannel, acceptTask, declineTask, submitTask, approveTask, rejectSubmission,
-  checkIn, setMemberActive, expireStaleOffers,
+  checkIn, setMemberActive, expireStaleOffers, reassignMemberTasks, notifyUpcomingTaskDeadlines,
 } from '../lib/tasks';
 import { deposit, penalize, transfer, requestWithdrawal, decideWithdrawal, listPendingWithdrawals, listTransactions, Transaction, Withdrawal } from '../lib/wallet';
 import {
@@ -27,19 +27,26 @@ import {
   listPendingLeaveRequests, listPendingResignations, LeaveRequest, ResignationRequest,
 } from '../lib/memberRequests';
 import {
-  requestToJoinTeam, decideJoinRequest, listPublicTeams, listPendingJoinRequests, JoinRequest, PublicTeamCard,
+  requestToJoinTeam, decideJoinRequest, listPublicTeams, listPendingJoinRequests, expireStaleJoinRequests,
+  createInviteToken, redeemInviteToken, getPublicTeamLeaderboard, PublicTeamLeaderboardRow,
+  listResponseTemplates, upsertResponseTemplate, deleteResponseTemplate, ResponseTemplate,
+  JoinRequest, PublicTeamCard,
 } from '../lib/joinRequests';
 import {
   sendTeamMessage, listTeamMessages, subscribeToTeamMessages, TeamMessage,
   sendDirectMessage, listDirectMessages, subscribeToDirectMessages, listConversations, markDirectMessagesRead, DirectMessage, Conversation,
 } from '../lib/chat';
+import { requestOwnerTransfer, decideOwnerTransfer, getMyPendingOwnerTransfers, OwnerTransferRequest } from '../lib/ownerTransfer';
+import { listTeamBadges, TeamBadge } from '../lib/teamBadges';
+import { getCurrentSeasonLeaderboard, closeCurrentSeason, SeasonLeaderboardRow } from '../lib/seasons';
+import { exportTeamReportDocx } from '../lib/teamReport';
 import type { CloudClient, CloudFile, CloudFolder } from '../lib/cloudClient';
 import { CloudFolders } from './cloud/CloudFolders';
 import { Folder as FolderIcon, Upload, Download } from 'lucide-react';
 
 type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'files' | 'requests' | 'roster' | 'analytics' | 'admin';
 
-export function TeamsPanel({ cc }: { cc: CloudClient }) {
+export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken }: { cc: CloudClient; pendingJoinToken?: string | null; onConsumedJoinToken?: () => void }) {
   const { session, isAdmin } = useTeamAuth();
 
   return (
@@ -51,7 +58,73 @@ export function TeamsPanel({ cc }: { cc: CloudClient }) {
         <p className="text-xs text-ink-muted mt-0.5">Signed in as {session?.user.email}</p>
       </div>
 
+      {pendingJoinToken && onConsumedJoinToken && (
+        <RedeemInviteTokenModal token={pendingJoinToken} onClose={onConsumedJoinToken} />
+      )}
+
+      <PendingOwnerTransfers />
+
       {isAdmin ? <AdminTeamSection cc={cc} /> : <MemberTeamSection cc={cc} />}
+    </div>
+  );
+}
+
+function RedeemInviteTokenModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const handleSend = async () => {
+    setSending(true);
+    const error = await redeemInviteToken(token, message.trim());
+    setSending(false);
+    if (error) { swal({ icon: 'error', title: 'Could not join', text: error }); onClose(); return; }
+    swalToast({ icon: 'success', title: 'Join request sent' });
+    onClose();
+  };
+
+  return (
+    <Modal open onClose={onClose} title="Join via invite link" size="sm" footer={
+      <Button className="w-full" onClick={handleSend} disabled={sending}>{sending ? 'Sending...' : 'Send Join Request'}</Button>
+    }>
+      <div className="space-y-1">
+        <label className="text-xs text-accent font-semibold">Message (optional letter to the admin)</label>
+        <Textarea placeholder="Tell them a bit about yourself..." value={message} onChange={e => setMessage(e.target.value)} rows={4} />
+      </div>
+    </Modal>
+  );
+}
+
+function PendingOwnerTransfers() {
+  const [offers, setOffers] = useState<OwnerTransferRequest[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const refresh = () => { getMyPendingOwnerTransfers().then(setOffers); };
+  useEffect(refresh, []);
+
+  const handleDecide = async (id: string, accept: boolean) => {
+    setBusyId(id);
+    const error = await decideOwnerTransfer(id, accept);
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not respond', text: error }); return; }
+    swalToast({ icon: 'success', title: accept ? 'Ownership accepted' : 'Offer declined' });
+    refresh();
+  };
+
+  if (offers.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {offers.map(o => (
+        <GlassCard key={o.id} className="p-4 flex items-center justify-between gap-3 border-accent/30">
+          <p className="text-sm text-ink">
+            <span className="font-semibold">Ownership offer:</span> you've been nominated to own <span className="font-semibold">{o.team?.name || 'a team'}</span>.
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <Button size="sm" onClick={() => handleDecide(o.id, true)} disabled={busyId === o.id}><Check size={13} /> Accept</Button>
+            <Button size="sm" variant="secondary" onClick={() => handleDecide(o.id, false)} disabled={busyId === o.id}><X size={13} /> Decline</Button>
+          </div>
+        </GlassCard>
+      ))}
     </div>
   );
 }
@@ -194,7 +267,7 @@ function TeamWorkspace({
       {isOwner && (
         <section id="team-section-admin" className="scroll-mt-20">
           <SectionHeader icon={ShieldCheck} title="Admin" description={SECTION_DESCRIPTIONS.admin} />
-          <AdminSection team={team} onChanged={onChanged} />
+          <AdminSection team={team} members={members} onChanged={onChanged} />
         </section>
       )}
     </div>
@@ -260,6 +333,8 @@ function DashboardSection({ team, myMember, canManage, members, onChanged }: { t
         </GlassCard>
       )}
 
+      {myMember && <MyNotificationPrefsCard team={team} myMember={myMember} onChanged={onChanged} />}
+
       {canManage && (
         <GlassCard className="p-6">
           <h3 className="text-sm font-semibold text-ink mb-3">Team at a glance</h3>
@@ -278,6 +353,33 @@ function DashboardSection({ team, myMember, canManage, members, onChanged }: { t
         </GlassCard>
       )}
     </div>
+  );
+}
+
+function MyNotificationPrefsCard({ team, myMember, onChanged }: { team: Team; myMember: TeamMember; onChanged: () => void }) {
+  const prefs = { broadcasts: true, tasks: true, chat: true, ...myMember.notification_prefs };
+
+  const handleToggle = async (key: 'broadcasts' | 'tasks' | 'chat', value: boolean) => {
+    const next = { ...prefs, [key]: value };
+    const error = await updateMyNotificationPrefs(team.id, next);
+    if (error) { swal({ icon: 'error', title: 'Could not save', text: error }); return; }
+    onChanged();
+  };
+
+  return (
+    <GlassCard className="p-6 space-y-3">
+      <h3 className="text-sm font-semibold text-ink">My Notifications</h3>
+      {([
+        ['broadcasts', 'Team broadcasts'],
+        ['tasks', 'New task assignments'],
+        ['chat', 'Chat messages'],
+      ] as const).map(([key, label]) => (
+        <div key={key} className="flex items-center justify-between">
+          <span className="text-sm text-ink-muted">{label}</span>
+          <Switch checked={prefs[key] !== false} onChange={v => handleToggle(key, v)} />
+        </div>
+      ))}
+    </GlassCard>
   );
 }
 
@@ -371,6 +473,9 @@ function TeamRoster({
   const [channelId, setChannelId] = useState(team.telegram_channel_id || '');
   const [savingChannel, setSavingChannel] = useState(false);
   const [editing, setEditing] = useState<TeamMember | null>(null);
+  const [reassignFrom, setReassignFrom] = useState<TeamMember | null>(null);
+  const [badges, setBadges] = useState<TeamBadge[]>([]);
+  useEffect(() => { listTeamBadges(team.id).then(setBadges); }, [team.id]);
 
   const handleSaveChannel = async () => {
     setSavingChannel(true);
@@ -435,6 +540,15 @@ function TeamRoster({
   return (
     <GlassCard className="overflow-hidden max-w-2xl">
       {editing && <EditMemberModal member={editing} onClose={() => setEditing(null)} onSaved={onChanged} />}
+      {reassignFrom && (
+        <ReassignTasksModal
+          team={team}
+          fromMember={reassignFrom}
+          members={members.filter(m => m.id !== reassignFrom.id && m.status === 'active' && m.user_id)}
+          onClose={() => setReassignFrom(null)}
+          onDone={onChanged}
+        />
+      )}
 
       <div className="p-6 flex items-center gap-4 border-b border-hairline bg-ink/[0.02]">
         <div className="w-16 h-16 rounded-2xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
@@ -446,6 +560,13 @@ function TeamRoster({
             {isOwner ? <ShieldCheck size={12} /> : <Crown size={12} />}
             {isOwner ? 'Admin' : 'Leader'}
           </p>
+          {badges.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {badges.map(b => (
+                <span key={b.code} className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-accent-soft text-accent flex items-center gap-1"><Trophy size={9} /> {b.label}</span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -507,6 +628,11 @@ function TeamRoster({
                     </button>
                   )
                 )}
+                {canManageMembers && (m.member_status === 'on_leave' || m.member_status === 'resigned') && m.user_id && (
+                  <button onClick={() => setReassignFrom(m)} aria-label="Reassign open tasks" title="Reassign open tasks" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                    <ListTodo size={14} />
+                  </button>
+                )}
                 {canManageMembers && (
                   <button onClick={() => handleRemove(m.id)} disabled={busyId === m.id} aria-label="Remove member" title="Remove member" className="p-1.5 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors">
                     <UserMinus size={14} />
@@ -521,11 +647,50 @@ function TeamRoster({
   );
 }
 
+function ReassignTasksModal({ team, fromMember, members, onClose, onDone }: {
+  team: Team; fromMember: TeamMember; members: TeamMember[]; onClose: () => void; onDone: () => void;
+}) {
+  const [toUserId, setToUserId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleReassign = async () => {
+    if (!toUserId || !fromMember.user_id) return;
+    setBusy(true);
+    const { moved, error } = await reassignMemberTasks(team.id, fromMember.user_id, toUserId);
+    setBusy(false);
+    if (error) { swal({ icon: 'error', title: 'Could not reassign', text: error }); return; }
+    swalToast({ icon: 'success', title: `${moved} task${moved === 1 ? '' : 's'} reassigned` });
+    onDone();
+    onClose();
+  };
+
+  return (
+    <Modal open onClose={onClose} title={`Reassign ${fromMember.profile?.name || fromMember.invited_email}'s open tasks`} size="sm" footer={
+      <Button className="w-full" onClick={handleReassign} disabled={busy || !toUserId}>{busy ? 'Reassigning...' : 'Reassign'}</Button>
+    }>
+      <div className="space-y-2">
+        <label className="text-xs text-accent font-semibold">Move to</label>
+        <select
+          value={toUserId}
+          onChange={e => setToUserId(e.target.value)}
+          className="w-full px-3 py-2 rounded-xl border border-hairline bg-transparent text-sm text-ink"
+        >
+          <option value="">Select a member...</option>
+          {members.map(m => (
+            <option key={m.id} value={m.user_id!}>{m.profile?.name || m.invited_email}</option>
+          ))}
+        </select>
+      </div>
+    </Modal>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Admin / Member section resolution (unchanged shape, now mounts TeamWorkspace)
 // ---------------------------------------------------------------------------
 
 function AdminTeamSection({ cc }: { cc: CloudClient }) {
+  const { session } = useTeamAuth();
   const [loading, setLoading] = useState(true);
   const [team, setTeam] = useState<Team | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -553,7 +718,12 @@ function AdminTeamSection({ cc }: { cc: CloudClient }) {
       return;
     }
     setCreating(true);
-    const { team: created, error } = await createTeam({ name: teamName.trim(), logo, description: description.trim(), visibility, payNote: payNote.trim() });
+    let logoUrl = logo;
+    if (logo.startsWith('data:') && session?.user.id) {
+      const uploaded = await uploadImageToStorage(logo, `${session.user.id}/team-logo-${Date.now()}.jpg`);
+      if (uploaded) logoUrl = uploaded;
+    }
+    const { team: created, error } = await createTeam({ name: teamName.trim(), logo: logoUrl, description: description.trim(), visibility, payNote: payNote.trim() });
     setCreating(false);
     if (error) {
       swal({ icon: 'error', title: 'Could not create team', text: error });
@@ -712,15 +882,152 @@ function MemberTeamSection({ cc }: { cc: CloudClient }) {
   );
 }
 
+type TeamCategory = 'all' | 'active' | 'members' | 'popular' | 'pay';
+
+const CATEGORY_TABS: { id: TeamCategory; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'active', label: 'Most Active' },
+  { id: 'members', label: 'Most Members' },
+  { id: 'popular', label: 'Most Popular' },
+  { id: 'pay', label: 'Most Pay' },
+];
+
+function parsePayNote(note: string): number {
+  const match = note.match(/[\d,.]+/);
+  if (!match) return -1;
+  const n = parseFloat(match[0].replace(/,/g, ''));
+  return Number.isFinite(n) ? n : -1;
+}
+
+function sortTeamsByCategory(teams: PublicTeamCard[], category: TeamCategory): PublicTeamCard[] {
+  const copy = [...teams];
+  switch (category) {
+    case 'members':
+      return copy.sort((a, b) => b.member_count - a.member_count);
+    case 'active':
+      // Backed by team_activity_log (chat/task/check-in events, last 7 days).
+      return copy.sort((a, b) => b.activity_count - a.activity_count || b.member_count - a.member_count);
+    case 'popular':
+      // Approximation: popularity would ideally use join-request volume;
+      // falls back to member count until a lightweight stats RPC exists.
+      return copy.sort((a, b) => b.member_count - a.member_count);
+    case 'pay':
+      return copy.sort((a, b) => parsePayNote(b.pay_note || '') - parsePayNote(a.pay_note || ''));
+    default:
+      return copy;
+  }
+}
+
+interface DirectoryPrefs { category: TeamCategory; search: string; tag: string }
+const DIRECTORY_PREFS_KEY = 'teams_directory_prefs';
+
+function loadDirectoryPrefs(): DirectoryPrefs {
+  try {
+    const raw = localStorage.getItem(DIRECTORY_PREFS_KEY);
+    if (raw) return { category: 'all', search: '', tag: '', ...JSON.parse(raw) };
+  } catch { /* ignore malformed prefs */ }
+  return { category: 'all', search: '', tag: '' };
+}
+
+function PublicTeamLeaderboard() {
+  const [rows, setRows] = useState<PublicTeamLeaderboardRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getPublicTeamLeaderboard().then(r => { setRows(r); setLoading(false); });
+  }, []);
+
+  if (loading) return null;
+  if (rows.length === 0) return <GlassCard className="p-8 text-center"><p className="text-sm text-ink-muted">No leaderboard data yet.</p></GlassCard>;
+
+  return (
+    <div className="space-y-2">
+      {rows.map((r, i) => (
+        <GlassCard key={r.team_id} className="p-4 flex items-center gap-3">
+          <span className="text-sm font-bold text-ink-faint w-6 text-center shrink-0">#{i + 1}</span>
+          <div className="w-9 h-9 rounded-xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
+            {r.team_logo ? <img src={r.team_logo} alt={r.team_name} className="w-full h-full object-cover" /> : <Users size={14} className="text-accent" />}
+          </div>
+          <span className="text-sm font-semibold text-ink flex-1 min-w-0 truncate">{r.team_name}</span>
+          <span className="text-xs text-ink-faint shrink-0">{r.tasks_done} tasks done</span>
+        </GlassCard>
+      ))}
+    </div>
+  );
+}
+
+function CurrentSeasonLeaderboard() {
+  const { isAdmin } = useTeamAuth();
+  const [rows, setRows] = useState<SeasonLeaderboardRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [closing, setClosing] = useState(false);
+
+  const refresh = () => { getCurrentSeasonLeaderboard().then(r => { setRows(r); setLoading(false); }); };
+  useEffect(refresh, []);
+
+  const handleCloseSeason = async () => {
+    const result = await swal({
+      icon: 'warning',
+      title: 'Close the current season?',
+      text: 'This locks in final standings, awards the champion badge, and starts a new season.',
+      showCancelButton: true,
+      confirmButtonText: 'Close Season',
+    });
+    if (!result.isConfirmed) return;
+    setClosing(true);
+    const error = await closeCurrentSeason();
+    setClosing(false);
+    if (error) { swal({ icon: 'error', title: 'Could not close season', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Season closed — a new one has started' });
+    refresh();
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="space-y-2">
+      {isAdmin && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="secondary" onClick={handleCloseSeason} disabled={closing}>{closing ? 'Closing...' : 'Close Season'}</Button>
+        </div>
+      )}
+      {rows.length === 0 ? (
+        <GlassCard className="p-8 text-center"><p className="text-sm text-ink-muted">No season data yet.</p></GlassCard>
+      ) : rows.map((r, i) => (
+        <GlassCard key={r.team_id} className={`p-4 flex items-center gap-3 ${r.featured ? 'border-accent/40' : ''}`}>
+          <span className="text-sm font-bold text-ink-faint w-6 text-center shrink-0">#{i + 1}</span>
+          <div className="w-9 h-9 rounded-xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
+            {r.team_logo ? <img src={r.team_logo} alt={r.team_name} className="w-full h-full object-cover" /> : <Users size={14} className="text-accent" />}
+          </div>
+          <span className="text-sm font-semibold text-ink flex-1 min-w-0 truncate flex items-center gap-1.5">
+            {r.team_name}
+            {r.featured && <Trophy size={12} className="text-accent" />}
+          </span>
+          <span className="text-xs text-ink-faint shrink-0">{r.tasks_done} tasks · {r.activity_score} activity</span>
+        </GlassCard>
+      ))}
+    </div>
+  );
+}
+
 function TeamDirectory() {
   const [teams, setTeams] = useState<PublicTeamCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [joinTarget, setJoinTarget] = useState<PublicTeamCard | { id: string; name: string } | null>(null);
   const [teamIdInput, setTeamIdInput] = useState('');
+  const [view, setView] = useState<'directory' | 'leaderboard' | 'season'>('directory');
+  const initialPrefs = useRef(loadDirectoryPrefs()).current;
+  const [category, setCategory] = useState<TeamCategory>(initialPrefs.category);
+  const [search, setSearch] = useState(initialPrefs.search);
+  const [tagFilter, setTagFilter] = useState(initialPrefs.tag);
 
   useEffect(() => {
     (async () => { setTeams(await listPublicTeams()); setLoading(false); })();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(DIRECTORY_PREFS_KEY, JSON.stringify({ category, search, tag: tagFilter }));
+  }, [category, search, tagFilter]);
 
   const handleJoinById = () => {
     if (!teamIdInput.trim()) return;
@@ -729,40 +1036,123 @@ function TeamDirectory() {
 
   if (loading) return null;
 
+  const allTags = Array.from(new Set(teams.flatMap(t => t.tags || []))).sort();
+  let filteredTeams = teams;
+  if (search.trim()) {
+    const q = search.trim().toLowerCase();
+    filteredTeams = filteredTeams.filter(t => t.name.toLowerCase().includes(q) || t.description?.toLowerCase().includes(q));
+  }
+  if (tagFilter) {
+    filteredTeams = filteredTeams.filter(t => (t.tags || []).includes(tagFilter));
+  }
+  const sortedTeams = sortTeamsByCategory(filteredTeams, category);
+
   return (
     <div className="space-y-4">
       {joinTarget && <RequestJoinModal target={joinTarget} onClose={() => setJoinTarget(null)} />}
 
-      <GlassCard className="p-6 space-y-2 max-w-md">
-        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Hash size={15} className="text-accent" /> Join by Team ID</h3>
+      <GlassCard className="p-6 space-y-2 max-w-md mx-auto text-center">
+        <h3 className="text-sm font-semibold text-ink flex items-center justify-center gap-2"><Hash size={15} className="text-accent" /> Join by Team ID</h3>
         <div className="flex gap-2">
           <Input placeholder="Paste a team ID" value={teamIdInput} onChange={e => setTeamIdInput(e.target.value)} className="flex-1" />
           <Button onClick={handleJoinById}>Request</Button>
         </div>
       </GlassCard>
 
+      <div className="flex justify-center gap-1.5">
+        <button type="button" onClick={() => setView('directory')} className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${view === 'directory' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}>Directory</button>
+        <button type="button" onClick={() => setView('leaderboard')} className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1 ${view === 'leaderboard' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}><Trophy size={12} /> All-Time</button>
+        <button type="button" onClick={() => setView('season')} className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all flex items-center gap-1 ${view === 'season' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}><Flame size={12} /> Season</button>
+      </div>
+
+      {view === 'leaderboard' ? <PublicTeamLeaderboard /> : view === 'season' ? <CurrentSeasonLeaderboard /> : (
       <div>
-        <h3 className="text-sm font-semibold text-ink mb-2">Public Teams</h3>
-        {teams.length === 0 ? (
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <h3 className="text-sm font-semibold text-ink">Public Teams</h3>
+          <Input placeholder="Search teams..." value={search} onChange={e => setSearch(e.target.value)} className="max-w-[220px]" />
+        </div>
+        {allTags.length > 0 && (
+          <div className="flex gap-1.5 flex-wrap mb-2">
+            <button
+              type="button"
+              onClick={() => setTagFilter('')}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all ${
+                !tagFilter ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
+              }`}
+            >
+              All Tags
+            </button>
+            {allTags.map(tag => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => setTagFilter(tag)}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all ${
+                  tagFilter === tag ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-end flex-wrap gap-2 mb-3">
+          <div className="flex gap-1.5 flex-wrap">
+            {CATEGORY_TABS.map(tab => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setCategory(tab.id)}
+                className={`px-3 py-1.5 rounded-full text-[11px] font-semibold transition-all ${
+                  category === tab.id ? 'bg-accent text-white shadow-sm' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {sortedTeams.length === 0 ? (
           <GlassCard className="p-8 text-center">
             <p className="text-sm text-ink-muted">No public teams yet.</p>
           </GlassCard>
         ) : (
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {teams.map(t => (
-              <GlassCard key={t.id} className="overflow-hidden">
-                <div className="p-5 flex items-center gap-3 border-b border-hairline bg-ink/[0.02]">
-                  <div className="w-11 h-11 rounded-xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
-                    {t.logo ? <img src={t.logo} alt={t.name} className="w-full h-full object-cover" /> : <Users size={16} className="text-accent" />}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {sortedTeams.map(t => (
+              <GlassCard key={t.id} className="overflow-hidden flex flex-col">
+                {t.join_ad_url && (
+                  <div className="w-full aspect-[16/7] overflow-hidden border-b border-hairline bg-ink/[0.03]">
+                    <img src={t.join_ad_url} alt="" className="w-full h-full object-cover" />
+                  </div>
+                )}
+                <div className="p-5 flex flex-col items-center text-center gap-2 border-b border-hairline bg-ink/[0.02]">
+                  <div className="w-14 h-14 rounded-xl overflow-hidden bg-accent-soft border border-hairline shrink-0 flex items-center justify-center">
+                    {t.logo ? <img src={t.logo} alt={t.name} className="w-full h-full object-cover" /> : <Users size={20} className="text-accent" />}
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-ink truncate">{t.name}</p>
                     <p className="text-[10px] text-ink-faint">{t.member_count} member{t.member_count === 1 ? '' : 's'}</p>
                   </div>
                 </div>
-                <div className="p-4 space-y-2">
+                <div className="p-4 space-y-2 text-center flex-1 flex flex-col">
                   {t.description && <p className="text-xs text-ink-muted line-clamp-2">{t.description}</p>}
                   {t.pay_note && <p className="text-xs font-semibold text-accent">{t.pay_note}</p>}
+                  {t.tags && t.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1 justify-center">
+                      {t.tags.map(tag => (
+                        <span key={tag} className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-ink/5 text-ink-muted">{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                  {t.badges && t.badges.length > 0 && (
+                    <div className="flex flex-wrap gap-1 justify-center">
+                      {t.badges.map(b => (
+                        <span key={b.code} className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-accent-soft text-accent flex items-center gap-1"><Trophy size={9} /> {b.label}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex-1" />
                   <Button size="sm" className="w-full" onClick={() => setJoinTarget(t)}><UserPlus size={13} /> Request to Join</Button>
                 </div>
               </GlassCard>
@@ -770,6 +1160,7 @@ function TeamDirectory() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -949,6 +1340,7 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
   const refresh = async () => {
     setLoading(true);
     await expireStaleOffers(team.id);
+    await notifyUpcomingTaskDeadlines(team.id);
     setTasks(canManageTasks ? await listTeamTasks(team.id) : await listMyTasks(team.id));
     setLoading(false);
   };
@@ -1210,6 +1602,81 @@ function BankTab({ team, members, myMember, canManageBank: canManage }: { team: 
 // Requests (leave / resignation)
 // ---------------------------------------------------------------------------
 
+function JoinRequestRow({ request, teamId, onDecided }: { request: JoinRequest; teamId: string; onDecided: () => void }) {
+  const [templates, setTemplates] = useState<ResponseTemplate[]>([]);
+  const [templateId, setTemplateId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { listResponseTemplates(teamId).then(setTemplates); }, [teamId]);
+
+  const handleDecide = async (approve: boolean) => {
+    setBusy(true);
+    const body = templates.find(t => t.id === templateId)?.body;
+    await decideJoinRequest(request.id, approve, body);
+    setBusy(false);
+    onDecided();
+  };
+
+  return (
+    <div className="p-2.5 rounded-xl border border-hairline text-xs space-y-1.5">
+      <p className="font-semibold text-ink">{request.user?.name || request.user?.email}</p>
+      {request.message && <p className="text-ink-muted whitespace-pre-line">{request.message}</p>}
+      {templates.length > 0 && (
+        <select value={templateId} onChange={e => setTemplateId(e.target.value)} className="w-full px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+          <option value="">Default response...</option>
+          {templates.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      )}
+      <div className="flex gap-1">
+        <Button size="sm" onClick={() => handleDecide(true)} disabled={busy}>Approve</Button>
+        <Button size="sm" variant="secondary" onClick={() => handleDecide(false)} disabled={busy}>Reject</Button>
+      </div>
+    </div>
+  );
+}
+
+function ResponseTemplatesCard({ team }: { team: Team }) {
+  const [templates, setTemplates] = useState<ResponseTemplate[]>([]);
+  const [label, setLabel] = useState('');
+  const [body, setBody] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const refresh = () => { listResponseTemplates(team.id).then(setTemplates); };
+  useEffect(refresh, [team.id]);
+
+  const handleSave = async () => {
+    if (!label.trim() || !body.trim()) return;
+    setSaving(true);
+    const error = await upsertResponseTemplate(team.id, label.trim(), body.trim());
+    setSaving(false);
+    if (error) { swal({ icon: 'error', title: 'Could not save template', text: error }); return; }
+    setLabel(''); setBody('');
+    refresh();
+  };
+
+  const handleDelete = async (id: string) => {
+    await deleteResponseTemplate(id);
+    refresh();
+  };
+
+  return (
+    <GlassCard className="p-6 space-y-3">
+      <h3 className="text-sm font-semibold text-ink">Response Templates</h3>
+      {templates.map(t => (
+        <div key={t.id} className="flex items-start justify-between gap-2 p-2.5 rounded-xl border border-hairline text-xs">
+          <div className="min-w-0"><p className="font-semibold text-ink">{t.label}</p><p className="text-ink-muted line-clamp-2">{t.body}</p></div>
+          <button onClick={() => handleDelete(t.id)} aria-label="Delete template" className="p-1 rounded-lg text-ink-faint hover:text-danger shrink-0"><Trash2 size={13} /></button>
+        </div>
+      ))}
+      <div className="space-y-1.5 pt-2 border-t border-hairline">
+        <Input placeholder="Label (e.g. Welcome)" value={label} onChange={e => setLabel(e.target.value)} />
+        <Textarea placeholder="Response message" value={body} onChange={e => setBody(e.target.value)} rows={2} />
+        <Button size="sm" onClick={handleSave} disabled={saving}>Add Template</Button>
+      </div>
+    </GlassCard>
+  );
+}
+
 function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests, onChanged }: { team: Team; myMember: TeamMember | null; canManageVacations: boolean; canManageJoinRequests: boolean; onChanged: () => void }) {
   const [leaves, setLeaves] = useState<LeaveRequest[]>([]);
   const [resignations, setResignations] = useState<ResignationRequest[]>([]);
@@ -1222,6 +1689,7 @@ function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests
 
   const refresh = async () => {
     setLoading(true);
+    if (canManageJoinRequests) await expireStaleJoinRequests(team.id);
     const [l, r, j] = await Promise.all([
       canManageVacations ? listPendingLeaveRequests(team.id) : Promise.resolve([]),
       canManageVacations ? listPendingResignations(team.id) : Promise.resolve([]),
@@ -1274,20 +1742,16 @@ function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests
       )}
 
       {!loading && canManageJoinRequests && (
-        <GlassCard className="p-6 space-y-2">
-          <h3 className="text-sm font-semibold text-ink">Pending Join Requests</h3>
-          {joins.length === 0 && <p className="text-xs text-ink-faint text-center py-3">None pending.</p>}
-          {joins.map(j => (
-            <div key={j.id} className="p-2.5 rounded-xl border border-hairline text-xs space-y-1.5">
-              <p className="font-semibold text-ink">{j.user?.name || j.user?.email}</p>
-              {j.message && <p className="text-ink-muted whitespace-pre-line">{j.message}</p>}
-              <div className="flex gap-1">
-                <Button size="sm" onClick={async () => { await decideJoinRequest(j.id, true); refresh(); onChanged(); }}>Approve</Button>
-                <Button size="sm" variant="secondary" onClick={async () => { await decideJoinRequest(j.id, false); refresh(); }}>Reject</Button>
-              </div>
-            </div>
-          ))}
-        </GlassCard>
+        <>
+          <GlassCard className="p-6 space-y-2">
+            <h3 className="text-sm font-semibold text-ink">Pending Join Requests</h3>
+            {joins.length === 0 && <p className="text-xs text-ink-faint text-center py-3">None pending.</p>}
+            {joins.map(j => (
+              <JoinRequestRow key={j.id} request={j} teamId={team.id} onDecided={() => { refresh(); onChanged(); }} />
+            ))}
+          </GlassCard>
+          <ResponseTemplatesCard team={team} />
+        </>
       )}
 
       {!loading && canManageVacations && (
@@ -1335,6 +1799,7 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
   const [top, setTop] = useState<TeamMember[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1343,21 +1808,58 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
     })();
   }, [team.id]);
 
+  const handleExportReport = async () => {
+    setExporting(true);
+    const transactions = await listTransactions(team.id);
+    await exportTeamReportDocx({ team, members, tasks, transactions });
+    setExporting(false);
+  };
+
   if (loading) return null;
 
   const done = tasks.filter(t => t.status === 'done').length;
   const overdue = tasks.filter(t => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'done' && t.status !== 'cancelled');
+  const completionRate = tasks.length > 0 ? Math.round((done / tasks.length) * 100) : 0;
+  const completedWithDates = tasks.filter(t => t.status === 'done' && t.completed_at);
+  const avgTurnaroundDays = completedWithDates.length > 0
+    ? (completedWithDates.reduce((sum, t) => sum + (new Date(t.completed_at!).getTime() - new Date(t.created_at).getTime()), 0) / completedWithDates.length) / 86400000
+    : 0;
+  const memberReliability = members
+    .filter(m => m.status === 'active')
+    .map(m => {
+      const assigned = tasks.filter(t => t.assignee_id === m.user_id);
+      const finished = assigned.filter(t => t.status === 'done');
+      return { name: m.profile?.name || m.invited_email, rate: assigned.length > 0 ? Math.round((finished.length / assigned.length) * 100) : null, assigned: assigned.length };
+    })
+    .filter(m => m.assigned > 0)
+    .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0));
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <GlassCard className="p-6 space-y-2">
-        <h3 className="text-sm font-semibold text-ink">Team Report</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-ink">Team Report</h3>
+          <Button size="sm" variant="secondary" onClick={handleExportReport} disabled={exporting}>{exporting ? 'Exporting...' : 'Export Report'}</Button>
+        </div>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div><p className="text-ink-faint text-xs">Members</p><p className="font-bold text-ink">{members.length}</p></div>
           <div><p className="text-ink-faint text-xs">Tasks total</p><p className="font-bold text-ink">{tasks.length}</p></div>
           <div><p className="text-ink-faint text-xs">Completed</p><p className="font-bold text-ink">{done}</p></div>
           <div><p className="text-ink-faint text-xs">Overdue</p><p className="font-bold text-danger">{overdue.length}</p></div>
+          <div><p className="text-ink-faint text-xs">Completion rate</p><p className="font-bold text-ink">{completionRate}%</p></div>
+          <div><p className="text-ink-faint text-xs">Avg turnaround</p><p className="font-bold text-ink">{avgTurnaroundDays.toFixed(1)}d</p></div>
         </div>
+      </GlassCard>
+
+      <GlassCard className="p-6 space-y-2">
+        <h3 className="text-sm font-semibold text-ink">Member Reliability</h3>
+        {memberReliability.length === 0 && <p className="text-xs text-ink-faint text-center py-3">No assigned tasks yet.</p>}
+        {memberReliability.map(m => (
+          <div key={m.name} className="flex items-center justify-between p-2.5 rounded-xl border border-hairline">
+            <span className="text-sm text-ink">{m.name}</span>
+            <span className="text-sm font-bold text-accent">{m.rate}%</span>
+          </div>
+        ))}
       </GlassCard>
 
       <GlassCard className="p-6 space-y-2">
@@ -1664,12 +2166,50 @@ function DirectThread({ team, partnerId, partnerName, onBack }: { team: Team; pa
 // Admin — team settings, broadcast, danger zone (owner only)
 // ---------------------------------------------------------------------------
 
-function AdminSection({ team, onChanged }: { team: Team; onChanged: () => void }) {
+function AdminSection({ team, members, onChanged }: { team: Team; members: TeamMember[]; onChanged: () => void }) {
   const [name, setName] = useState(team.name);
+  const [transferTo, setTransferTo] = useState('');
+  const [transferring, setTransferring] = useState(false);
+  const [creatingInvite, setCreatingInvite] = useState(false);
+
+  const handleCreateInviteLink = async () => {
+    setCreatingInvite(true);
+    const { token, error } = await createInviteToken(team.id);
+    setCreatingInvite(false);
+    if (error || !token) { swal({ icon: 'error', title: 'Could not create invite link', text: error || 'Unknown error' }); return; }
+    const link = `${window.location.origin}${window.location.pathname}?join=${token.token}`;
+    await navigator.clipboard.writeText(link);
+    swalToast({ icon: 'success', title: 'Invite link copied to clipboard' });
+  };
+
+  const handleTransfer = async () => {
+    if (!transferTo) return;
+    const result = await swal({
+      icon: 'warning',
+      title: 'Propose ownership transfer?',
+      text: 'The nominee must accept before ownership actually changes.',
+      showCancelButton: true,
+      confirmButtonText: 'Send Offer',
+    });
+    if (!result.isConfirmed) return;
+    setTransferring(true);
+    const error = await requestOwnerTransfer(team.id, transferTo);
+    setTransferring(false);
+    if (error) { swal({ icon: 'error', title: 'Could not send offer', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Transfer offer sent' });
+    setTransferTo('');
+  };
   const [description, setDescription] = useState(team.description);
   const [payNote, setPayNote] = useState(team.pay_note);
   const [visibility, setVisibility] = useState<'public' | 'private'>(team.visibility);
+  const [joinAdUrl, setJoinAdUrl] = useState(team.join_ad_url || '');
+  const [tags, setTags] = useState<string[]>(team.tags || []);
   const [savingSettings, setSavingSettings] = useState(false);
+  const joinAdInputRef = useRef<HTMLInputElement>(null);
+
+  const toggleTag = (tag: string) => {
+    setTags(t => t.includes(tag) ? t.filter(x => x !== tag) : [...t, tag]);
+  };
 
   const [broadcastTitle, setBroadcastTitle] = useState('');
   const [broadcastBody, setBroadcastBody] = useState('');
@@ -1680,7 +2220,12 @@ function AdminSection({ team, onChanged }: { team: Team; onChanged: () => void }
   const handleSaveSettings = async () => {
     if (!name.trim()) { swal({ icon: 'error', title: 'Team name is required' }); return; }
     setSavingSettings(true);
-    const error = await updateTeamSettings(team.id, { name: name.trim(), description: description.trim(), pay_note: payNote.trim(), visibility });
+    let joinAdUploaded = joinAdUrl;
+    if (joinAdUrl.startsWith('data:')) {
+      const uploaded = await uploadImageToStorage(joinAdUrl, `teams/${team.id}/join-ad.jpg`);
+      if (uploaded) joinAdUploaded = uploaded;
+    }
+    const error = await updateTeamSettings(team.id, { name: name.trim(), description: description.trim(), pay_note: payNote.trim(), visibility, join_ad_url: joinAdUploaded || null, tags });
     setSavingSettings(false);
     if (error) { swal({ icon: 'error', title: 'Could not save', text: error }); return; }
     swalToast({ icon: 'success', title: 'Team settings saved' });
@@ -1738,6 +2283,35 @@ function AdminSection({ team, onChanged }: { team: Team; onChanged: () => void }
           </div>
           <Switch checked={visibility === 'public'} onChange={v => setVisibility(v ? 'public' : 'private')} />
         </div>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold">Specialty Tags</label>
+          <div className="flex flex-wrap gap-1.5">
+            {JOB_TITLES.map(tag => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => toggleTag(tag)}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all ${
+                  tags.includes(tag) ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold">Join Ad Image</label>
+          <p className="text-[10px] text-ink-faint">Shown at the top of your team's card in the public directory</p>
+          <button
+            type="button"
+            onClick={() => joinAdInputRef.current?.click()}
+            className="w-full aspect-[16/6] rounded-xl overflow-hidden border border-dashed border-hairline flex items-center justify-center bg-ink/[0.02] hover:bg-ink/[0.05] transition-colors"
+          >
+            {joinAdUrl ? <img src={joinAdUrl} alt="Join ad" className="w-full h-full object-cover" /> : <ImagePlus size={20} className="text-ink-faint" />}
+          </button>
+          <input ref={joinAdInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readAvatarFile(f, setJoinAdUrl, 480); }} />
+        </div>
         <Button className="w-full" onClick={handleSaveSettings} disabled={savingSettings}>{savingSettings ? 'Saving...' : 'Save Settings'}</Button>
       </GlassCard>
 
@@ -1746,6 +2320,28 @@ function AdminSection({ team, onChanged }: { team: Team; onChanged: () => void }
         <Input placeholder="Announcement title" value={broadcastTitle} onChange={e => setBroadcastTitle(e.target.value)} />
         <Textarea placeholder="Message..." value={broadcastBody} onChange={e => setBroadcastBody(e.target.value)} rows={4} />
         <Button className="w-full" onClick={handleBroadcast} disabled={broadcasting}>{broadcasting ? 'Sending...' : 'Send to All Members'}</Button>
+      </GlassCard>
+
+      <GlassCard className="p-6 space-y-3">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><LinkIcon size={16} className="text-accent" /> Invite Link</h3>
+        <p className="text-xs text-ink-muted">Anyone who opens the link can request to join — you still approve or reject each request.</p>
+        <Button className="w-full" variant="secondary" onClick={handleCreateInviteLink} disabled={creatingInvite}>{creatingInvite ? 'Creating...' : 'Copy Invite Link'}</Button>
+      </GlassCard>
+
+      <GlassCard className="p-6 space-y-3">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Crown size={16} className="text-accent" /> Transfer Ownership</h3>
+        <p className="text-xs text-ink-muted">The nominee must accept before ownership changes — this doesn't happen instantly.</p>
+        <select
+          value={transferTo}
+          onChange={e => setTransferTo(e.target.value)}
+          className="w-full px-3 py-2 rounded-xl border border-hairline bg-transparent text-sm text-ink"
+        >
+          <option value="">Select a member...</option>
+          {members.filter(m => m.status === 'active' && m.user_id && m.user_id !== team.owner_id).map(m => (
+            <option key={m.id} value={m.user_id!}>{m.profile?.name || m.invited_email}</option>
+          ))}
+        </select>
+        <Button className="w-full" onClick={handleTransfer} disabled={transferring || !transferTo}>{transferring ? 'Sending...' : 'Propose Transfer'}</Button>
       </GlassCard>
 
       <GlassCard className="p-6 space-y-3 border-danger/30 lg:col-span-2">

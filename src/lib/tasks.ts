@@ -42,7 +42,17 @@ export async function createTaskWithWorkflow(input: {
   });
   if (error) return error.message;
   const created = data as Task | null;
-  if (created?.assignee_id) await notify(created.assignee_id, 'New task assigned', input.title);
+  if (created?.assignee_id) {
+    const { data: member } = await supabase
+      .from('team_members')
+      .select('notification_prefs')
+      .eq('team_id', input.teamId)
+      .eq('user_id', created.assignee_id)
+      .maybeSingle();
+    if ((member?.notification_prefs as { tasks?: boolean } | null)?.tasks !== false) {
+      await notify(created.assignee_id, 'New task assigned', input.title);
+    }
+  }
   return null;
 }
 
@@ -60,8 +70,17 @@ export const setMemberActive = (teamId: string, isActive: boolean) =>
 export const changePriority = (teamId: string, requested: number) =>
   rpc('team_change_priority', { _team_id: teamId, _requested: requested });
 
+export async function reassignMemberTasks(teamId: string, fromUser: string, toUser: string): Promise<{ moved: number; error: string | null }> {
+  const { data, error } = await supabase.rpc('reassign_member_tasks', { _team_id: teamId, _from_user: fromUser, _to_user: toUser });
+  return { moved: (data as number) ?? 0, error: error ? error.message : null };
+}
+
 export async function expireStaleOffers(teamId: string): Promise<void> {
   await supabase.rpc('expire_stale_task_offers', { _team_id: teamId });
+}
+
+export async function notifyUpcomingTaskDeadlines(teamId: string): Promise<void> {
+  await supabase.rpc('notify_upcoming_task_deadlines', { _team_id: teamId });
 }
 
 export async function listTeamTasks(teamId: string): Promise<Task[]> {

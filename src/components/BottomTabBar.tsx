@@ -27,8 +27,9 @@ function TabButton({ tab, active, onClick }: { tab: NavTab; active: boolean; onC
 }
 
 export function BottomTabBar({ activeTab, onTabChange, onCreatePress }: BottomTabBarProps) {
-  const left = NAV_TABS.slice(0, 2);
-  const right = NAV_TABS.slice(2);
+  const tabs = NAV_TABS.filter(tab => tab.id !== 'text-editor');
+  const left = tabs.slice(0, 2);
+  const right = tabs.slice(2);
 
   return (
     <div className="lg:hidden fixed bottom-safe left-1/2 -translate-x-1/2 z-50 flex justify-center">

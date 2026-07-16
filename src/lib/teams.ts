@@ -10,6 +10,8 @@ export interface Team {
   description: string;
   visibility: 'public' | 'private';
   pay_note: string;
+  join_ad_url: string | null;
+  tags: string[];
   created_at: string;
 }
 
@@ -35,7 +37,18 @@ export interface TeamMember {
   can_manage_bank: boolean;
   can_manage_join_requests: boolean;
   can_manage_vacations: boolean;
+  notification_prefs: { broadcasts?: boolean; tasks?: boolean; chat?: boolean };
   profile?: { name: string; avatar: string; email: string } | null;
+}
+
+export type NotificationCategory = 'broadcasts' | 'tasks' | 'chat';
+
+export async function updateMyNotificationPrefs(teamId: string, prefs: { broadcasts: boolean; tasks: boolean; chat: boolean }): Promise<string | null> {
+  const { data: userData } = await supabase.auth.getUser();
+  const userId = userData.user?.id;
+  if (!userId) return 'Not signed in.';
+  const { error } = await supabase.from('team_members').update({ notification_prefs: prefs }).eq('team_id', teamId).eq('user_id', userId);
+  return error ? error.message : null;
 }
 
 export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember,
@@ -58,7 +71,7 @@ export async function createTeam(input: { name: string; logo: string; descriptio
   return { team: error ? null : (data as Team), error: error ? error.message : null };
 }
 
-export async function updateTeamSettings(teamId: string, fields: Partial<Pick<Team, 'name' | 'logo' | 'description' | 'visibility' | 'pay_note'>>): Promise<string | null> {
+export async function updateTeamSettings(teamId: string, fields: Partial<Pick<Team, 'name' | 'logo' | 'description' | 'visibility' | 'pay_note' | 'join_ad_url' | 'tags'>>): Promise<string | null> {
   const { error } = await supabase.from('teams').update(fields).eq('id', teamId);
   return error ? error.message : null;
 }
@@ -70,10 +83,14 @@ export async function deleteTeam(teamId: string): Promise<string | null> {
 
 export async function broadcastToTeam(teamId: string, title: string, body: string): Promise<string | null> {
   const [{ data: activeMembers }, { data: team }] = await Promise.all([
-    supabase.from('team_members').select('user_id').eq('team_id', teamId).eq('status', 'active').not('user_id', 'is', null),
+    supabase.from('team_members').select('user_id, notification_prefs').eq('team_id', teamId).eq('status', 'active').not('user_id', 'is', null),
     supabase.from('teams').select('owner_id').eq('id', teamId).single(),
   ]);
-  const recipients = new Set((activeMembers ?? []).map(m => m.user_id as string));
+  const recipients = new Set(
+    (activeMembers ?? [])
+      .filter(m => (m.notification_prefs as TeamMember['notification_prefs'] | null)?.broadcasts !== false)
+      .map(m => m.user_id as string)
+  );
   if (team?.owner_id) recipients.delete(team.owner_id);
   await Promise.all(Array.from(recipients).map(userId => notify(userId, title, body)));
 

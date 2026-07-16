@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { GlassCard } from './GlassCard';
 import { IconButton } from './IconButton';
@@ -32,7 +33,7 @@ export function Modal({ open, onClose, title, children, footer, size = 'md', cla
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="animate-modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-md p-4"
       onClick={dismissible ? onClose : undefined}
@@ -56,6 +57,7 @@ export function Modal({ open, onClose, title, children, footer, size = 'md', cla
         <div className="px-6 py-4 overflow-y-auto">{children}</div>
         {footer && <div className="px-6 py-4 border-t border-hairline shrink-0">{footer}</div>}
       </GlassCard>
-    </div>
+    </div>,
+    document.body,
   );
 }

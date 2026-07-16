@@ -1,4 +1,5 @@
 import { swal } from './swalTheme';
+import { supabase } from './supabaseClient';
 
 export function readImageFile(file: File, onLoaded: (dataUrl: string) => void) {
   if (file.size > 2 * 1024 * 1024) {
@@ -34,4 +35,17 @@ export function readAvatarFile(file: File, onLoaded: (dataUrl: string) => void, 
     img.src = ev.target?.result as string;
   };
   reader.readAsDataURL(file);
+}
+
+/** Uploads a data URL (from readAvatarFile) to the `avatars` Storage bucket and returns its public URL. */
+export async function uploadImageToStorage(dataUrl: string, path: string): Promise<string | null> {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  const { error } = await supabase.storage.from('avatars').upload(path, blob, { upsert: true, contentType: blob.type || 'image/jpeg' });
+  if (error) {
+    swal({ icon: 'error', title: 'Upload failed', text: error.message });
+    return null;
+  }
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  return data.publicUrl;
 }

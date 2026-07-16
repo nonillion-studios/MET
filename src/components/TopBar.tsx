@@ -3,7 +3,7 @@ import { Bell, User, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { IconButton } from './ui';
 import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
-import { unreadCount } from '../lib/notifications';
+import { unreadCount, subscribeToNotifications } from '../lib/notifications';
 import { NotificationsPanel } from './NotificationsPanel';
 import logo from '../assets/logo-new.jpg';
 
@@ -16,6 +16,13 @@ export function TopBar() {
 
   const refreshUnread = () => { if (session) unreadCount().then(setUnread); };
   useEffect(refreshUnread, [session]);
+
+  useEffect(() => {
+    const userId = session?.user.id;
+    if (!userId) return;
+    const unsubscribe = subscribeToNotifications(userId, () => setUnread(u => u + 1));
+    return unsubscribe;
+  }, [session]);
 
   return (
     <div className="liquid-glass-bar w-full h-14 sm:h-16 rounded-b-[22px] lg:rounded-none border border-hairline border-t-0 lg:border-x-0 px-2.5 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-40 sticky top-0">

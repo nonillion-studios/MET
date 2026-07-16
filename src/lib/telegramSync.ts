@@ -14,15 +14,20 @@ export async function loadTelegramCredentials(): Promise<TelegramCredentials | n
   if (!userId) return null;
   const { data } = await supabase
     .from('telegram_credentials')
-    .select('api_id, api_hash, phone, session, chat_id')
+    .select('api_id, api_hash, phone, chat_id')
     .eq('id', userId)
     .maybeSingle();
   if (!data) return null;
+
+  // Session is stored encrypted server-side (pgcrypto) and only ever
+  // decrypted inside the SECURITY DEFINER RPC — never as a plain table column.
+  const { data: session } = await supabase.rpc('rpc_get_telegram_session');
+
   return {
     apiId: data.api_id || '',
     apiHash: data.api_hash || '',
     phone: data.phone || '',
-    session: data.session || '',
+    session: session || '',
     chatId: data.chat_id || '',
   };
 }
@@ -31,11 +36,17 @@ export async function saveTelegramCredentials(partial: Partial<TelegramCredentia
   const { data: userData } = await supabase.auth.getUser();
   const userId = userData.user?.id;
   if (!userId) return;
-  const row: Record<string, string> = { id: userId };
+
+  if (partial.session !== undefined) {
+    await supabase.rpc('rpc_set_telegram_session', { p_session: partial.session });
+  }
+
+  const row: Record<string, string> = {};
   if (partial.apiId !== undefined) row.api_id = partial.apiId;
   if (partial.apiHash !== undefined) row.api_hash = partial.apiHash;
   if (partial.phone !== undefined) row.phone = partial.phone;
-  if (partial.session !== undefined) row.session = partial.session;
   if (partial.chatId !== undefined) row.chat_id = partial.chatId;
-  await supabase.from('telegram_credentials').upsert(row);
+  if (Object.keys(row).length > 0) {
+    await supabase.from('telegram_credentials').upsert({ id: userId, ...row });
+  }
 }

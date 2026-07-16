@@ -80,6 +80,21 @@ export default function App() {
   // Bridges "Send to TypeR" from the standalone Text Editor page into whichever chapter's
   // Studio the user next opens — Studio consumes and clears this on mount.
   const [pendingTyperScript, setPendingTyperScript] = useState<string | null>(null);
+  // Carries a `?join=<token>` invite link into the Teams tab on load, redeemed
+  // (as a join request, not an auto-join) then cleared from the URL.
+  const [pendingJoinToken, setPendingJoinToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const join = params.get('join');
+    if (join) {
+      setPendingJoinToken(join);
+      setActiveNavigationTab('teams');
+      params.delete('join');
+      const next = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (next ? `?${next}` : ''));
+    }
+  }, []);
 
   useEffect(() => {
     get('workspaces_library').then(async (saved) => {
@@ -384,7 +399,7 @@ export default function App() {
             </div>
           )}
 
-          {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} />}
+          {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} pendingJoinToken={pendingJoinToken} onConsumedJoinToken={() => setPendingJoinToken(null)} />}
 
           {activeNavigationTab === 'text-editor' && (
             <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#0b0b0d] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
