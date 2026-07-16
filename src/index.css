@@ -424,6 +424,23 @@
   animation: slideUpSheet 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Studio build transition: stacking/rotating cubes */
+@keyframes studioCubeBuild {
+  0% { transform: translateY(24px) rotate(0deg) scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: translateY(0) rotate(90deg) scale(1); opacity: 1; }
+}
+.animate-studio-cube {
+  animation: studioCubeBuild 0.9s cubic-bezier(0.16, 1, 0.3, 1) infinite alternate both;
+}
+@keyframes studioBuildFadeOut {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.animate-studio-build-fade-out {
+  animation: studioBuildFadeOut 0.3s ease-in forwards;
+}
+
 /* Safe-area padding for iOS home-indicator clearance on floating nav bars */
 .pb-safe {
   padding-bottom: max(env(safe-area-inset-bottom), 0px);

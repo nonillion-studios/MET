@@ -168,7 +168,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
               Upload the pages for "{chapterName}", reorder them, and sync cleaned versions before entering the Studio.
             </p>
           </div>
-          <Button onClick={onEnterStudio} disabled={pages.length === 0}>
+          <Button onClick={onEnterStudio}>
             Enter Studio <ArrowRight size={14} />
           </Button>
         </div>
@@ -242,7 +242,7 @@ export function PageManager({ chapterName, pages, onChange, onEnterStudio }: Pag
       {pages.length === 0 ? (
         <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
           <ImageOff className="text-ink-faint" size={28} />
-          <p className="text-sm text-ink-muted max-w-sm">No pages yet. Upload a ZIP or individual images to get started.</p>
+          <p className="text-sm text-ink-muted max-w-sm">No pages yet. Upload a ZIP or individual images, or jump straight into the Studio and add pages later.</p>
         </GlassCard>
       ) : (
         <GlassCard className="p-4 sm:p-5">

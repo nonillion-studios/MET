@@ -44,6 +44,7 @@ export interface Workspace {
   description: string;
   coverUrl: string;
   mangas: MangaSeries[];
+  tags: string[];
 }
 
 export type AutomationTrigger =

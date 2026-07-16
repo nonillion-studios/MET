@@ -13,6 +13,7 @@ function migrateChapter(chapter: LegacyChapter): Chapter {
 export function migrateWorkspace(workspace: Workspace): Workspace {
   return {
     ...workspace,
+    tags: workspace.tags ?? [],
     mangas: workspace.mangas.map(manga => ({
       ...manga,
       volumes: manga.volumes.map(volume => ({

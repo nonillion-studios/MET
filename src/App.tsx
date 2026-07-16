@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes, Download, Upload
+  Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes, Download, Upload,
+  UploadCloud, FileArchive, Tag, X
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { MangaSeries, Volume, Chapter, Workspace, Page } from './types';
@@ -22,11 +23,13 @@ import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
 import { PageManager } from './components/studio/PageManager';
 import { Studio } from './components/studio/Studio';
+import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
 import { TextEditorPage } from './components/textEditor/TextEditorPage';
 import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
 import { migrateWorkspace } from './lib/migrate';
 import { exportWorkspaceToMsp, downloadMsp, importMspFile, saveImportedStudioData } from './lib/mspFile';
+import { exportWorkspaceToZip, downloadWorkspaceZip } from './lib/workspaceZip';
 import { interleaveWithAds } from './lib/interleaveAds';
 import type { NavTabId } from './config/navTabs';
 
@@ -51,6 +54,13 @@ export default function App() {
   const [newWorkspaceCoverUrl, setNewWorkspaceCoverUrl] = useState('');
   const workspaceCoverInputRef = useRef<HTMLInputElement>(null);
   const mspImportInputRef = useRef<HTMLInputElement>(null);
+
+  // Tag editor modal
+  const [tagEditorWorkspaceId, setTagEditorWorkspaceId] = useState<string | null>(null);
+  const [newTagValue, setNewTagValue] = useState('');
+
+  // Studio entrance transition
+  const [studioBuilding, setStudioBuilding] = useState(false);
 
   // Create series modal
   const [showCreateSeriesModal, setShowCreateSeriesModal] = useState(false);
@@ -105,7 +115,7 @@ export default function App() {
       // One-time migration from the pre-workspace flat manga library.
       const legacyMangas = await get('mangas_library');
       if (legacyMangas && Array.isArray(legacyMangas) && legacyMangas.length > 0) {
-        setWorkspaces([migrateWorkspace({ id: genId('workspace'), name: 'My Workspace', description: '', coverUrl: '', mangas: legacyMangas })]);
+        setWorkspaces([migrateWorkspace({ id: genId('workspace'), name: 'My Workspace', description: '', coverUrl: '', mangas: legacyMangas, tags: [] })]);
       }
     }).catch(console.error);
   }, []);
@@ -186,6 +196,7 @@ export default function App() {
       description: newWorkspaceDesc.trim(),
       coverUrl: newWorkspaceCoverUrl,
       mangas: [],
+      tags: [],
     };
     setWorkspaces(prev => [...prev, newWorkspace]);
     setShowCreateWorkspaceModal(false);
@@ -299,6 +310,39 @@ export default function App() {
       console.error(err);
       swal({ icon: 'error', title: 'Import Failed', text: err instanceof Error ? err.message : 'That file could not be imported.' });
     }
+  };
+
+  const handleDownloadWorkspaceZip = async (workspace: Workspace) => {
+    try {
+      const blob = await exportWorkspaceToZip(workspace);
+      downloadWorkspaceZip(blob, workspace.name);
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Download Failed', text: err instanceof Error ? err.message : 'Could not build the ZIP for this workspace.' });
+    }
+  };
+
+  const handleUploadWorkspaceToCloud = async (workspace: Workspace) => {
+    try {
+      await cloudClient.uploadWorkspaceBackup(workspace, { notes: '', tags: workspace.tags ?? [], folderId: null });
+    } catch {
+      // uploadWorkspaceBackup already surfaces its own error toast
+    }
+  };
+
+  const handleAddTag = (workspaceId: string, tag: string) => {
+    const clean = tag.trim();
+    if (!clean) return;
+    setWorkspaces(prev => prev.map(w => {
+      if (w.id !== workspaceId) return w;
+      if (w.tags.some(t => t.toLowerCase() === clean.toLowerCase())) return w;
+      return { ...w, tags: [...w.tags, clean] };
+    }));
+    setNewTagValue('');
+  };
+
+  const handleRemoveTag = (workspaceId: string, tag: string) => {
+    setWorkspaces(prev => prev.map(w => w.id === workspaceId ? { ...w, tags: w.tags.filter(t => t !== tag) } : w));
   };
 
   const handleDeleteManga = async (manga: MangaSeries) => {
@@ -452,8 +496,11 @@ export default function App() {
                       chapterName={activeChapter.name}
                       pages={activeChapter.pages}
                       onChange={handleChapterPagesChange}
-                      onEnterStudio={() => setChapterView('studio')}
+                      onEnterStudio={() => setStudioBuilding(true)}
                     />
+                    {studioBuilding && (
+                      <StudioBuildTransition onDone={() => { setChapterView('studio'); setStudioBuilding(false); }} />
+                    )}
                   </div>
                 ) : (
                   <Studio
@@ -632,19 +679,53 @@ export default function App() {
                               <Boxes className="text-accent/60" size={32} />
                             )}
                           </div>
-                          <div className="p-3">
+                          <div className="p-3 space-y-1.5">
                             <p className="text-sm font-semibold text-ink truncate">{ws.name}</p>
                             <p className="text-[11px] text-ink-faint uppercase tracking-wide">{ws.mangas.length} series</p>
+                            {ws.description && (
+                              <p className="text-[11px] text-ink-muted line-clamp-2">{ws.description}</p>
+                            )}
+                            {ws.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 pt-0.5">
+                                {ws.tags.map(tag => (
+                                  <span key={tag} className="px-1.5 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] font-medium">{tag}</span>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </GlassCard>
-                        <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="absolute top-2 right-2 flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleDownloadWorkspaceZip(ws); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Download workspace as ZIP"
+                            title="Download as ZIP (folders)"
+                          >
+                            <Download size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleUploadWorkspaceToCloud(ws); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Upload to Telecloud"
+                            title="Upload to Telecloud"
+                          >
+                            <UploadCloud size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setTagEditorWorkspaceId(ws.id); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Edit tags"
+                            title="Edit tags"
+                          >
+                            <Tag size={12} />
+                          </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleExportWorkspace(ws); }}
                             className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
                             aria-label="Export project (.msp)"
                             title="Export project (.msp)"
                           >
-                            <Download size={12} />
+                            <FileArchive size={12} />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDeleteWorkspace(ws); }}
@@ -697,6 +778,47 @@ export default function App() {
           </div>
           <Textarea placeholder="Short description (optional)" value={newWorkspaceDesc} onChange={(e) => setNewWorkspaceDesc(e.target.value)} className="h-20" />
         </div>
+      </Modal>
+
+      {/* Workspace Tag Editor Modal */}
+      <Modal
+        open={!!tagEditorWorkspaceId}
+        onClose={() => { setTagEditorWorkspaceId(null); setNewTagValue(''); }}
+        title="Edit Tags"
+        footer={
+          <div className="flex justify-end">
+            <Button variant="secondary" onClick={() => { setTagEditorWorkspaceId(null); setNewTagValue(''); }}>Done</Button>
+          </div>
+        }
+      >
+        {(() => {
+          const ws = workspaces.find(w => w.id === tagEditorWorkspaceId);
+          if (!ws) return null;
+          return (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-1.5">
+                {ws.tags.length === 0 && <p className="text-sm text-ink-faint">No tags yet.</p>}
+                {ws.tags.map(tag => (
+                  <span key={tag} className="flex items-center gap-1 px-2 py-1 rounded-full bg-accent/10 text-accent text-xs font-medium">
+                    {tag}
+                    <button onClick={() => handleRemoveTag(ws.id, tag)} aria-label={`Remove tag ${tag}`} className="hover:text-danger">
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="New tag"
+                  value={newTagValue}
+                  onChange={(e) => setNewTagValue(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddTag(ws.id, newTagValue); } }}
+                />
+                <Button size="sm" onClick={() => handleAddTag(ws.id, newTagValue)}><Plus size={14} /> Add</Button>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
 
       {/* Create Series Modal */}
