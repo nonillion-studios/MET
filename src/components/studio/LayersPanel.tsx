@@ -1,44 +1,57 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
-import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer } from './studioTypes';
+import { StudioPanel } from './StudioPanel';
+import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer, type LayerSelectMode } from './studioTypes';
 
 interface LayersPanelProps {
   layers: StudioLayer[];
+  /** The primary layer — the one the single-layer panels follow. Always the last of `selectedLayerIds`. */
   activeLayerId: string | null;
-  onSelect: (id: string) => void;
+  /** The full canvas selection; the primary is highlighted more strongly than the rest. */
+  selectedLayerIds?: string[];
+  onSelect: (id: string, mode?: LayerSelectMode) => void;
   onToggleVisible: (id: string) => void;
   onToggleLocked: (id: string) => void;
   onOpacityChange: (id: string, opacity: number) => void;
   onBlendChange: (id: string, blendMode: StudioLayer['blendMode']) => void;
   onAdd: () => void;
+  onAddAdjustment: () => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: 'up' | 'down') => void;
 }
 
 export function LayersPanel({
-  layers, activeLayerId, onSelect, onToggleVisible, onToggleLocked,
-  onOpacityChange, onBlendChange, onAdd, onDuplicate, onDelete, onMove,
+  layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
+  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
 }: LayersPanelProps) {
+  const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Render top-most layer first, matching Photoshop's stacking convention.
   const ordered = [...layers].reverse();
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Layers</span>
-        <IconButton size="sm" aria-label="Add layer" onClick={onAdd} className="!bg-transparent">
-          <Plus size={14} />
-        </IconButton>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto py-1.5 px-1.5 flex flex-col gap-1">
+    <StudioPanel
+      title="Layers"
+      bare
+      bodyClassName="py-1.5 px-1.5 flex flex-col gap-1"
+      actions={
+        <>
+          <IconButton size="sm" aria-label="Add adjustment layer" title="Add adjustment layer" onClick={onAddAdjustment} className="!bg-transparent">
+            <SlidersHorizontal size={13} />
+          </IconButton>
+          <IconButton size="sm" aria-label="Add layer" title="Add raster layer" onClick={onAdd} className="!bg-transparent">
+            <Plus size={14} />
+          </IconButton>
+        </>
+      }
+    >
         {ordered.map((layer) => {
           const Icon = LAYER_TYPE_ICON[layer.type];
           const active = layer.id === activeLayerId;
+          const inSelection = selected.includes(layer.id);
           const expanded = expandedId === layer.id;
           const realIndex = layers.findIndex(l => l.id === layer.id);
 
@@ -46,13 +59,20 @@ export function LayersPanel({
             <div
               key={layer.id}
               className={cn(
-                'rounded-lg border transition-colors',
-                active ? 'bg-accent-soft border-accent/30' : 'bg-ink/[0.03] border-transparent hover:bg-ink/5'
+                'rounded-control border transition-colors',
+                active ? 'bg-accent-soft border-accent/30'
+                  // Also selected, but not the primary — dimmer, so it's clear which layer the
+                  // single-layer panels are actually following.
+                  : inSelection ? 'bg-accent-soft/40 border-accent/20'
+                  : 'bg-ink/5 border-transparent hover:bg-ink/5'
               )}
             >
               <button
                 type="button"
-                onClick={() => { onSelect(layer.id); setExpandedId(expanded ? null : layer.id); }}
+                onClick={(e) => {
+                  onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace');
+                  setExpandedId(expanded ? null : layer.id);
+                }}
                 className="w-full flex items-center gap-2 px-2 h-11"
               >
                 <span
@@ -65,11 +85,11 @@ export function LayersPanel({
                   {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
                 </span>
 
-                <span className={cn('shrink-0 w-6 h-6 rounded-md flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
+                <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
                   <Icon size={14} />
                 </span>
 
-                <span className={cn('flex-1 min-w-0 text-left text-xs font-medium truncate', active ? 'text-ink' : 'text-ink/80')}>
+                <span className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}>
                   {layer.name}
                 </span>
 
@@ -90,7 +110,7 @@ export function LayersPanel({
                 <div className="px-3 pb-2.5 pt-0.5 flex flex-col gap-2 border-t border-hairline/60 mx-2">
                   {!layer.isBackground && (
                     <>
-                      <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+                      <label className="flex items-center gap-2 text-micro text-ink-faint">
                         <span className="w-14 shrink-0">Opacity</span>
                         <input
                           type="range"
@@ -103,12 +123,12 @@ export function LayersPanel({
                         <span className="w-8 text-right tabular-nums">{Math.round(layer.opacity * 100)}</span>
                       </label>
 
-                      <label className="flex items-center gap-2 text-[11px] text-ink-faint">
+                      <label className="flex items-center gap-2 text-micro text-ink-faint">
                         <span className="w-14 shrink-0">Blend</span>
                         <select
                           value={layer.blendMode}
                           onChange={(e) => onBlendChange(layer.id, e.target.value as StudioLayer['blendMode'])}
-                          className="flex-1 bg-ink/5 border border-hairline rounded-md px-1.5 py-1 text-ink text-[11px]"
+                          className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
                         >
                           {BLEND_MODES.map(bm => <option key={bm.id} value={bm.id}>{bm.label}</option>)}
                         </select>
@@ -138,7 +158,6 @@ export function LayersPanel({
             </div>
           );
         })}
-      </div>
-    </div>
+    </StudioPanel>
   );
 }

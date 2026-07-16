@@ -1,4 +1,7 @@
 import { BLEND_TO_COMPOSITE, type TextLayerData } from '../components/studio/studioTypes';
+import { gradientVector } from '../components/studio/textGradient';
+import { layoutText, applyLetterSpacing } from '../components/studio/textLayout';
+import { runFontString } from '../components/studio/textRuns';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 
 export type ImageExportFormat = 'png' | 'jpg' | 'webp';
@@ -12,51 +15,59 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
-/** Greedy word-wrap so canvas text export roughly matches Konva's auto-wrapping within `width`. */
-function wrapLine(ctx: CanvasRenderingContext2D, line: string, maxWidth: number): string[] {
-  const words = line.split(' ');
-  const wrapped: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (current && ctx.measureText(candidate).width > maxWidth) {
-      wrapped.push(current);
-      current = word;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current) wrapped.push(current);
-  return wrapped.length > 0 ? wrapped : [''];
-}
-
+/**
+ * Draws a text layer using the same layout the canvas renders from (`layoutText`), so wrapping, the
+ * box, alignment, kerning and per-run styling can't drift between screen and export. This used to
+ * do its own wrapping, which is exactly how point text ended up exporting wrapped when it doesn't
+ * wrap on screen.
+ */
 function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
   ctx.save();
-  const cx = text.x + text.width / 2;
-  const lineCount = text.content.split('\n').length || 1;
-  const cy = text.y + (lineCount * text.fontSize * text.lineHeight) / 2;
+
+  const layout = layoutText(text);
+
+  const cx = text.x + layout.width / 2;
+  const cy = text.y + layout.height / 2;
   ctx.translate(cx, cy);
   ctx.rotate((text.rotation * Math.PI) / 180);
   ctx.translate(-cx, -cy);
 
-  const style = `${text.italic ? 'italic ' : ''}${text.bold ? 'bold ' : ''}${text.fontSize}px ${text.fontFamily}`;
-  ctx.font = style;
   ctx.textBaseline = 'top';
-  ctx.textAlign = text.align;
-  const anchorX = text.align === 'left' ? text.x : text.align === 'right' ? text.x + text.width : text.x + text.width / 2;
+  ctx.textAlign = 'left'; // alignment is already baked into each run's x by the layout
 
-  const lines = text.content.split('\n').flatMap(line => wrapLine(ctx, line, text.width));
-  const lineHeightPx = text.fontSize * text.lineHeight;
-  lines.forEach((line, i) => {
-    const ly = text.y + i * lineHeightPx;
+  if (text.shadow?.enabled) {
+    ctx.shadowColor = text.shadow.color;
+    ctx.shadowBlur = text.shadow.blur;
+    ctx.shadowOffsetX = text.shadow.offsetX;
+    ctx.shadowOffsetY = text.shadow.offsetY;
+  }
+
+  // One ramp across the whole layer, in page coords, so it spans every run rather than restarting
+  // per run — matching how the canvas offsets each run's gradient points off the layer box.
+  let gradientFill: CanvasGradient | null = null;
+  if (text.gradient?.enabled) {
+    const { start, end } = gradientVector(layout.width, layout.height, text.gradient.angle);
+    gradientFill = ctx.createLinearGradient(
+      text.x + start.x, text.y + start.y,
+      text.x + end.x, text.y + end.y,
+    );
+    gradientFill.addColorStop(0, text.gradient.from);
+    gradientFill.addColorStop(1, text.gradient.to);
+  }
+
+  for (const run of layout.runs) {
+    const x = text.x + run.x;
+    const y = text.y + run.y;
+    ctx.font = runFontString(run.style);
+    applyLetterSpacing(ctx, run.style.letterSpacing);
     if (text.strokeWidth > 0) {
       ctx.strokeStyle = text.strokeColor;
       ctx.lineWidth = text.strokeWidth;
-      ctx.strokeText(line, anchorX, ly);
+      ctx.strokeText(run.text, x, y);
     }
-    ctx.fillStyle = text.color;
-    ctx.fillText(line, anchorX, ly);
-  });
+    ctx.fillStyle = gradientFill ?? run.style.color;
+    ctx.fillText(run.text, x, y);
+  }
   ctx.restore();
 }
 

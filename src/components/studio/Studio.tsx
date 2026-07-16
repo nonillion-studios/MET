@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import type { Page } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, type StudioCanvasHandle } from './StudioCanvas';
+import { StudioCanvas, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
 import { ToolRail } from './ToolRail';
 import { RightDock } from './RightDock';
@@ -17,25 +17,30 @@ import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
 import { FloatingPanel } from './dock/FloatingPanel';
 import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
-import { NO_SELECTION, type Selection } from './paint/selection';
-import type { PaintSettings, LiquifyMode } from './paint/paintEngine';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
+import type { PaintSettings, LiquifyMode, SymmetryMode } from './paint/paintEngine';
+import type { BrushShape } from './paint/brushTip';
+import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
 import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
 import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
-import { WorkflowBar } from './WorkflowBar';
 import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, parseTyperScript,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, parseTyperScript,
   DEFAULT_TYPER_STYLES, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
+  type AdjustmentLayerData, type LayerSelectMode,
 } from './studioTypes';
 import { FontsPanel } from './FontsPanel';
+import { BrushesPanel } from './BrushesPanel';
+import type { BrushPreset } from '../../lib/brushStore';
+import { AdjustmentPanel } from './AdjustmentPanel';
 import {
-  loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot,
+  loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot, STUDIO_SCHEMA_VERSION,
   type ChapterStudioData, type SerializedStudioLayer,
 } from '../../lib/studioProjectStore';
 
@@ -49,6 +54,8 @@ interface StudioProps {
   /** Text sent from the standalone Text Editor page's "Send to TypeR" button, waiting to be picked up. */
   pendingTyperScript?: string | null;
   onConsumePendingTyperScript?: () => void;
+  /** Persists page image changes (currently just Crop) back up to the workspace tree. */
+  onPagesChange?: (pages: Page[]) => void;
 }
 
 export function Studio(props: StudioProps) {
@@ -63,7 +70,7 @@ export function Studio(props: StudioProps) {
   );
 }
 
-function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript }: StudioProps) {
+function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
   const { foreground, background, setForeground, swap: swapColors, reset: resetColors } = useColor();
   const history = useHistory();
@@ -75,11 +82,102 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [brushFlow, setBrushFlow] = useState(1);
   const [tolerance, setTolerance] = useState(32);
   const [liquifyMode, setLiquifyMode] = useState<LiquifyMode>('push');
+  const [symmetry, setSymmetry] = useState<SymmetryMode>('none');
+  const [spacing, setSpacing] = useState(0.15);
+  const [brushShape, setBrushShape] = useState<BrushShape | 'image'>('round');
+  const [brushAngle, setBrushAngle] = useState(0);
+  const [brushRoundness, setBrushRoundness] = useState(1);
+  const [scatter, setScatter] = useState(0);
+  const [smoothing, setSmoothing] = useState(0);
+  const [pressureSize, setPressureSize] = useState(true);
+  const [pressureOpacity, setPressureOpacity] = useState(false);
+  const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
+  /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
+  const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
-    color: foreground, bgColor: background, tolerance, liquifyMode,
+    color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
+    spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
+    scatter, smoothing, pressureSize, pressureOpacity,
+    tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
+
+  /** Applying a preset just writes the engine state — there's no separate "brush mode",
+   *  so the options bar and the panel always describe the same live brush. */
+  function handleSelectBrush(preset: BrushPreset, mask?: HTMLCanvasElement) {
+    setActiveBrushId(preset.id);
+    setBrushSize(preset.size);
+    setBrushHardness(preset.hardness);
+    setBrushOpacity(preset.opacity);
+    setBrushFlow(preset.flow);
+    setSpacing(preset.spacing);
+    setBrushAngle(preset.angle);
+    setBrushRoundness(preset.roundness);
+    setScatter(preset.scatter);
+    setSmoothing(preset.smoothing);
+    setPressureSize(preset.pressureSize);
+    setPressureOpacity(preset.pressureOpacity);
+    setBrushShape(preset.shape);
+    setTipMask(preset.shape === 'image' ? mask : undefined);
+    if (!(PAINT_TOOLS as readonly string[]).includes(activeTool)) setActiveTool('brush');
+  }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
+
+  async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
+    const result = await swal({
+      title,
+      input: 'number',
+      inputLabel: label,
+      inputValue: 10,
+      showCancelButton: true,
+      confirmButtonText: 'Apply',
+    });
+    if (!result.isConfirmed || result.value === undefined || result.value === '') return null;
+    return Number(result.value);
+  }
+
+  async function handleFeatherSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Feather Selection', 'Radius (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => featherSelection(sel, amount, activePage.original.width, activePage.original.height));
+  }
+
+  async function handleExpandSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Expand Selection', 'Amount (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => growSelection(sel, amount, activePage.original.width, activePage.original.height));
+  }
+
+  async function handleContractSelection() {
+    if (!activePage) return;
+    const amount = await promptSelectionAmount('Contract Selection', 'Amount (px)');
+    if (amount === null || amount <= 0) return;
+    setSelection(sel => growSelection(sel, -amount, activePage.original.width, activePage.original.height));
+  }
+
+  /** Commits the Crop tool's rect selection: trims the background + every raster layer's canvas,
+   *  shifts text layers to match, and persists the new page dimensions back up to App.tsx. */
+  async function handleCommitCrop() {
+    if (!activePage) return;
+    if (selection.kind !== 'rect') {
+      swalToast({ icon: 'info', title: 'Draw a rectangular crop area first' });
+      return;
+    }
+    const rect = selection;
+    const result = await canvasRef.current?.commitCrop(rect);
+    if (!result) return;
+    onPagesChange?.(pages.map(p => p.id === activePage.id ? { ...p, original: result.original, cleaned: result.cleaned } : p));
+    updateLayers(current => current.map(l =>
+      l.type === 'text' && l.text ? { ...l, text: { ...l.text, x: l.text.x - rect.x, y: l.text.y - rect.y } } : l
+    ), 'Crop');
+    setSelection(NO_SELECTION);
+    setActiveTool('select');
+    setFitSignal(s => s + 1);
+    scheduleAutosave();
+    swalToast({ icon: 'success', title: 'Cropped' });
+  }
 
   const studioRootRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -141,7 +239,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   // Per-page layer stacks. Each page always has a locked "Background" layer at index 0.
   const [layersByPage, setLayersByPage] = useState<Record<string, StudioLayer[]>>({});
-  const [activeLayerId, setActiveLayerId] = useState<string | null>('background');
+  /**
+   * Canvas selection. `activeLayerId` stays the *primary* member (the last one picked) and is what
+   * the single-layer panels, shortcuts and the Transformer's edit target key off — keeping it
+   * derived rather than a second piece of state means the two can't disagree.
+   */
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(['background']);
+  const activeLayerId = selectedLayerIds.length > 0 ? selectedLayerIds[selectedLayerIds.length - 1] : null;
+  const setActiveLayerId = useCallback((id: string | null) => setSelectedLayerIds(id ? [id] : []), []);
+  // The character range selected inside the text layer currently being edited on canvas. Lives here
+  // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
+  // character styling to it.
+  const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
 
   // TypeR: scripted lettering — paste a script, arm it, click bubbles to stamp lines in order.
   const [typerScript, setTyperScript] = useState('');
@@ -149,6 +258,61 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [typerIndex, setTyperIndex] = useState(0);
   const [typerArmed, setTyperArmed] = useState(false);
   const typerLines = useMemo(() => parseTyperScript(typerScript, typerStyles), [typerScript, typerStyles]);
+  // Multi-Bubble mode: draw a rect per bubble (Rectangular Marquee) and queue it instead of
+  // placing immediately, then place every queued rect's line in one go, in script order.
+  const [multiBubbleMode, setMultiBubbleModeState] = useState(false);
+  const [multiBubbleRects, setMultiBubbleRects] = useState<{ x: number; y: number; width: number; height: number }[]>([]);
+
+  function setMultiBubbleMode(enabled: boolean) {
+    setMultiBubbleModeState(enabled);
+    setMultiBubbleRects([]);
+    if (typerArmed) setActiveTool(enabled ? 'marquee-rect' : 'text');
+  }
+
+  function handleAddBubbleRect() {
+    if (selection.kind !== 'rect') {
+      swalToast({ icon: 'info', title: 'Draw a rectangle around a bubble first' });
+      return;
+    }
+    setMultiBubbleRects(prev => [...prev, selection]);
+    setSelection(NO_SELECTION);
+  }
+
+  function handlePlaceAllBubbles() {
+    if (multiBubbleRects.length === 0) return;
+    const newLayers: StudioLayer[] = [];
+    let idx = typerIndex;
+    for (const rect of multiBubbleRects) {
+      const line = typerLines[idx];
+      if (!line) break;
+      const { content, style, boldOverride, italicOverride } = line;
+      const lineCount = content.split('\n').length || 1;
+      const textWidth = Math.max(40, Math.min(rect.width, 400));
+      const textHeight = lineCount * style.fontSize * 1.15;
+      const layer = createTextLayer(rect.x + rect.width / 2 - textWidth / 2, rect.y + rect.height / 2 - textHeight / 2);
+      layer.name = `Text: ${content.slice(0, 20)}`;
+      layer.text = {
+        ...layer.text!,
+        content,
+        width: textWidth,
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        color: style.color,
+        bold: boldOverride ?? style.bold,
+        italic: italicOverride ?? style.italic,
+        strokeColor: style.strokeColor,
+        strokeWidth: style.strokeWidth,
+      };
+      newLayers.push(layer);
+      idx += 1;
+    }
+    updateLayers(current => [...current, ...newLayers], 'Place TypeR Multi-Bubble');
+    setTyperIndex(idx);
+    if (idx >= typerLines.length) setTyperArmed(false);
+    setMultiBubbleRects([]);
+    setActiveTool('select');
+    swalToast({ icon: 'success', title: `Placed ${newLayers.length} line${newLayers.length === 1 ? '' : 's'}` });
+  }
 
   // Pick up text sent from the Text Editor's "Send to TypeR" button, if any is waiting.
   useEffect(() => {
@@ -253,7 +417,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       });
     }
     const data: ChapterStudioData = {
-      schemaVersion: 1,
+      schemaVersion: STUDIO_SCHEMA_VERSION,
       layersByPage: mergedLayersByPage,
       typerScript: typerScriptRef.current,
       typerStyles: typerStylesRef.current,
@@ -312,11 +476,46 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const layer = createLayer('clean-patch', `Layer ${layers.length}`);
     updateLayers(current => [...current, layer], 'Add Layer');
     setActiveLayerId(layer.id);
+    // New raster layers start as a working copy of the background — matches the standard
+    // "duplicate scan, clean the duplicate" manga workflow and gives clone/heal/filter-brush/
+    // liquify tools real pixels to act on immediately instead of an empty transparent canvas.
+    canvasRef.current?.seedLayerWithBackground(layer.id);
   }
 
-  function selectLayer(id: string) {
-    setActiveLayerId(id);
-    if (layers.find(l => l.id === id)?.type === 'text') dock.selectTab('text');
+  function handleAddAdjustmentLayer() {
+    const layer = createAdjustmentLayer('brightness-contrast');
+    updateLayers(current => [...current, layer], 'Add Adjustment Layer');
+    setActiveLayerId(layer.id);
+    dock.selectTab('adjustment');
+  }
+
+  function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
+    updateLayers(current => current.map(l =>
+      l.id === id && l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
+    ));
+  }
+
+  /**
+   * @param mode 'replace' (plain click) or 'toggle' (Shift/Ctrl-click — adds, or removes if already
+   *             selected). A toggle keeps the clicked layer primary so the panels follow it.
+   */
+  function selectLayer(id: string, mode: LayerSelectMode = 'replace') {
+    if (mode === 'toggle') {
+      setSelectedLayerIds(current => current.includes(id)
+        ? current.filter(l => l !== id)
+        : [...current, id]);
+    } else {
+      setSelectedLayerIds([id]);
+    }
+    const type = layers.find(l => l.id === id)?.type;
+    if (type === 'text') dock.selectTab('text');
+    if (type === 'adjustment') dock.selectTab('adjustment');
+  }
+
+  /** Replaces the whole selection at once — used by the canvas's drag-a-box object marquee. */
+  function selectLayers(ids: string[]) {
+    setSelectedLayerIds(ids);
+    if (ids.length === 1 && layers.find(l => l.id === ids[0])?.type === 'text') dock.selectTab('text');
   }
 
   function handleDuplicateLayer(id: string) {
@@ -333,8 +532,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleDeleteLayer(id: string) {
-    updateLayers(current => current.filter(l => l.id !== id), 'Delete Layer');
-    canvasRef.current?.deletePaintCanvas(id);
+    handleDeleteLayers([id]);
+  }
+
+  /** Deletes every given layer. The background is never deletable, so it's filtered out rather
+   *  than special-cased at each call site. */
+  function handleDeleteLayers(ids: string[]) {
+    const doomed = layers.filter(l => ids.includes(l.id) && !l.isBackground && !l.locked).map(l => l.id);
+    if (doomed.length === 0) return;
+    updateLayers(current => current.filter(l => !doomed.includes(l.id)), doomed.length > 1 ? `Delete ${doomed.length} Layers` : 'Delete Layer');
+    doomed.forEach(id => canvasRef.current?.deletePaintCanvas(id));
     setActiveLayerId('background');
   }
 
@@ -382,8 +589,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => current.map(l => l.id === id ? { ...l, blendMode } : l), 'Change Blend Mode');
   }
 
-  function handleAddTextLayer(x: number, y: number) {
-    const layer = createTextLayer(x, y);
+  function handleAddTextLayer(x: number, y: number, boxWidth?: number) {
+    const layer = createTextLayer(x, y, boxWidth);
 
     if (typerArmed && typerLines[typerIndex]) {
       const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
@@ -438,16 +645,43 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const activeLayer = layers.find(l => l.id === activeLayerId) ?? null;
 
+  // Paint-family tools need a clean-patch (raster) layer to draw onto — the Background layer has
+  // no backing canvas, so without this every brush/fill/shape tool would silently no-op the moment
+  // a fresh chapter is opened (Background is the default active layer). Reuse the topmost existing
+  // raster layer if there is one; only create a fresh one if the stack has none at all.
+  useEffect(() => {
+    if (!(PAINT_TOOLS as readonly string[]).includes(activeTool) || !activeLayer) return;
+    if (activeLayer.type === 'clean-patch') return;
+    const existing = [...layers].reverse().find(l => l.type === 'clean-patch');
+    if (existing) {
+      setActiveLayerId(existing.id);
+    } else {
+      handleAddLayer();
+      swalToast({ icon: 'info', title: 'New layer created for painting' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool]);
+
+  const cropHintShownRef = useRef(false);
+  useEffect(() => {
+    if (activeTool === 'crop' && !cropHintShownRef.current) {
+      cropHintShownRef.current = true;
+      swalToast({ icon: 'info', title: 'Draw a rectangle, then press Enter or double-click to crop' });
+    }
+  }, [activeTool]);
+
   const layersPanel = (
     <LayersPanel
       layers={layers}
       activeLayerId={activeLayerId}
+      selectedLayerIds={selectedLayerIds}
       onSelect={selectLayer}
       onToggleVisible={handleToggleVisible}
       onToggleLocked={handleToggleLocked}
       onOpacityChange={handleOpacityChange}
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
+      onAddAdjustment={handleAddAdjustmentLayer}
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
       onMove={handleMoveLayer}
@@ -459,8 +693,41 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   );
 
   const textPanel = activeLayer?.type === 'text' ? (
-    <TextPanel layer={activeLayer} onUpdate={handleUpdateTextLayer} onCenter={handleCenterTextLayer} fontFamilies={allFontFamilies} />
+    <TextPanel
+      layer={activeLayer}
+      onUpdate={handleUpdateTextLayer}
+      onCenter={handleCenterTextLayer}
+      fontFamilies={allFontFamilies}
+      selection={textSelection?.layerId === activeLayer.id ? textSelection : null}
+    />
   ) : null;
+
+  const adjustmentPanel = activeLayer?.type === 'adjustment' ? (
+    <AdjustmentPanel layer={activeLayer} onUpdate={handleUpdateAdjustmentLayer} />
+  ) : null;
+
+  const brushesPanel = (
+    <BrushesPanel
+      color={foreground}
+      activeBrushId={activeBrushId}
+      onSelectBrush={handleSelectBrush}
+      live={{ size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+        spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity }}
+      onLiveChange={(patch) => {
+        if (patch.size !== undefined) setBrushSize(patch.size);
+        if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
+        if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
+        if (patch.flow !== undefined) setBrushFlow(patch.flow);
+        if (patch.spacing !== undefined) setSpacing(patch.spacing);
+        if (patch.angle !== undefined) setBrushAngle(patch.angle);
+        if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
+        if (patch.scatter !== undefined) setScatter(patch.scatter);
+        if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
+        if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
+        if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
+      }}
+    />
+  );
 
   const colorPanel = <ColorPanel />;
   const historyPanel = <HistoryPanel />;
@@ -475,7 +742,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       index={typerIndex}
       onIndexChange={setTyperIndex}
       armed={typerArmed}
-      onArmedChange={(armed) => { setTyperArmed(armed); if (armed) setActiveTool('text'); }}
+      onArmedChange={(armed) => { setTyperArmed(armed); if (armed) setActiveTool(multiBubbleMode ? 'marquee-rect' : 'text'); }}
+      fontFamilies={allFontFamilies}
+      multiBubbleMode={multiBubbleMode}
+      onMultiBubbleModeChange={setMultiBubbleMode}
+      queuedBubbleCount={multiBubbleRects.length}
+      onAddBubbleRect={handleAddBubbleRect}
+      onPlaceAllBubbles={handlePlaceAllBubbles}
     />
   );
 
@@ -491,8 +764,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const allTabs = [
     ...(textPanel ? [{ id: 'text', label: 'Text', content: textPanel }] : []),
+    ...(adjustmentPanel ? [{ id: 'adjustment', label: 'Adjustment', content: adjustmentPanel }] : []),
     { id: 'typer', label: 'TypeR', content: typerPanel },
     { id: 'translation', label: 'Translation', content: translationPanel },
+    { id: 'brushes', label: 'Brushes', content: brushesPanel },
     { id: 'color', label: 'Color', content: colorPanel },
     { id: 'fonts', label: 'Fonts', content: fontsPanel },
     { id: 'history', label: 'History', content: historyPanel },
@@ -520,7 +795,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleDock: () => setDockOpen(v => !v),
     addLayer: handleAddLayer,
     duplicateLayer: () => activeLayerId && handleDuplicateLayer(activeLayerId),
-    deleteLayer: () => activeLayerId && handleDeleteLayer(activeLayerId),
+    // Delete removes the whole selection, not just the primary layer.
+    deleteLayer: () => handleDeleteLayers(selectedLayerIds),
     moveLayerUp: () => activeLayerId && handleMoveLayer(activeLayerId, 'up'),
     moveLayerDown: () => activeLayerId && handleMoveLayer(activeLayerId, 'down'),
     hasActiveLayer: !!activeLayer && !activeLayer.isBackground,
@@ -542,6 +818,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleGrid: () => setShowGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
+    hasSelection: hasSelection(selection),
+    deselect: () => setSelection(NO_SELECTION),
+    featherSelection: handleFeatherSelection,
+    expandSelection: handleExpandSelection,
+    contractSelection: handleContractSelection,
   });
 
   const [layoutMode, setLayoutMode] = useState<'desktop' | 'tablet' | 'phone'>(() => {
@@ -575,7 +856,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   ];
 
   return (
-    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#0b0b0d] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {!panelsHidden && (
         <div className="hidden lg:block relative z-40">
           <MenuBar menus={menus} />
@@ -593,9 +874,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         hasCleaned={!!activePage?.cleaned}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
+        workflowStages={workflowStages}
       />
-
-      <WorkflowBar stages={workflowStages} />
 
       {!panelsHidden && (
         <ToolOptionsBar
@@ -612,6 +892,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onToleranceChange={setTolerance}
           liquifyMode={liquifyMode}
           onLiquifyModeChange={setLiquifyMode}
+          symmetry={symmetry}
+          onSymmetryChange={setSymmetry}
+          spacing={spacing}
+          onSpacingChange={setSpacing}
+          brushShape={brushShape}
+          onBrushShapeChange={setBrushShape}
+          angle={brushAngle}
+          onAngleChange={setBrushAngle}
+          roundness={brushRoundness}
+          onRoundnessChange={setBrushRoundness}
+          scatter={scatter}
+          onScatterChange={setScatter}
+          smoothing={smoothing}
+          onSmoothingChange={setSmoothing}
         />
       )}
 
@@ -643,14 +937,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
                 fitSignal={fitSignal}
                 layers={layers}
                 activeLayerId={activeLayerId}
+                selectedLayerIds={selectedLayerIds}
                 onSelectLayer={selectLayer}
+                onSelectLayers={selectLayers}
                 onAddTextLayer={handleAddTextLayer}
                 onUpdateTextLayer={handleUpdateTextLayer}
+                onTextSelectionChange={setTextSelection}
                 paintSettings={paintSettings}
                 selection={selection}
                 onSelectionChange={setSelection}
                 onPaintStrokeEnd={handlePaintStrokeEnd}
                 onEyedropperPick={setForeground}
+                onCommitCrop={handleCommitCrop}
+                queuedBubbleRects={multiBubbleRects}
               />
             </Panel>
             {!panelsHidden && isDesktop && dockOpen && (
@@ -689,7 +988,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
                     key={t.id}
                     onClick={() => setTabletOverlayTab(prev => prev === t.id ? null : t.id)}
                     title={t.label}
-                    className={`w-11 h-11 rounded-lg text-[10px] font-semibold flex items-center justify-center transition-colors ${
+                    className={`w-11 h-11 rounded-control text-micro font-semibold flex items-center justify-center transition-colors ${
                       tabletOverlayTab === t.id ? 'bg-accent-soft text-accent' : 'text-ink-faint hover:text-ink hover:bg-ink/5'
                     }`}
                   >

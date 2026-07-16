@@ -5,6 +5,7 @@ import { swal, swalToast } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import { loadCustomFont, registerStoredFont } from '../../lib/fontLoader';
 import { loadStoredFonts, saveStoredFonts, type StoredFont } from '../../lib/fontsStore';
+import { StudioPanel } from './StudioPanel';
 
 interface FontsPanelProps {
   onFamiliesChange: (families: string[]) => void;
@@ -34,13 +35,15 @@ export function FontsPanel({ onFamiliesChange }: FontsPanelProps) {
   }, []);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files;
+    // Snapshot the FileList *before* resetting the input: `files` is live, so
+    // clearing `value` first empties it and the upload silently no-ops.
+    const files = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (!files || files.length === 0) return;
+    if (files.length === 0) return;
     setBusy(true);
     try {
       const added: StoredFont[] = [];
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         try {
           const { family, dataUrl } = await loadCustomFont(file);
           added.push({ id: genId('font'), family, dataUrl });
@@ -73,22 +76,26 @@ export function FontsPanel({ onFamiliesChange }: FontsPanelProps) {
   if (!loaded) return null;
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-display font-semibold text-ink-faint uppercase tracking-wide">Fonts</span>
-        <IconButton size="sm" aria-label="Install font" title="Install font (TTF/OTF/WOFF)" disabled={busy} onClick={() => inputRef.current?.click()} className="!bg-transparent">
-          <Upload size={13} />
-        </IconButton>
-        <input ref={inputRef} type="file" accept=".ttf,.otf,.woff,.woff2" multiple className="hidden" onChange={handleUpload} />
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-2">
+    <StudioPanel
+      title="Fonts"
+      bodyClassName="!gap-2"
+      actions={
+        <>
+          <IconButton size="sm" aria-label="Install font" title="Install font (TTF/OTF/WOFF)" disabled={busy} onClick={() => inputRef.current?.click()} className="!bg-transparent">
+            <Upload size={13} />
+          </IconButton>
+          <input ref={inputRef} type="file" accept=".ttf,.otf,.woff,.woff2" multiple className="hidden" onChange={handleUpload} />
+        </>
+      }
+    >
+      <div className="contents">
         {fonts.length === 0 && (
-          <p className="text-[11px] text-ink-faint text-center py-6">No custom fonts installed. Upload TTF/OTF/WOFF files to use them in Text and TypeR.</p>
+          <p className="text-micro text-ink-faint text-center py-6">No custom fonts installed. Upload TTF/OTF/WOFF files to use them in Text and TypeR.</p>
         )}
         {fonts.map(f => (
-          <div key={f.id} className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-ink/[0.03] px-2.5 py-2">
+          <div key={f.id} className="flex items-center justify-between gap-2 rounded-control border border-hairline bg-ink/5 px-2.5 py-2">
             <div className="min-w-0">
-              <p className="text-xs text-ink truncate" style={{ fontFamily: f.family }}>{f.family}</p>
+              <p className="text-ui text-ink truncate" style={{ fontFamily: f.family }}>{f.family}</p>
               <p className="text-[15px] text-ink truncate" style={{ fontFamily: f.family }}>The quick brown fox</p>
             </div>
             <IconButton size="sm" aria-label={`Remove ${f.family}`} onClick={() => removeFont(f.id)} className="!bg-transparent !w-7 !h-7 shrink-0 hover:!text-danger">
@@ -97,6 +104,6 @@ export function FontsPanel({ onFamiliesChange }: FontsPanelProps) {
           </div>
         ))}
       </div>
-    </div>
+    </StudioPanel>
   );
 }

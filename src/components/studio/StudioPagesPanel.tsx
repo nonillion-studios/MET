@@ -26,7 +26,7 @@ export function StudioPagesPanel({ pages, activePageId, onSelect, orientation }:
             key={page.id}
             onClick={() => onSelect(page.id)}
             className={cn(
-              'relative rounded-lg overflow-hidden border-2 shrink-0 transition-all',
+              'relative rounded-control overflow-hidden border-2 shrink-0 transition-all',
               orientation === 'vertical' ? 'w-full aspect-[2/3]' : 'h-full aspect-[2/3]',
               active ? 'border-accent shadow-[0_0_0_3px_var(--color-accent-soft)]' : 'border-hairline hover:border-accent/40'
             )}

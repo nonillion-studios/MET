@@ -3,10 +3,12 @@ export type DockRegionId = 'top' | 'bottom';
 /** Where each dock tab lives by default; user float/dock-back actions only change this at runtime, in memory. */
 export const DEFAULT_DOCK_REGION: Record<string, DockRegionId> = {
   text: 'top',
+  adjustment: 'top',
   layers: 'top',
   typer: 'bottom',
   translation: 'bottom',
   color: 'bottom',
+  brushes: 'bottom',
   fonts: 'bottom',
   history: 'bottom',
   pages: 'bottom',

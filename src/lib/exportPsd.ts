@@ -1,4 +1,6 @@
-import type { Psd, Layer as PsdLayer } from 'ag-psd';
+import type { Psd, Layer as PsdLayer, LayerEffectGradientOverlay, TextStyleRun } from 'ag-psd';
+import type { TextGradient, TextLayerData } from '../components/studio/studioTypes';
+import { normalizeRuns, resolveRunStyle } from '../components/studio/textRuns';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
 
@@ -7,6 +9,66 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean.padEnd(6, '0');
   const num = parseInt(full, 16);
   return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+/**
+ * Our angle is degrees clockwise from left-to-right in screen coords (y grows down), so 90 means
+ * top-to-bottom. Photoshop measures gradient angle counter-clockwise with y up, where 90 means
+ * bottom-to-top — so the two conventions are the same axis mirrored, and the angle negates.
+ *
+ * ag-psd normalizes stop `location`/`midpoint` to 0..1 and `opacity` to 0..1, scaling them on
+ * write (see serializeGradient in ag-psd's descriptor.js) — these are not raw PSD 0..4096 units.
+ */
+function buildGradientOverlay(gradient: TextGradient): LayerEffectGradientOverlay {
+  return {
+    enabled: true,
+    blendMode: 'normal',
+    opacity: 1,
+    align: true,
+    scale: 1,
+    type: 'linear',
+    angle: -gradient.angle,
+    gradient: {
+      name: 'Text gradient',
+      type: 'solid',
+      colorStops: [
+        { color: hexToRgb(gradient.from), location: 0, midpoint: 0.5 },
+        { color: hexToRgb(gradient.to), location: 1, midpoint: 0.5 },
+      ],
+      opacityStops: [
+        { opacity: 1, location: 0, midpoint: 0.5 },
+        { opacity: 1, location: 1, midpoint: 0.5 },
+      ],
+    },
+  };
+}
+
+/**
+ * Our per-character runs -> Photoshop's `styleRuns`. Returns [] for plain text so the layer just
+ * carries its default style, which is what pre-run chapters and unstyled text should produce.
+ *
+ * `kerning` is emitted with `autoKerning: false`: a manual kern and the font's own metric kerning
+ * are alternatives in Photoshop, so leaving auto on would let the font fight the explicit value.
+ */
+function buildStyleRuns(t: TextLayerData): TextStyleRun[] {
+  const runs = normalizeRuns(t.content, t.runs ?? []);
+  if (runs.length === 0) return [];
+  return runs.map(run => {
+    const style = resolveRunStyle(t, run);
+    return {
+      length: run.length,
+      style: {
+        font: { name: style.fontFamily },
+        fontSize: style.fontSize,
+        fauxBold: style.fontWeight >= 600,
+        fauxItalic: style.italic,
+        fillColor: hexToRgb(style.color),
+        tracking: style.letterSpacing,
+        ...(style.kerning !== 0 ? { kerning: style.kerning, autoKerning: false } : {}),
+        ...(style.baselineShift !== 0 ? { baselineShift: style.baselineShift } : {}),
+      },
+    };
+  });
 }
 
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {
@@ -43,6 +105,7 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
     base.canvas = await dataUrlToCanvas(layer.raster, width, height);
   } else if (layer.type === 'text' && layer.text) {
     const t = layer.text;
+    const runs = buildStyleRuns(t);
     const lineCount = t.content.split('\n').length || 1;
     // Editable text layer per ag-psd's LayerTextData — Photoshop can re-edit this directly.
     // Font family names pass through as-is; Photoshop substitutes if that font isn't installed
@@ -61,7 +124,16 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
         fillColor: hexToRgb(t.color),
         ...(t.strokeWidth > 0 ? { strokeColor: hexToRgb(t.strokeColor), strokeFlag: true, outlineWidth: t.strokeWidth } : {}),
       },
+      // Per-character runs map onto Photoshop's own style runs, so mixed-size/colour text stays
+      // editable there rather than being flattened to the layer's default style.
+      ...(runs.length > 0 ? { styleRuns: runs } : {}),
     };
+    // A gradient overlay is how gradient text is done by hand in Photoshop, and it stays editable
+    // there. `style.fillColor` above is left as the flat colour underneath, so the layer still
+    // degrades sensibly if the effect is switched off.
+    if (t.gradient?.enabled) {
+      base.effects = { gradientOverlay: [buildGradientOverlay(t.gradient)] };
+    }
   }
 
   return base;

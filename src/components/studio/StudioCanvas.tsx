@@ -1,15 +1,28 @@
-import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { Image as ImageIcon } from 'lucide-react';
 import { Stage, Layer, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer } from 'react-konva';
 import type Konva from 'konva';
-import type { Page } from '../../types';
-import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData } from './studioTypes';
+import type { Page, ProcessedImage } from '../../types';
+import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type LayerSelectMode } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
+import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
+import { layoutText } from './textLayout';
+import { reflowRunsForContent } from './textRuns';
 import { swalToast } from '../../lib/swalTheme';
 import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
 import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
-import type { Selection } from './paint/selection';
+import { NO_SELECTION, combineModeFromModifiers, combineSelections, type Selection, type SelectionCombineMode } from './paint/selection';
 import { strokePenPath, type PaintSettings } from './paint/paintEngine';
+import { BrushCursor } from './paint/BrushCursor';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
+import { filterForAdjustment } from '../../lib/adjustments';
+
+/** A character range inside one text layer, as reported by the editing textarea. */
+export interface TextSelection {
+  layerId: string;
+  start: number;
+  end: number;
+}
 
 export interface ExportSnapshot {
   width: number;
@@ -26,6 +39,11 @@ const RULER_SIZE = 20;
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
+/** Tools whose footprint is brush-sized, so they get the live outline cursor instead of the OS one. */
+const BRUSH_CURSOR_TOOLS = new Set([
+  'brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge',
+  'dodge', 'burn', 'sponge', 'spot-heal', 'liquify',
+]);
 
 interface StudioCanvasProps {
   page: Page | null;
@@ -40,10 +58,21 @@ interface StudioCanvasProps {
   /** Non-background layers stacked above the page image, bottom to top. */
   layers: StudioLayer[];
   activeLayerId: string | null;
-  onSelectLayer: (id: string) => void;
+  onSelectLayer: (id: string, mode?: LayerSelectMode) => void;
+  /** Every layer selected on canvas (primary last). Drives the combined transform box. */
+  selectedLayerIds?: string[];
+  /** Replaces the whole selection — used by the drag-a-box object marquee. */
+  onSelectLayers?: (ids: string[]) => void;
   /** x/y are in page-image coordinates. */
-  onAddTextLayer: (x: number, y: number) => void;
+  /** boxWidth given => box text of that width (click-drag); omitted => point text (click). */
+  onAddTextLayer: (x: number, y: number, boxWidth?: number) => void;
   onUpdateTextLayer: (id: string, patch: Partial<TextLayerData>) => void;
+  /**
+   * The character range selected inside the text layer being edited, or null when nothing is being
+   * edited. Lifted out of the canvas so TextPanel can apply character styling to the selection —
+   * the editing overlay is a plain textarea, so its selectionStart/End *is* the selection model.
+   */
+  onTextSelectionChange?: (selection: TextSelection | null) => void;
   /** Current brush/fill/etc. settings, driven by the tool options bar. */
   paintSettings: PaintSettings;
   /** Active selection (marquee/lasso/wand); paint ops clip to this when present. */
@@ -53,6 +82,10 @@ interface StudioCanvasProps {
   onPaintStrokeEnd: (layerId: string, before: ImageData) => void;
   /** Fired when the Eyedropper samples a pixel from the background page image. */
   onEyedropperPick?: (hex: string) => void;
+  /** Fired on Enter/double-click while the Crop tool is active, to commit the current rect selection as a crop. */
+  onCommitCrop?: () => void;
+  /** TypeR Multi-Bubble mode's already-queued rects, drawn as a distinct overlay from the live selection. */
+  queuedBubbleRects?: { x: number; y: number; width: number; height: number }[];
 }
 
 export interface StudioCanvasHandle {
@@ -74,19 +107,35 @@ export interface StudioCanvasHandle {
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  /**
+   * Crops the background (original + cleaned) and every raster layer's canvas to `rect` (page-image
+   * coordinates), in place. Returns the new original/cleaned image data so the caller (Studio.tsx)
+   * can persist it and shift text layers by (-rect.x, -rect.y); null if there's no page loaded.
+   */
+  commitCrop: (rect: { x: number; y: number; width: number; height: number }) => Promise<{ original: ProcessedImage; cleaned: ProcessedImage | null } | null>;
+  /**
+   * Copies the current background pixels into a clean-patch layer's raster canvas. Called right
+   * after a new layer is created so Clone/Heal/filter-brush/Liquify tools have real page content
+   * to work on immediately — a brand new blank layer would make those tools no-ops, since they
+   * only ever read/write the active layer's own canvas, never the background underneath it.
+   */
+  seedLayerWithBackground: (layerId: string) => void;
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
-  activeLayerId, onSelectLayer, onAddTextLayer, onUpdateTextLayer,
-  paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick,
+  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onTextSelectionChange,
+  paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
+  queuedBubbleRects,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
-  const textNodeRefs = useRef<Record<string, Konva.Text | null>>({});
+  const textNodeRefs = useRef<Record<string, Konva.Group | null>>({});
   const layerNodeRefs = useRef<Record<string, Konva.Layer | null>>({});
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
+  /** Per-layer pristine pre-liquify snapshot, for Liquify's Reconstruct mode — see usePaintLayer.ts. */
+  const liquifySnapshots = useRef<Record<string, ImageData>>({}).current;
   const layersRef = useRef(layers);
   layersRef.current = layers;
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
@@ -95,13 +144,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
+  const bgImageNodeRef = useRef<Konva.Image | null>(null);
   const pinchDistRef = useRef<number | null>(null);
   const prevPinchCenterRef = useRef<{ x: number; y: number } | null>(null);
   const [touchCount, setTouchCount] = useState(0);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  /** The canvas selection. Falls back to the primary layer when the host doesn't track a set. */
+  const selectionIds = useMemo(
+    () => selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []),
+    [selectedLayerIds, activeLayerId],
+  );
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** Text tool drag origin — a drag makes box text, a plain click makes point text. */
+  const textDragRef = useRef<{ x: number; y: number } | null>(null);
+  /** Set when a text drag already created a layer, so the trailing click doesn't make a second one. */
+  const textDragConsumedRef = useRef(false);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
+  /** Selection to combine against and how, captured from Shift/Alt at the start of a marquee/lasso drag. */
+  const combineBaseRef = useRef<Selection>(NO_SELECTION);
+  const combineModeRef = useRef<SelectionCombineMode>('replace');
   const sampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  /** Pointer position in container/CSS px for the live brush outline; null when off-canvas. */
+  const [brushCursorPos, setBrushCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [penPoints, setPenPoints] = useState<{ x: number; y: number }[]>([]);
   const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
@@ -152,6 +216,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       layerNodeRefs.current[layerId ?? '']?.batchDraw();
       if (layerId) onPaintStrokeEnd(layerId, before);
     },
+    getLayerId: () => paintLayerIdRef.current,
+    liquifySnapshots,
+    getFallbackCanvas: () => sampleCanvasRef.current,
   });
 
   useImperativeHandle(ref, () => ({
@@ -165,6 +232,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     },
     deletePaintCanvas(layerId: string) {
       deleteCanvasFor(paintCanvasRegistry.current, layerId);
+      delete liquifySnapshots[layerId];
     },
     exportRasterLayers() {
       // Exports every raster canvas the registry currently holds — not just the active page's —
@@ -200,7 +268,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const bgCanvas = document.createElement('canvas');
       bgCanvas.width = img.width;
       bgCanvas.height = img.height;
-      bgCanvas.getContext('2d')!.drawImage(img, 0, 0);
+      const bgCtx = bgCanvas.getContext('2d')!;
+      bgCtx.drawImage(img, 0, 0);
+      const bgAdjustments = layersRef.current.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
+      if (bgAdjustments.length > 0) {
+        const bgImageData = bgCtx.getImageData(0, 0, bgCanvas.width, bgCanvas.height);
+        for (const l of bgAdjustments) filterForAdjustment(l.adjustment!)(bgImageData);
+        bgCtx.putImageData(bgImageData, 0, 0);
+      }
       const exportLayers: SerializedStudioLayer[] = layersRef.current.map((l) => {
         const canvas = paintCanvasRegistry.current[l.id];
         return canvas ? { ...l, raster: canvas.toDataURL('image/png') } : l;
@@ -242,7 +317,55 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       });
       swalToast({ icon: 'success', title: 'Centered in bubble' });
     },
-  }), [onUpdateTextLayer, scale, pos, containerSize]);
+    async commitCrop(rect) {
+      if (!page) return null;
+      const cw = page.original.width, ch = page.original.height;
+      const rx = Math.max(0, Math.min(cw - 1, Math.round(Math.min(rect.x, rect.x + rect.width))));
+      const ry = Math.max(0, Math.min(ch - 1, Math.round(Math.min(rect.y, rect.y + rect.height))));
+      const rw = Math.max(0, Math.min(cw - rx, Math.round(Math.abs(rect.width))));
+      const rh = Math.max(0, Math.min(ch - ry, Math.round(Math.abs(rect.height))));
+      if (rw < 2 || rh < 2) return null;
+
+      async function cropSource(pi: ProcessedImage): Promise<ProcessedImage> {
+        const img = await loadImageFromSrc(pi.dataUrl);
+        const canvas = document.createElement('canvas');
+        canvas.width = rw;
+        canvas.height = rh;
+        canvas.getContext('2d')!.drawImage(img, rx, ry, rw, rh, 0, 0, rw, rh);
+        return { ...pi, dataUrl: canvas.toDataURL(pi.mimeType || 'image/png'), width: rw, height: rh };
+      }
+
+      const newOriginal = await cropSource(page.original);
+      const newCleaned = page.cleaned ? await cropSource(page.cleaned) : null;
+
+      // Crop every raster layer's canvas in place — same registry object, so Konva's existing
+      // <Image> references keep working, just pointing at newly-sized/redrawn pixel content.
+      for (const layerId of Object.keys(paintCanvasRegistry.current)) {
+        const old = paintCanvasRegistry.current[layerId];
+        if (!old) continue;
+        const cropped = document.createElement('canvas');
+        cropped.width = rw;
+        cropped.height = rh;
+        cropped.getContext('2d')!.drawImage(old, rx, ry, rw, rh, 0, 0, rw, rh);
+        old.width = rw;
+        old.height = rh;
+        old.getContext('2d')!.drawImage(cropped, 0, 0);
+        layerNodeRefs.current[layerId]?.batchDraw();
+      }
+
+      return { original: newOriginal, cleaned: newCleaned };
+    },
+    seedLayerWithBackground(layerId: string) {
+      const img = imageRef.current;
+      if (!img) return;
+      const canvas = getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      layerNodeRefs.current[layerId]?.batchDraw();
+    },
+  }), [onUpdateTextLayer, scale, pos, containerSize, page]);
 
   const activeSource = showCleaned && page?.cleaned ? page.cleaned : page?.original ?? null;
   // Only meaningful when the cleaned page is the base — overlaying the original above itself is a no-op.
@@ -266,18 +389,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return () => { img.onload = null; };
   }, [overlaySource]);
 
-  // Esc cancels an in-progress Pen path or polygonal lasso; Enter commits either.
+  // Esc cancels an in-progress Pen path or polygonal lasso; Enter commits either (or a pending Crop).
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && penPoints.length > 0) setPenPoints([]);
       if (e.key === 'Escape' && lassoPolyPoints.length > 0) setLassoPolyPoints([]);
       if (e.key === 'Enter' && activeTool === 'pen' && penPoints.length > 1) commitPenPath();
       if (e.key === 'Enter' && activeTool === 'lasso-polygon' && lassoPolyPoints.length > 2) commitLassoPolygon();
+      if (e.key === 'Enter' && activeTool === 'crop') onCommitCrop?.();
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [penPoints, lassoPolyPoints, activeTool]);
+  }, [penPoints, lassoPolyPoints, activeTool, onCommitCrop]);
 
   // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
   useEffect(() => {
@@ -316,6 +440,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 
   useEffect(() => { fitToScreen(); }, [fitToScreen, page?.id, fitSignal]);
 
+  // Adjustment layers apply to the background page image only (see studioTypes.ts
+  // AdjustmentLayerData doc) — stacked in layer order, cached once and re-cached only
+  // when params/image change so idle repaints stay cheap on low-end devices.
+  const adjustmentLayers = layers.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
+  const adjustmentKey = adjustmentLayers.map(l => JSON.stringify(l.adjustment)).join('|');
+  useEffect(() => {
+    const node = bgImageNodeRef.current;
+    if (!node) return;
+    if (adjustmentLayers.length === 0) {
+      node.clearCache();
+      node.filters([]);
+      node.getLayer()?.batchDraw();
+      return;
+    }
+    node.filters(adjustmentLayers.map(l => filterForAdjustment(l.adjustment!)));
+    node.cache();
+    node.getLayer()?.batchDraw();
+  }, [adjustmentKey, image]);
+
   // Freshly created text layers start empty — drop straight into editing mode.
   useEffect(() => {
     const layer = layersRef.current.find(l => l.id === activeLayerId);
@@ -324,20 +467,37 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
   }, [activeLayerId]);
 
-  // Keep the Transformer bound to the selected text layer's node.
+  // Keep the Transformer bound to every selected text node. Konva derives the combined bounding box
+  // from the node list itself, so a multi-selection needs no separate box maths.
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
-    const node = activeTool === 'select' && !editingLayerId && activeLayerId
-      ? textNodeRefs.current[activeLayerId]
-      : null;
-    transformer.nodes(node ? [node] : []);
+    const nodes = activeTool === 'select' && !editingLayerId
+      ? selectionIds.map(id => textNodeRefs.current[id]).filter((n): n is Konva.Group => !!n)
+      : [];
+    transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
-  }, [activeLayerId, activeTool, editingLayerId, layers]);
+  }, [selectionIds, activeTool, editingLayerId, layers]);
 
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     const targetClass = e.target.getClassName?.();
-    const clickedBackground = e.target === e.target.getStage() || targetClass === 'Image' || targetClass === 'Rect';
+    // A text layer's hit area is a Rect too, so it must be excluded by name — otherwise clicking
+    // text counts as clicking background and clears the selection the click just made.
+    const clickedBackground = e.target === e.target.getStage() || targetClass === 'Image'
+      || (targetClass === 'Rect' && !e.target.hasName(TEXT_HIT_NAME));
+
+    if (activeTool === 'zoom') {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!stage || !pointer) return;
+      const factor = e.evt.altKey ? 1 / 1.5 : 1.5;
+      const oldScale = scale;
+      const newScale = clampScale(oldScale * factor);
+      const pointTo = { x: (pointer.x - pos.x) / oldScale, y: (pointer.y - pos.y) / oldScale };
+      setScale(newScale);
+      setPos({ x: pointer.x - pointTo.x * newScale, y: pointer.y - pointTo.y * newScale });
+      return;
+    }
 
     if (activeTool === 'pen') {
       const stage = stageRef.current;
@@ -350,11 +510,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (activeTool === 'lasso-polygon') {
       const p = imageSpacePointer();
       if (!p) return;
-      setLassoPolyPoints(prev => [...prev, p]);
+      setLassoPolyPoints(prev => {
+        if (prev.length === 0) {
+          combineBaseRef.current = selection;
+          combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
+        }
+        return [...prev, p];
+      });
+      return;
+    }
+
+    // Clicking empty canvas with the Select tool clears the selection — without this there'd be no
+    // way to drop a multi-selection short of clicking another layer.
+    if (activeTool === 'select') {
+      if (objectMarqueeConsumedRef.current) { objectMarqueeConsumedRef.current = false; return; }
+      if (clickedBackground) onSelectLayers?.([]);
       return;
     }
 
     if (activeTool !== 'text') return;
+    if (textDragConsumedRef.current) { textDragConsumedRef.current = false; return; }
     if (!clickedBackground) return;
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
@@ -379,9 +554,24 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       panRef.current = { active: true, lastX: e.evt.clientX, lastY: e.evt.clientY };
       return;
     }
+    if (activeTool === 'select') {
+      // Only a drag starting on empty canvas marquees; starting on a layer means move it.
+      const targetClass = e.target.getClassName?.();
+      const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
+      if (!onEmpty) return;
+      const p = imageSpacePointer();
+      if (!p) return;
+      objectMarqueeRef.current = { x: p.x, y: p.y, additive: e.evt.shiftKey };
+      return;
+    }
+    if (activeTool === 'text') {
+      const p = imageSpacePointer();
+      if (p) textDragRef.current = p;
+      return;
+    }
     if (activeTool === 'wand') {
       const p = imageSpacePointer();
-      if (p) paint.pickMagicWand(p.x, p.y);
+      if (p) paint.pickMagicWand(p.x, p.y, combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey));
       return;
     }
     if (activeTool === 'eyedropper') {
@@ -397,20 +587,27 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (MARQUEE_TOOLS.has(activeTool)) {
       const p = imageSpacePointer();
       if (!p || !image) return;
+      const mode = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
       if (activeTool === 'marquee-row') {
-        onSelectionChange({ kind: 'rect', x: 0, y: p.y - 2, width: image.width, height: 4 });
+        const rect: Selection = { kind: 'rect', x: 0, y: p.y - 2, width: image.width, height: 4 };
+        onSelectionChange(mode === 'replace' ? rect : combineSelections(selection, rect, mode, image.width, image.height));
         return;
       }
       if (activeTool === 'marquee-col') {
-        onSelectionChange({ kind: 'rect', x: p.x - 2, y: 0, width: 4, height: image.height });
+        const rect: Selection = { kind: 'rect', x: p.x - 2, y: 0, width: 4, height: image.height };
+        onSelectionChange(mode === 'replace' ? rect : combineSelections(selection, rect, mode, image.width, image.height));
         return;
       }
+      combineBaseRef.current = selection;
+      combineModeRef.current = mode;
       marqueeStartRef.current = p;
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
       const p = imageSpacePointer();
       if (!p) return;
+      combineBaseRef.current = selection;
+      combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
       lassoPointsRef.current = [p];
       return;
     }
@@ -447,6 +644,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const handlePaintPointerMove = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (panRef.current?.active) return;
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
+    if (objectMarqueeRef.current) {
+      const p = imageSpacePointer();
+      if (!p) return;
+      const start = objectMarqueeRef.current;
+      setObjectMarquee({
+        x: Math.min(start.x, p.x),
+        y: Math.min(start.y, p.y),
+        width: Math.abs(p.x - start.x),
+        height: Math.abs(p.y - start.y),
+      });
+      return;
+    }
     if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
       const p = imageSpacePointer();
       if (!p) return;
@@ -485,8 +694,54 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (panRef.current?.active) { panRef.current = null; return; }
-    if (MARQUEE_TOOLS.has(activeTool)) { marqueeStartRef.current = null; return; }
-    if (LASSO_TOOLS.has(activeTool)) { lassoPointsRef.current = null; return; }
+    if (objectMarqueeRef.current) {
+      const { additive } = objectMarqueeRef.current;
+      const box = objectMarquee;
+      objectMarqueeRef.current = null;
+      setObjectMarquee(null);
+      // A tiny box is a click on empty canvas, not a drag — handleStageClick clears the selection.
+      if (!box || box.width < 4 || box.height < 4) return;
+      objectMarqueeConsumedRef.current = true;
+      const hits = layers
+        .filter(l => l.type === 'text' && !l.locked && l.visible)
+        .filter(l => {
+          const r = textLayerRect(l.id);
+          return !!r && r.x < box.x + box.width && r.x + r.width > box.x
+            && r.y < box.y + box.height && r.y + r.height > box.y;
+        })
+        .map(l => l.id);
+      // Shift keeps whatever was already selected, matching the marquee tools' add convention.
+      const next = additive ? [...new Set([...selectionIds, ...hits])] : hits;
+      onSelectLayers?.(next);
+      return;
+    }
+    if (activeTool === 'text' && textDragRef.current) {
+      const start = textDragRef.current;
+      textDragRef.current = null;
+      const p = imageSpacePointer();
+      const width = p ? Math.abs(p.x - start.x) : 0;
+      // Below the threshold this was a click, not a drag — let handleStageClick
+      // make point text instead.
+      if (p && width >= 12) {
+        textDragConsumedRef.current = true;
+        onAddTextLayer(Math.min(start.x, p.x), Math.min(start.y, p.y), width);
+      }
+      return;
+    }
+    if (MARQUEE_TOOLS.has(activeTool)) {
+      if (marqueeStartRef.current && combineModeRef.current !== 'replace' && image) {
+        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      }
+      marqueeStartRef.current = null;
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool)) {
+      if (lassoPointsRef.current && combineModeRef.current !== 'replace' && image) {
+        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      }
+      lassoPointsRef.current = null;
+      return;
+    }
     if (!isPaintTool) return;
     const p = imageSpacePointer();
     if (!p) return;
@@ -509,16 +764,47 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   };
 
   const commitLassoPolygon = () => {
-    if (lassoPolyPoints.length > 2) onSelectionChange({ kind: 'polygon', points: lassoPolyPoints });
+    if (lassoPolyPoints.length > 2 && image) {
+      const shape: Selection = { kind: 'polygon', points: lassoPolyPoints };
+      onSelectionChange(combineModeRef.current === 'replace' ? shape : combineSelections(combineBaseRef.current, shape, combineModeRef.current, image.width, image.height));
+    }
     setLassoPolyPoints([]);
   };
 
   const handleStageDblClick = () => {
     if (activeTool === 'pen') commitPenPath();
     if (activeTool === 'lasso-polygon') commitLassoPolygon();
+    if (activeTool === 'crop') onCommitCrop?.();
   };
 
   const editingLayer = editingLayerId ? layers.find(l => l.id === editingLayerId) ?? null : null;
+
+  /**
+   * The Select tool's drag-a-box-over-empty-canvas object marquee. Distinct from `selection`, which
+   * is the *pixel* selection the paint tools clip to — this one picks layers.
+   */
+  const [objectMarquee, setObjectMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const objectMarqueeRef = useRef<{ x: number; y: number; additive: boolean } | null>(null);
+  /**
+   * A completed marquee drag still fires a trailing stage click, which would immediately clear the
+   * selection the drag just made. Mirrors `textDragConsumedRef`'s handling of the same problem.
+   */
+  const objectMarqueeConsumedRef = useRef(false);
+
+  /** Page-space bounds of a text layer's node, rotation included (Konva gives it to us). */
+  const textLayerRect = (id: string) => {
+    const node = textNodeRefs.current[id];
+    const konvaLayer = node?.getLayer();
+    // Relative to its Konva layer, which carries no transform of its own — so this comes back in
+    // page coords rather than screen coords, and stays correct under pan/zoom.
+    return node && konvaLayer ? node.getClientRect({ relativeTo: konvaLayer }) : null;
+  };
+
+
+  const reportSelection = useCallback((el: HTMLTextAreaElement) => {
+    if (!editingLayerId) return;
+    onTextSelectionChange?.({ layerId: editingLayerId, start: el.selectionStart, end: el.selectionEnd });
+  }, [editingLayerId, onTextSelectionChange]);
 
   const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -596,11 +882,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // Space/middle-mouse panning is handled manually via panRef (see handlePaintPointerDown and the
   // window mousemove/mouseup effect) so it works uniformly across tools without fighting Konva's
   // own native drag-handling for the Pan/Select tools.
-  const draggable = (activeTool === 'pan' || activeTool === 'select') && !spaceDown;
-  const cursorClass = panRef.current?.active || spaceDown ? 'cursor-grab' : '';
+  // Only the Pan tool drags the stage natively. The Select tool's drag is the object marquee
+  // (Part E), so panning while it's active goes through the same Space-hold / middle-drag path
+  // every other tool already uses.
+  const draggable = activeTool === 'pan' && !spaceDown;
+  const panning = panRef.current?.active || spaceDown;
+  // Hide the OS cursor while a brush-sized tool is armed — the BrushCursor ring below
+  // *is* the cursor, and showing both reads as a doubled pointer.
+  const showBrushCursor = !panning && BRUSH_CURSOR_TOOLS.has(activeTool) && brushCursorPos !== null;
+  const cursorClass = panning ? 'cursor-grab' : showBrushCursor ? 'cursor-none' : '';
 
   return (
-    <div ref={containerRef} className={`relative w-full h-full overflow-hidden bg-[#0b0b0d] touch-none ${cursorClass}`}>
+    <div
+      ref={containerRef}
+      className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}
+      onPointerMove={(e) => {
+        if (!BRUSH_CURSOR_TOOLS.has(activeTool)) return;
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        setBrushCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      }}
+      onPointerLeave={() => setBrushCursorPos(null)}
+    >
       {containerSize.width > 0 && (
         <Stage
           ref={stageRef}
@@ -636,7 +939,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   shadowBlur={20}
                   shadowOpacity={0.6}
                 />
-                <KonvaImage image={image} width={image.width} height={image.height} />
+                <KonvaImage ref={bgImageNodeRef} image={image} width={image.width} height={image.height} />
                 {overlayImage && (
                   <KonvaImage
                     image={overlayImage}
@@ -670,48 +973,32 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 />
               )}
               {layer.type === 'text' && layer.text && (
-                <KonvaText
-                  ref={(node) => { textNodeRefs.current[layer.id] = node; }}
-                  visible={layer.id !== editingLayerId}
-                  text={layer.text.content || ' '}
-                  x={layer.text.x}
-                  y={layer.text.y}
-                  width={layer.text.width}
-                  fontFamily={layer.text.fontFamily}
-                  fontSize={layer.text.fontSize}
-                  fontStyle={`${layer.text.bold ? 'bold' : ''} ${layer.text.italic ? 'italic' : ''}`.trim() || 'normal'}
-                  fill={layer.text.color}
-                  align={layer.text.align}
-                  lineHeight={layer.text.lineHeight}
-                  stroke={layer.text.strokeWidth > 0 ? layer.text.strokeColor : undefined}
-                  strokeWidth={layer.text.strokeWidth}
-                  rotation={layer.text.rotation}
+                <TextLayerNode
+                  layer={layer}
+                  groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
+                  editing={layer.id === editingLayerId}
+                  selected={selectionIds.includes(layer.id) && activeTool === 'select'}
                   draggable={activeTool === 'select' && !layer.locked}
-                  onClick={() => onSelectLayer(layer.id)}
-                  onTap={() => onSelectLayer(layer.id)}
-                  onDblClick={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
-                  onDblTap={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
-                  onDragEnd={(e) => onUpdateTextLayer(layer.id, { x: e.target.x(), y: e.target.y() })}
-                  onTransformEnd={(e) => {
-                    const node = e.target as Konva.Text;
-                    const scaleX = node.scaleX();
-                    const scaleY = node.scaleY();
-                    node.scaleX(1);
-                    node.scaleY(1);
-                    onUpdateTextLayer(layer.id, {
-                      x: node.x(),
-                      y: node.y(),
-                      rotation: node.rotation(),
-                      width: Math.max(20, node.width() * scaleX),
-                      fontSize: Math.max(6, layer.text!.fontSize * scaleY),
-                    });
-                  }}
+                  onSelect={(mode) => onSelectLayer(layer.id, mode)}
+                  onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
+                  onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
                 />
               )}
             </Layer>
           ))}
 
           <Layer listening={false}>
+            {/* Object marquee — solid accent fill, deliberately unlike the dashed white *pixel*
+                selection, since the two mean different things (pick layers vs clip paint). */}
+            {objectMarquee && (
+              <Rect
+                x={objectMarquee.x} y={objectMarquee.y}
+                width={objectMarquee.width} height={objectMarquee.height}
+                fill="rgba(56, 189, 248, 0.12)"
+                stroke="#38bdf8"
+                strokeWidth={1 / scale}
+              />
+            )}
             {selection.kind === 'rect' && (
               <Rect x={selection.x} y={selection.y} width={selection.width} height={selection.height}
                 stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} />
@@ -729,6 +1016,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               <Rect x={selection.bounds.x} y={selection.bounds.y} width={selection.bounds.width} height={selection.bounds.height}
                 stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} opacity={0.8} />
             )}
+            {queuedBubbleRects?.map((rect, i) => (
+              <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
+                stroke="#f59e0b" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />
+            ))}
             {penPoints.length > 0 && (
               <>
                 <Line points={penPoints.flatMap(p => [p.x, p.y])} stroke={paintSettings.color} strokeWidth={2 / scale} />
@@ -763,7 +1054,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             <Transformer
               ref={transformerRef}
               rotateEnabled
-              enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'middle-left', 'middle-right']}
+              enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']}
               boundBoxFunc={(oldBox, newBox) => (newBox.width < 20 ? oldBox : newBox)}
             />
           </Layer>
@@ -773,14 +1064,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         <textarea
           autoFocus
           value={editingLayer.text.content}
-          onChange={(e) => onUpdateTextLayer(editingLayer.id, { content: e.target.value })}
-          onBlur={() => setEditingLayerId(null)}
+          onChange={(e) => {
+            const prev = editingLayer.text!;
+            // Runs are indexed against `content`, so any content change has to re-anchor them or
+            // styled spans would slide off their characters as you type.
+            onUpdateTextLayer(editingLayer.id, {
+              content: e.target.value,
+              runs: reflowRunsForContent(prev.content, e.target.value, prev.runs ?? []),
+            });
+            reportSelection(e.target);
+          }}
+          onSelect={(e) => reportSelection(e.currentTarget)}
+          onKeyUp={(e) => reportSelection(e.currentTarget)}
+          onMouseUp={(e) => reportSelection(e.currentTarget)}
+          // Triple-click selects the whole item (Part D). The textarea sits above the stage once
+          // editing starts, so the third click never reaches the Konva node — it has to be handled
+          // here, not on the shape.
+          onClick={(e) => { if (e.detail === 3) e.currentTarget.select(); reportSelection(e.currentTarget); }}
+          onBlur={() => { setEditingLayerId(null); onTextSelectionChange?.(null); }}
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
           className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
           style={{
             top: pos.y + editingLayer.text.y * scale,
             left: pos.x + editingLayer.text.x * scale,
-            width: editingLayer.text.width * scale,
+            width: (editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width) * scale,
             fontSize: editingLayer.text.fontSize * scale,
             fontFamily: editingLayer.text.fontFamily,
             fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
@@ -792,9 +1099,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           }}
         />
       )}
+      {showBrushCursor && (
+        <BrushCursor pos={brushCursorPos} scale={scale} settings={paintSettings} tool={activeTool} />
+      )}
       {!page && (
-        <div className="absolute inset-0 flex items-center justify-center text-white/40 text-sm">
-          Select a page to begin
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
+          <ImageIcon size={28} className="text-white/25" strokeWidth={1.5} />
+          <p className="text-title font-medium text-white/50">No page selected</p>
+          <p className="text-ui text-white/30 max-w-xs">Pick a page from the Pages panel to start cleaning and typesetting.</p>
         </div>
       )}
       {showRulers && image && (
@@ -814,12 +1126,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
       )}
-      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg liquid-glass text-[11px] font-mono text-white/80">
+      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80">
         {Math.round(scale * 100)}%
       </div>
     </div>
   );
 });
+
+function loadImageFromSrc(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to decode image'));
+    img.src = src;
+  });
+}
 
 function waitForImage(imageRef: { current: HTMLImageElement | null }, timeoutMs = 3000): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {

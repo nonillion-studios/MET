@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { IconButton } from '../ui';
+import { cn } from '../ui/cn';
 import { ToolFlyout } from './ToolFlyout';
 import type { StudioToolGroup } from './toolGroups';
 
@@ -49,15 +50,24 @@ export function ToolGroupButton({ group, activeTool, onToolChange, orientation }
           onPointerLeave={cancelHold}
           onClick={() => pick(shown.id)}
           onContextMenu={(e) => { e.preventDefault(); if (hasSiblings) setFlyoutOpen(true); }}
-          className="!bg-transparent shrink-0"
+          className={cn(
+            'studio-interactive studio-focusable shrink-0 !rounded-control',
+            // Only force a transparent background when idle. Passing !bg-transparent
+            // unconditionally (as this used to) overrode IconButton's `bg-accent-soft`
+            // active fill, leaving the selected tool with almost no visible state.
+            activeInGroup
+              ? '!bg-accent-soft !border-accent/40 !text-accent shadow-control'
+              : '!bg-transparent hover:!bg-ink/10'
+          )}
         >
-          <Icon size={16} />
+          <Icon size={16} strokeWidth={1.75} />
         </IconButton>
         {hasSiblings && (
           <span
             onClick={(e) => { e.stopPropagation(); setFlyoutOpen(v => !v); }}
-            className="absolute bottom-0 right-0 w-0 h-0 border-solid cursor-pointer"
-            style={{ borderWidth: '0 0 5px 5px', borderColor: 'transparent transparent var(--color-ink-faint) transparent' }}
+            aria-hidden
+            className="absolute bottom-0.5 right-0.5 w-0 h-0 border-solid cursor-pointer"
+            style={{ borderWidth: '0 0 4px 4px', borderColor: `transparent transparent ${activeInGroup ? 'var(--color-accent)' : 'var(--color-ink-faint)'} transparent` }}
           />
         )}
         {flyoutOpen && (

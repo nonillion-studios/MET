@@ -35,7 +35,7 @@ export function MenuBar({ menus }: MenuBarProps) {
             onClick={() => setOpenId(v => v === menu.id ? null : menu.id)}
             onMouseEnter={() => { if (openId) setOpenId(menu.id); }}
             className={cn(
-              'px-2.5 h-6 rounded-md text-[11px] font-medium transition-colors',
+              'px-2.5 h-6 rounded-control text-micro font-medium transition-colors',
               openId === menu.id ? 'bg-accent-soft text-accent' : 'text-ink-faint hover:text-ink hover:bg-ink/5'
             )}
           >

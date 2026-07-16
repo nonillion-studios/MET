@@ -1,19 +1,41 @@
 import { clipToSelection, magicWandMask, type Selection } from './selection';
+import { getBrushTip, type BrushShape } from './brushTip';
 
 export type PaintTool =
   | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone'
   | 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn' | 'sponge' | 'contentAware'
   | 'shape-rect' | 'shape-ellipse' | 'shape-line' | 'spot-heal' | 'liquify';
 
+/** Mirrors brush/pencil/eraser strokes across the canvas center — 'horizontal' flips left-right (mirror axis is the vertical centerline), 'vertical' flips top-bottom, 'both' does both (4-way). */
+export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'both';
+
 export interface PaintSettings {
   size: number;
   hardness: number; // 0-1
+  /** Stroke-level cap. Overlapping stamps within one stroke never exceed this — see strokeSegment. */
   opacity: number; // 0-1
+  /** Per-stamp deposit. Accumulates within a stroke, up to `opacity`. */
   flow: number; // 0-1
   color: string; // hex
   bgColor: string; // hex — used as the Gradient tool's "to" color (foreground-to-background, Photoshop convention)
   tolerance: number; // 0-255, used by bucket/wand
   liquifyMode: LiquifyMode;
+  symmetry: SymmetryMode;
+  /** Distance between stamps as a fraction of size. 0.15 ≈ the old hardcoded value. */
+  spacing: number; // 0.01-1
+  brushShape: BrushShape | 'image';
+  /** Only for brushShape==='image': the active preset's baked alpha mask + its cache id. */
+  tipMask?: HTMLCanvasElement;
+  tipMaskId?: string;
+  angle: number; // -180..180 degrees
+  roundness: number; // 0.05-1 (1 = circular)
+  /** Random per-stamp offset perpendicular/along the stroke, as a fraction of size. */
+  scatter: number; // 0-1
+  /** Pull-string smoothing: 0 = raw pointer, 1 = heavy lag. Applied in usePaintLayer. */
+  smoothing: number; // 0-1
+  /** Whether stylus pressure drives size / opacity (PointerEvent.pressure). */
+  pressureSize: boolean;
+  pressureOpacity: boolean;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -21,43 +43,86 @@ function hexToRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-/** One soft (or hard, at hardness=1) circular stamp — the shared primitive behind every brush-family tool. */
-function stamp(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, rgb: [number, number, number], hardness: number, alpha: number) {
-  ctx.globalAlpha = alpha;
-  const [r, g, b] = rgb;
-  const grad = ctx.createRadialGradient(x, y, 0, x, y, size / 2);
-  grad.addColorStop(0, `rgba(${r},${g},${b},1)`);
-  grad.addColorStop(Math.max(0.01, Math.min(0.99, hardness)), `rgba(${r},${g},${b},1)`);
-  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
+/** Effective tip geometry for a tool, after its own overrides (Pencil is always small + hard). */
+export function effectiveTip(settings: PaintSettings, tool: 'brush' | 'pencil' | 'eraser') {
+  return {
+    size: tool === 'pencil' ? Math.max(1, Math.round(settings.size / 4)) : settings.size,
+    hardness: tool === 'pencil' ? 1 : settings.hardness,
+    shape: settings.brushShape,
+    angle: settings.angle,
+    roundness: settings.roundness,
+    // The eraser only ever uses its tip's alpha (it composites destination-out),
+    // so its colour is arbitrary — pin it to black to avoid a second cache entry.
+    color: tool === 'eraser' ? '#000000' : settings.color,
+    maskCanvas: settings.tipMask,
+    maskId: settings.tipMaskId,
+  };
 }
 
-/** Brush / Pencil / Eraser: interpolated stamps along a segment so fast strokes stay continuous. */
+/** One tip blit. Tips are cached white canvases (see brushTip.ts); colour is applied by the caller's tint pass. */
+function stampTip(ctx: CanvasRenderingContext2D, tip: HTMLCanvasElement, x: number, y: number, alpha: number) {
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(tip, x - tip.width / 2, y - tip.height / 2);
+}
+
+/**
+ * Brush / Pencil / Eraser: lays interpolated stamps along a segment.
+ *
+ * `ctx` here is the *stroke buffer*, not the layer — usePaintLayer accumulates a
+ * whole stroke into a scratch canvas at `flow` alpha and then composites that
+ * buffer onto the layer once at `opacity`. That split is what makes flow and
+ * opacity behave like Photoshop's: flow builds up where a stroke overlaps
+ * itself, while opacity caps the stroke as a whole. (The previous version
+ * stamped straight onto the layer at `opacity * flow`, so overlapping stamps
+ * accumulated straight past the opacity cap and the two sliders were
+ * indistinguishable.)
+ *
+ * Returns the bounding box touched, so the caller can composite just that region.
+ */
 export function strokeSegment(
   ctx: CanvasRenderingContext2D,
   x0: number, y0: number, x1: number, y1: number,
   settings: PaintSettings,
   tool: 'brush' | 'pencil' | 'eraser',
   selection: Selection,
-) {
+  pressure = 1,
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
   clipToSelection(ctx, selection);
-  ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
-  const [r, g, b] = tool === 'eraser' ? [0, 0, 0] : hexToRgb(settings.color);
-  const hardness = tool === 'pencil' ? 1 : settings.hardness;
-  const size = tool === 'pencil' ? Math.max(1, Math.round(settings.size / 4)) : settings.size;
+
+  const geom = effectiveTip(settings, tool);
+  const sizeScale = settings.pressureSize ? 0.25 + 0.75 * pressure : 1;
+  const size = Math.max(1, geom.size * sizeScale);
+  const tip = getBrushTip({ ...geom, size });
+
+  const flow = settings.flow * (settings.pressureOpacity ? pressure : 1);
   const dist = Math.hypot(x1 - x0, y1 - y0);
-  const step = Math.max(1, size * 0.15);
-  for (let d = 0; d <= dist; d += step) {
-    const t = dist ? d / dist : 0;
-    stamp(ctx, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, size, [r, g, b], hardness, settings.opacity * settings.flow);
+  const step = Math.max(0.5, size * Math.max(0.01, Math.min(1, settings.spacing)));
+  const scatterAmp = settings.scatter * size;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const half = tip.width / 2 + 1;
+
+  for (let d = 0; d <= dist || d === 0; d += step) {
+    const t = dist ? Math.min(1, d / dist) : 0;
+    let sx = x0 + (x1 - x0) * t;
+    let sy = y0 + (y1 - y0) * t;
+    if (scatterAmp > 0) {
+      sx += (Math.random() * 2 - 1) * scatterAmp;
+      sy += (Math.random() * 2 - 1) * scatterAmp;
+    }
+    stampTip(ctx, tip, sx, sy, flow);
+    if (sx - half < minX) minX = sx - half;
+    if (sy - half < minY) minY = sy - half;
+    if (sx + half > maxX) maxX = sx + half;
+    if (sy + half > maxY) maxY = sy + half;
+    if (dist === 0) break;
   }
-  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.globalAlpha = 1;
   ctx.restore();
+  return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
 }
+
 
 /** Paint Bucket: flood-fill by color similarity, writing pixels back (shares the traversal core with the Magic Wand selection tool). */
 export function floodFillAt(ctx: CanvasRenderingContext2D, width: number, height: number, x: number, y: number, settings: PaintSettings, selection: Selection) {
@@ -219,16 +284,17 @@ export function applyFilterBrush(
   ctx.putImageData(img, bx, by);
 }
 
-export type LiquifyMode = 'push' | 'swirl' | 'pinch' | 'bloat' | 'crystalize';
+export type LiquifyMode = 'push' | 'swirl' | 'pinch' | 'bloat' | 'crystalize' | 'reconstruct';
 
 /**
  * Liquify: per-stamp pixel-displacement warp, ported (as math, not code — the original is a
  * Konva/canvas-based React app) from Flowy's liquify tool concept (see CLAUDE.md for the
  * attribution note). Each mode computes a *source sample offset* per pixel and reads from
  * there instead of the pixel's own position, which is what makes it a true warp rather than a
- * blend like the Smudge filter brush above. `reconstruct` (gradually undo toward the original
- * pixels) isn't implemented — it needs a pristine pre-liquify snapshot kept alongside the layer,
- * which no other tool here needs, so it's a real, separate piece of state this pass didn't add.
+ * blend like the Smudge filter brush above. `reconstruct` gradually blends each stamped pixel
+ * back toward `pristine` (a full-canvas snapshot taken before the layer's first-ever liquify
+ * edit, owned by the caller — see `liquifySnapshots` in StudioCanvas.tsx) instead of computing a
+ * sample offset, so it needs that extra param the other modes ignore.
  */
 export function liquify(
   ctx: CanvasRenderingContext2D,
@@ -236,6 +302,7 @@ export function liquify(
   mode: LiquifyMode,
   dragDx: number, dragDy: number,
   selection: Selection,
+  pristine?: ImageData | null,
 ) {
   const r = Math.max(4, Math.round(size / 2));
   const px = Math.round(x - r), py = Math.round(y - r);
@@ -288,6 +355,16 @@ export function liquify(
         const cell = Math.max(2, Math.round(4 + (1 - amount) * 10));
         sampleX = Math.round(ix / cell) * cell;
         sampleY = Math.round(iy / cell) * cell;
+      } else if (mode === 'reconstruct') {
+        if (!pristine) continue;
+        const px = bx + ix, py = by + iy;
+        if (px < 0 || py < 0 || px >= pristine.width || py >= pristine.height) continue;
+        const pi = (py * pristine.width + px) * 4;
+        const blend = falloff * amount;
+        for (let c = 0; c < 4; c++) {
+          img.data[o + c] = pristine.data[pi + c] * blend + src[o + c] * (1 - blend);
+        }
+        continue;
       }
 
       for (let c = 0; c < 4; c++) {

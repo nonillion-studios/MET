@@ -8,6 +8,45 @@
   --font-display: "Space Grotesk", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --breakpoint-xs: 26rem;
+
+  /* ---- Studio design system ------------------------------------------
+     Named semantic tokens rather than a remap of Tailwind's global
+     rounded-md/lg/xl + text-xs/sm scales: those are used across Library,
+     Settings, Teams and the Text Editor too, so redefining them would
+     silently restyle screens outside the Studio. These are additive and
+     opt-in — `rounded-control`, `text-ui`, `shadow-panel`, etc. */
+
+  /* Radii: exactly three steps. control = buttons/inputs/swatches,
+     panel = cards/panels/menus, surface = the Studio shell itself. */
+  --radius-control: 10px;
+  --radius-panel: 14px;
+  --radius-surface: 20px;
+
+  /* Type: one 11/12/13 UI scale. micro = dense labels/sliders,
+     ui = default body, title = panel titles/emphasis. */
+  --text-micro: 11px;
+  --text-ui: 12px;
+  --text-title: 13px;
+
+  /* One shadow scale, ambient-only (glass materials carry their own
+     specular/inset highlights — see the .liquid-glass-* utilities). */
+  --shadow-control: 0 1px 2px color-mix(in srgb, black 12%, transparent);
+  --shadow-panel: 0 4px 16px color-mix(in srgb, black 18%, transparent);
+  --shadow-float: 0 12px 40px color-mix(in srgb, black 28%, transparent);
+
+  /* Control heights on the 4px grid — replaces the ad-hoc mix of
+     h-6/h-7/h-8/h-9/h-10/h-11/h-12 across studio chrome. */
+  --spacing-control-sm: 24px;
+  --spacing-control: 28px;
+  --spacing-control-lg: 32px;
+  --spacing-bar: 40px;
+}
+
+/* Studio motion + interaction constants. Single easing/duration pair so
+   hover, panel collapse and tool switches all feel like one system. */
+:root {
+  --studio-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --studio-duration: 140ms;
 }
 
 /* iOS System Blue theme tokens. :root = light, .dark = dark. */
@@ -125,6 +164,51 @@
     pointer-events: none;
     mix-blend-mode: overlay;
   }
+  /* ---- Studio chrome ---------------------------------------------------
+     Two panel surface levels on top of the existing .liquid-glass-* glass
+     materials: `docked` (inside the dock, no border of its own — the dock
+     already provides the edge, so this kills the double-border) and
+     `floating` (a detached FloatingPanel, which needs its own edge+shadow). */
+  .studio-panel {
+    background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+  }
+  .studio-panel-floating {
+    background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+    backdrop-filter: blur(36px) saturate(190%);
+    -webkit-backdrop-filter: blur(36px) saturate(190%);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-float), inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+  }
+
+  /* The Studio canvas viewport: deliberately flat and near-black so the
+     page art reads as the brightest thing on screen and the glass chrome
+     visibly floats above it. */
+  .studio-canvas-bg {
+    background-color: #0d0d0f;
+    background-image:
+      radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 60%);
+  }
+
+  /* One transition for every interactive bit of studio chrome. */
+  .studio-interactive {
+    transition:
+      background-color var(--studio-duration) var(--studio-ease),
+      border-color var(--studio-duration) var(--studio-ease),
+      color var(--studio-duration) var(--studio-ease),
+      opacity var(--studio-duration) var(--studio-ease),
+      transform var(--studio-duration) var(--studio-ease);
+  }
+
+  /* Keyboard focus ring — visible for keyboard nav, silent for mouse. */
+  .studio-focusable:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-control);
+  }
+
   .glass-noise {
     position: relative;
   }
