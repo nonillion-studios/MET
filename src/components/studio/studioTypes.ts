@@ -49,6 +49,15 @@ export interface TextShadow {
   offsetY: number;
 }
 
+/** Linear gradient fill. When enabled it overrides the flat `color` fill. */
+export interface TextGradient {
+  enabled: boolean;
+  from: string;
+  to: string;
+  /** Degrees clockwise from left-to-right, matching the panel's control. */
+  angle: number;
+}
+
 export interface TextLayerData {
   content: string;
   x: number;
@@ -74,6 +83,8 @@ export interface TextLayerData {
   letterSpacing: number;
   /** Drop shadow / glow — a glow is just a shadow at offset 0 with a wide blur. */
   shadow: TextShadow;
+  /** Gradient fill; overrides `color` while enabled. */
+  gradient: TextGradient;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;
@@ -81,6 +92,10 @@ export interface TextLayerData {
 
 export const DEFAULT_TEXT_SHADOW: TextShadow = {
   enabled: false, color: '#000000', blur: 6, offsetX: 0, offsetY: 2,
+};
+
+export const DEFAULT_TEXT_GRADIENT: TextGradient = {
+  enabled: false, from: '#ffffff', to: '#000000', angle: 90,
 };
 
 export type AdjustmentKind = 'brightness-contrast' | 'hue-saturation' | 'levels';
@@ -203,6 +218,7 @@ export function createTextLayer(x: number, y: number, boxWidth?: number): Studio
       autoWidth: boxWidth === undefined,
       letterSpacing: 0,
       shadow: { ...DEFAULT_TEXT_SHADOW },
+      gradient: { ...DEFAULT_TEXT_GRADIENT },
       fontFamily: FONT_FAMILIES[0],
       fontSize: 28,
       color: '#000000',

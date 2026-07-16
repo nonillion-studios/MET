@@ -1,9 +1,9 @@
 import { get, set } from 'idb-keyval';
 import { genId } from './id';
-import { DEFAULT_TEXT_SHADOW, type StudioLayer, type TyperStyle } from '../components/studio/studioTypes';
+import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TyperStyle } from '../components/studio/studioTypes';
 
 /** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes. */
-export const STUDIO_SCHEMA_VERSION = 2;
+export const STUDIO_SCHEMA_VERSION = 3;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
 
@@ -42,6 +42,11 @@ export function createEmptyStudioData(): ChapterStudioData {
  * before that have text layers missing those keys entirely, and the renderer/panel read
  * `text.shadow.enabled` directly — so without this they'd throw on open. Backfills the
  * pre-v2 behaviour: fixed-width box text, no tracking, no shadow.
+ *
+ * v2 -> v3: text layers gained `gradient`. Backfills gradient-off, i.e. the flat `color` fill.
+ *
+ * Every backfill below is an idempotent `??`, so this single pass handles any older version
+ * (v1 -> v3 as correctly as v2 -> v3) without needing a per-step chain.
  */
 function migrateTextLayers(data: ChapterStudioData): ChapterStudioData {
   const layersByPage: Record<string, SerializedStudioLayer[]> = {};
@@ -55,6 +60,7 @@ function migrateTextLayers(data: ChapterStudioData): ChapterStudioData {
           autoWidth: l.text.autoWidth ?? false,
           letterSpacing: l.text.letterSpacing ?? 0,
           shadow: l.text.shadow ?? { ...DEFAULT_TEXT_SHADOW },
+          gradient: l.text.gradient ?? { ...DEFAULT_TEXT_GRADIENT },
         },
       };
     });

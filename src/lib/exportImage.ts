@@ -1,4 +1,5 @@
 import { BLEND_TO_COMPOSITE, type TextLayerData } from '../components/studio/studioTypes';
+import { gradientVector } from '../components/studio/textGradient';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 
 export type ImageExportFormat = 'png' | 'jpg' | 'webp';
@@ -32,12 +33,6 @@ function wrapLine(ctx: CanvasRenderingContext2D, line: string, maxWidth: number)
 
 function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
   ctx.save();
-  const cx = text.x + text.width / 2;
-  const lineCount = text.content.split('\n').length || 1;
-  const cy = text.y + (lineCount * text.fontSize * text.lineHeight) / 2;
-  ctx.translate(cx, cy);
-  ctx.rotate((text.rotation * Math.PI) / 180);
-  ctx.translate(-cx, -cy);
 
   const style = `${text.italic ? 'italic ' : ''}${text.bold ? 'bold ' : ''}${text.fontSize}px ${text.fontFamily}`;
   ctx.font = style;
@@ -49,18 +44,48 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
     // Supported in Chromium/Safari; older engines just ignore it rather than throw.
     (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${text.letterSpacing}px`;
   }
+
+  // Point text grows to fit and never wraps on canvas, so `width` is not its real box —
+  // measuring is the only way to match on screen. Font/letterSpacing must already be set above
+  // for measureText to be accurate.
+  const lines = text.autoWidth
+    ? text.content.split('\n')
+    : text.content.split('\n').flatMap(line => wrapLine(ctx, line, text.width));
+  const boxWidth = text.autoWidth
+    ? Math.max(0, ...lines.map(line => ctx.measureText(line).width))
+    : text.width;
+  const lineHeightPx = text.fontSize * text.lineHeight;
+  const boxHeight = lines.length * lineHeightPx;
+
+  const cx = text.x + boxWidth / 2;
+  const cy = text.y + boxHeight / 2;
+  ctx.translate(cx, cy);
+  ctx.rotate((text.rotation * Math.PI) / 180);
+  ctx.translate(-cx, -cy);
+
   if (text.shadow?.enabled) {
     ctx.shadowColor = text.shadow.color;
     ctx.shadowBlur = text.shadow.blur;
     ctx.shadowOffsetX = text.shadow.offsetX;
     ctx.shadowOffsetY = text.shadow.offsetY;
   }
+
+  let fill: string | CanvasGradient = text.color;
+  if (text.gradient?.enabled) {
+    const { start, end } = gradientVector(boxWidth, boxHeight, text.gradient.angle);
+    const ramp = ctx.createLinearGradient(
+      text.x + start.x, text.y + start.y,
+      text.x + end.x, text.y + end.y,
+    );
+    ramp.addColorStop(0, text.gradient.from);
+    ramp.addColorStop(1, text.gradient.to);
+    fill = ramp;
+  }
+
   const anchorX = text.align === 'left' || text.align === 'justify'
     ? text.x
-    : text.align === 'right' ? text.x + text.width : text.x + text.width / 2;
+    : text.align === 'right' ? text.x + boxWidth : text.x + boxWidth / 2;
 
-  const lines = text.content.split('\n').flatMap(line => wrapLine(ctx, line, text.width));
-  const lineHeightPx = text.fontSize * text.lineHeight;
   lines.forEach((line, i) => {
     const ly = text.y + i * lineHeightPx;
     if (text.strokeWidth > 0) {
@@ -68,7 +93,7 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
       ctx.lineWidth = text.strokeWidth;
       ctx.strokeText(line, anchorX, ly);
     }
-    ctx.fillStyle = text.color;
+    ctx.fillStyle = fill;
     ctx.fillText(line, anchorX, ly);
   });
   ctx.restore();

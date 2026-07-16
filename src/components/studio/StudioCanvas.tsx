@@ -5,6 +5,7 @@ import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
 import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
+import { gradientVector } from './textGradient';
 import { swalToast } from '../../lib/swalTheme';
 import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
 import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
@@ -453,6 +454,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     transformer.getLayer()?.batchDraw();
   }, [activeLayerId, activeTool, editingLayerId, layers]);
 
+  // Gradient fills need the text node's real laid-out box, which can't be a prop: point text has
+  // no author-set width, so only Konva knows how wide it ended up. React commits the node's props
+  // before effects run, so node.width()/height() here already reflect the current content — and
+  // reading the node beats re-measuring the text ourselves and drifting from what Konva drew.
+  useEffect(() => {
+    // Every Studio layer owns its own Konva layer, so each touched one needs its own redraw —
+    // react-konva already drew this commit before effects ran, and these points are set after.
+    const dirty = new Set<Konva.Layer>();
+    for (const layer of layers) {
+      const gradient = layer.text?.gradient;
+      if (layer.type !== 'text' || !gradient?.enabled) continue;
+      const node = textNodeRefs.current[layer.id];
+      if (!node) continue;
+      const { start, end } = gradientVector(node.width(), node.height(), gradient.angle);
+      node.fillLinearGradientStartPoint(start);
+      node.fillLinearGradientEndPoint(end);
+      const konvaLayer = node.getLayer();
+      if (konvaLayer) dirty.add(konvaLayer);
+    }
+    dirty.forEach(l => l.batchDraw());
+  }, [layers]);
+
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     const targetClass = e.target.getClassName?.();
     const clickedBackground = e.target === e.target.getStage() || targetClass === 'Image' || targetClass === 'Rect';
@@ -874,6 +897,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   fontSize={layer.text.fontSize}
                   fontStyle={`${layer.text.bold ? 'bold' : ''} ${layer.text.italic ? 'italic' : ''}`.trim() || 'normal'}
                   fill={layer.text.color}
+                  // Konva's default fillPriority is 'color', so a node carrying both `fill` and
+                  // gradient stops draws the flat colour — the gradient would silently never show.
+                  fillPriority={layer.text.gradient?.enabled ? 'linear-gradient' : 'color'}
+                  fillLinearGradientColorStops={layer.text.gradient?.enabled
+                    ? [0, layer.text.gradient.from, 1, layer.text.gradient.to]
+                    : undefined}
                   align={layer.text.align}
                   lineHeight={layer.text.lineHeight}
                   letterSpacing={layer.text.letterSpacing}

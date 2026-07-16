@@ -1,4 +1,5 @@
-import type { Psd, Layer as PsdLayer } from 'ag-psd';
+import type { Psd, Layer as PsdLayer, LayerEffectGradientOverlay } from 'ag-psd';
+import type { TextGradient } from '../components/studio/studioTypes';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
 
@@ -7,6 +8,38 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
   const full = clean.length === 3 ? clean.split('').map(c => c + c).join('') : clean.padEnd(6, '0');
   const num = parseInt(full, 16);
   return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+
+/**
+ * Our angle is degrees clockwise from left-to-right in screen coords (y grows down), so 90 means
+ * top-to-bottom. Photoshop measures gradient angle counter-clockwise with y up, where 90 means
+ * bottom-to-top — so the two conventions are the same axis mirrored, and the angle negates.
+ *
+ * ag-psd normalizes stop `location`/`midpoint` to 0..1 and `opacity` to 0..1, scaling them on
+ * write (see serializeGradient in ag-psd's descriptor.js) — these are not raw PSD 0..4096 units.
+ */
+function buildGradientOverlay(gradient: TextGradient): LayerEffectGradientOverlay {
+  return {
+    enabled: true,
+    blendMode: 'normal',
+    opacity: 1,
+    align: true,
+    scale: 1,
+    type: 'linear',
+    angle: -gradient.angle,
+    gradient: {
+      name: 'Text gradient',
+      type: 'solid',
+      colorStops: [
+        { color: hexToRgb(gradient.from), location: 0, midpoint: 0.5 },
+        { color: hexToRgb(gradient.to), location: 1, midpoint: 0.5 },
+      ],
+      opacityStops: [
+        { opacity: 1, location: 0, midpoint: 0.5 },
+        { opacity: 1, location: 1, midpoint: 0.5 },
+      ],
+    },
+  };
 }
 
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {
@@ -62,6 +95,12 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
         ...(t.strokeWidth > 0 ? { strokeColor: hexToRgb(t.strokeColor), strokeFlag: true, outlineWidth: t.strokeWidth } : {}),
       },
     };
+    // A gradient overlay is how gradient text is done by hand in Photoshop, and it stays editable
+    // there. `style.fillColor` above is left as the flat colour underneath, so the layer still
+    // degrades sensibly if the effect is switched off.
+    if (t.gradient?.enabled) {
+      base.effects = { gradientOverlay: [buildGradientOverlay(t.gradient)] };
+    }
   }
 
   return base;
