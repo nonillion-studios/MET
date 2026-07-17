@@ -4,7 +4,7 @@ import {
   Upload as UploadIcon, File, RefreshCw, ChevronDown,
   Tag, X, HardDrive, Boxes, FolderInput, CalendarClock, Play, Trash2, FolderOutput
 } from 'lucide-react';
-import { Input, Button, GlassCard, Modal, Switch, SkeletonCard } from '../ui';
+import { Input, Button, GlassCard, Modal, Switch, SkeletonCard, Skeleton } from '../ui';
 import { AdSlot } from '../AdSlot';
 import { CloudFolders } from './CloudFolders';
 import { ScheduleTransferModal } from './ScheduleTransferModal';
@@ -358,11 +358,10 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
                       <img src={cc.coverUrls[file.id]} alt="Cover" className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
                       <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
                     </>
+                  ) : file.coverMsgId ? (
+                    <Skeleton className="absolute inset-0 rounded-none border-0" />
                   ) : (
-                    <>
-                      {file.coverMsgId ? <span className="text-[10px] text-accent font-mono mb-2 animate-pulse">Loading Cover...</span> : null}
-                      <Boxes size={32} className="text-accent/50" />
-                    </>
+                    <Boxes size={32} className="text-accent/50" />
                   )}
                   <span className="absolute top-2 left-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-black/50 text-white backdrop-blur-sm">
                     <Boxes size={10} /> {SCOPE_LABELS[file.scope] ?? 'Workspace'}

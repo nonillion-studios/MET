@@ -2279,6 +2279,13 @@ function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests
         </GlassCard>
       )}
 
+      {loading && (canManageJoinRequests || canManageVacations) && (
+        <>
+          <SkeletonCard className="h-48" />
+          <SkeletonCard className="h-48" />
+        </>
+      )}
+
       {!loading && canManageJoinRequests && (
         <>
           <GlassCard className="p-6 space-y-2">

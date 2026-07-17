@@ -12,6 +12,19 @@ export function profileFromSession(session: Session | null): AppProfile {
   return { name: meta.name || '', avatar: meta.avatar || '' };
 }
 
+/** Supabase's client singleton parses `#access_token=...&type=recovery` out of the URL and fires
+ *  a `PASSWORD_RECOVERY` auth event — but that parsing can happen before this hook's
+ *  `onAuthStateChange` listener is even registered (the client is constructed at module load,
+ *  well before this component mounts), silently dropping the event. Checking the URL directly
+ *  on first render closes that race instead of relying solely on catching the event. */
+function hasRecoveryParamsInUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  const hashParams = new URLSearchParams(hash);
+  const searchParams = new URLSearchParams(window.location.search);
+  return hashParams.get('type') === 'recovery' || searchParams.get('type') === 'recovery';
+}
+
 const KNOWN_EMAILS_KEY = 'team_known_emails';
 
 export function getKnownEmails(): string[] {
@@ -51,7 +64,7 @@ export function useTeamAuth() {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [isRecovery, setIsRecovery] = useState(false);
+  const [isRecovery, setIsRecovery] = useState(hasRecoveryParamsInUrl);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
