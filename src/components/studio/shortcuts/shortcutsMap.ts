@@ -19,6 +19,8 @@ export const FIXED_SHORTCUTS_HELP: { keys: string; description: string }[] = [
   { keys: 'Tab', description: 'Hide / show all panels' },
   { keys: 'Ctrl/Cmd+Shift+F', description: 'Toggle fullscreen' },
   { keys: 'Ctrl/Cmd+E', description: 'Export page' },
+  { keys: 'Ctrl/Cmd+G', description: 'Group selected layers' },
+  { keys: 'Ctrl/Cmd+Shift+G', description: 'Ungroup layers' },
   { keys: 'Space (hold) + drag', description: 'Pan the canvas, regardless of active tool' },
   { keys: 'Middle-mouse drag', description: 'Pan the canvas, regardless of active tool' },
   { keys: 'Ctrl/Cmd+Z', description: 'Undo' },

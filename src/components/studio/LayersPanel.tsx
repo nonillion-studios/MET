@@ -1,9 +1,25 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import {
+  Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight,
+} from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { StudioPanel } from './StudioPanel';
+import {
+  flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
+} from './layerTree';
 import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer, type LayerSelectMode } from './studioTypes';
+
+/** Where a drop lands relative to the row under the cursor. */
+type DropZone = 'above' | 'into' | 'below';
+
+/** The layer immediately beneath `id` among its own siblings — a clipped layer's base. */
+function layerBelow(layers: StudioLayer[], id: string): StudioLayer | null {
+  const siblings = getSiblings(layers, id);
+  const index = siblings.findIndex(l => l.id === id);
+  return index > 0 ? siblings[index - 1] : null;
+}
 
 interface LayersPanelProps {
   layers: StudioLayer[];
@@ -21,16 +37,100 @@ interface LayersPanelProps {
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
   onMove: (id: string, direction: 'up' | 'down') => void;
+  onGroup?: () => void;
+  onUngroup?: (id: string) => void;
+  onToggleCollapsed?: (id: string) => void;
+  /** Clip this layer to the raster layer directly below it, or release it. */
+  onToggleClipped?: (id: string) => void;
+  /** `index` is read against the destination list *after* the dragged layer is detached. */
+  onReparent?: (id: string, newParentId: string | null, index: number) => void;
+  /**
+   * Which row has its properties (opacity/blend/actions) disclosed.
+   *
+   * Lifted to `Studio` rather than kept here: selecting a text or adjustment layer auto-switches
+   * the dock to that layer's panel, which shares a region with this one — so this panel unmounts
+   * and local state would be lost. That made a text or adjustment layer's opacity slider literally
+   * unreachable: every click that expanded the row also navigated away from it, and coming back
+   * found the row collapsed again.
+   */
+  expandedLayerId: string | null;
+  onToggleExpanded: (id: string) => void;
 }
 
 export function LayersPanel({
   layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
   onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
+  onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onReparent, expandedLayerId, onToggleExpanded,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  // Render top-most layer first, matching Photoshop's stacking convention.
-  const ordered = [...layers].reverse();
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; zone: DropZone } | null>(null);
+
+  // Render top-most layer first, matching Photoshop's stacking convention. Reversing the flattened
+  // walk puts a group directly above its own children, which is the order the panel wants to indent.
+  const ordered = [...flattenWithPaths(layers)]
+    .reverse()
+    .filter(({ path }) => !isInsideCollapsedGroup(layers, path));
+
+  /** True when any ancestor of `path` is a collapsed group — those rows stay hidden. */
+  function isInsideCollapsedGroup(list: StudioLayer[], path: LayerPath): boolean {
+    let current = list;
+    for (let i = 0; i < path.length - 1; i += 1) {
+      const ancestor = current[path[i]];
+      if (!ancestor) return false;
+      if (ancestor.collapsed) return true;
+      current = ancestor.children ?? [];
+    }
+    return false;
+  }
+
+  /** Splits the row into three drop zones by cursor position: outer quarters insert above/below,
+   *  the middle half drops *into* a group. Only groups accept 'into'. */
+  function zoneFor(e: React.DragEvent, layer: StudioLayer): DropZone {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const offset = (e.clientY - rect.top) / rect.height;
+    if (layer.type === 'group' && offset > 0.25 && offset < 0.75) return 'into';
+    // The panel is top-most-first, so visually "above" is a *higher* index in the data.
+    return offset < 0.5 ? 'above' : 'below';
+  }
+
+  /** Whether a drop is even conceivable. `layerTree.reparent` is the real authority and no-ops on
+   *  anything illegal; this only exists so the UI doesn't advertise a drop that can't happen. */
+  function canDrop(id: string, target: StudioLayer, zone: DropZone): boolean {
+    if (id === target.id) return false;
+    if (target.isBackground && zone !== 'above') return false;
+    if (findLayer(layers, id)?.isBackground) return false;
+    if (isDescendantOf(layers, target.id, id)) return false;
+    if (zone === 'into' && target.type !== 'group') return false;
+    return true;
+  }
+
+  function handleDrop(target: StudioLayer, zone: DropZone) {
+    const id = dragId;
+    setDragId(null);
+    setDropTarget(null);
+    if (!id || !onReparent || !canDrop(id, target, zone)) return;
+
+    if (zone === 'into') {
+      // Drop on top of the group's existing children.
+      onReparent(id, target.id, (target.children ?? []).length);
+      return;
+    }
+
+    const parent = getParent(layers, target.id);
+    const siblings = parent ? parent.children ?? [] : layers;
+    const targetIndex = siblings.findIndex(s => s.id === target.id);
+    if (targetIndex < 0) return;
+
+    // `reparent` detaches before inserting, so an index past the dragged layer's own old slot in
+    // the same list shifts down by one. Computing this against the pre-move list is the classic
+    // off-by-one here.
+    const draggedIndex = siblings.findIndex(s => s.id === id);
+    let index = zone === 'above' ? targetIndex + 1 : targetIndex;
+    if (draggedIndex >= 0 && draggedIndex < index) index -= 1;
+
+    onReparent(id, parent?.id ?? null, index);
+  }
 
   return (
     <StudioPanel
@@ -39,6 +139,9 @@ export function LayersPanel({
       bodyClassName="py-1.5 px-1.5 flex flex-col gap-1"
       actions={
         <>
+          <IconButton size="sm" aria-label="Group layers" title="Group selected layers" onClick={onGroup} className="!bg-transparent">
+            <FolderPlus size={13} />
+          </IconButton>
           <IconButton size="sm" aria-label="Add adjustment layer" title="Add adjustment layer" onClick={onAddAdjustment} className="!bg-transparent">
             <SlidersHorizontal size={13} />
           </IconButton>
@@ -48,18 +151,37 @@ export function LayersPanel({
         </>
       }
     >
-        {ordered.map((layer) => {
+        {ordered.map(({ layer, depth }) => {
           const Icon = LAYER_TYPE_ICON[layer.type];
           const active = layer.id === activeLayerId;
           const inSelection = selected.includes(layer.id);
-          const expanded = expandedId === layer.id;
-          const realIndex = layers.findIndex(l => l.id === layer.id);
+          const expanded = expandedLayerId === layer.id;
+          const isGroup = layer.type === 'group';
+          const drop = dropTarget?.id === layer.id ? dropTarget.zone : null;
 
           return (
             <div
               key={layer.id}
+              draggable={!layer.isBackground && !!onReparent}
+              onDragStart={() => setDragId(layer.id)}
+              onDragEnd={() => { setDragId(null); setDropTarget(null); }}
+              onDragOver={(e) => {
+                if (!dragId || !onReparent) return;
+                const zone = zoneFor(e, layer);
+                if (!canDrop(dragId, layer, zone)) return;
+                e.preventDefault();
+                setDropTarget({ id: layer.id, zone });
+              }}
+              onDragLeave={() => setDropTarget(null)}
+              onDrop={(e) => { e.preventDefault(); handleDrop(layer, zoneFor(e, layer)); }}
+              style={{ marginLeft: depth * 12 }}
               className={cn(
                 'rounded-control border transition-colors',
+                dragId === layer.id && 'opacity-40',
+                // The drop affordance has to say *which* of the three things will happen.
+                drop === 'into' && 'ring-1 ring-accent',
+                drop === 'above' && 'border-t-2 !border-t-accent',
+                drop === 'below' && 'border-b-2 !border-b-accent',
                 active ? 'bg-accent-soft border-accent/30'
                   // Also selected, but not the primary — dimmer, so it's clear which layer the
                   // single-layer panels are actually following.
@@ -71,7 +193,7 @@ export function LayersPanel({
                 type="button"
                 onClick={(e) => {
                   onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace');
-                  setExpandedId(expanded ? null : layer.id);
+                  onToggleExpanded(layer.id);
                 }}
                 className="w-full flex items-center gap-2 px-2 h-11"
               >
@@ -85,8 +207,24 @@ export function LayersPanel({
                   {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
                 </span>
 
+                {/* Collapse chevron — a group's *subtree* visibility in the panel, which is a
+                    different thing from `expandedId` (this row's own properties disclosure). */}
+                {isGroup ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={layer.collapsed ? `Expand ${layer.name}` : `Collapse ${layer.name}`}
+                    onClick={(e) => { e.stopPropagation(); onToggleCollapsed?.(layer.id); }}
+                    className="shrink-0 w-4 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
+                  >
+                    {layer.collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                  </span>
+                ) : (
+                  <span className="shrink-0 w-4" />
+                )}
+
                 <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
-                  <Icon size={14} />
+                  {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
                 </span>
 
                 <span className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}>
@@ -123,27 +261,57 @@ export function LayersPanel({
                         <span className="w-8 text-right tabular-nums">{Math.round(layer.opacity * 100)}</span>
                       </label>
 
-                      <label className="flex items-center gap-2 text-micro text-ink-faint">
-                        <span className="w-14 shrink-0">Blend</span>
-                        <select
-                          value={layer.blendMode}
-                          onChange={(e) => onBlendChange(layer.id, e.target.value as StudioLayer['blendMode'])}
-                          className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
-                        >
-                          {BLEND_MODES.map(bm => <option key={bm.id} value={bm.id}>{bm.label}</option>)}
-                        </select>
-                      </label>
+                      {/* No blend control for adjustment layers. Photoshop blends an adjustment's
+                          result against its unadjusted backdrop, and our adjustment wraps the very
+                          stack it would need as that backdrop — so there's nothing to blend with.
+                          Opacity works (it's folded into the filter as a strength); blend can't be,
+                          and an inert dropdown would be worse than none. */}
+                      {layer.type !== 'adjustment' && (
+                        <label className="flex items-center gap-2 text-micro text-ink-faint">
+                          <span className="w-14 shrink-0">Blend</span>
+                          <select
+                            value={layer.blendMode}
+                            onChange={(e) => onBlendChange(layer.id, e.target.value as StudioLayer['blendMode'])}
+                            className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+                          >
+                            {BLEND_MODES.map(bm => <option key={bm.id} value={bm.id}>{bm.label}</option>)}
+                          </select>
+                        </label>
+                      )}
                     </>
                   )}
 
                   <div className="flex items-center gap-1 pt-0.5">
-                    <IconButton size="sm" aria-label="Move up" disabled={realIndex >= layers.length - 1} onClick={() => onMove(layer.id, 'up')} className="!bg-transparent !w-7 !h-7">
+                    {/* Bounds come from layerTree — a root-array index comparison is meaningless
+                        once a layer can sit inside a group. */}
+                    <IconButton size="sm" aria-label="Move up" disabled={!canMove(layers, layer.id, 'up')} onClick={() => onMove(layer.id, 'up')} className="!bg-transparent !w-7 !h-7">
                       <ChevronUp size={13} />
                     </IconButton>
-                    <IconButton size="sm" aria-label="Move down" disabled={realIndex <= 0} onClick={() => onMove(layer.id, 'down')} className="!bg-transparent !w-7 !h-7">
+                    <IconButton size="sm" aria-label="Move down" disabled={!canMove(layers, layer.id, 'down')} onClick={() => onMove(layer.id, 'down')} className="!bg-transparent !w-7 !h-7">
                       <ChevronDown size={13} />
                     </IconButton>
+                    {onToggleClipped && !layer.isBackground && (
+                      <IconButton
+                        size="sm"
+                        aria-label={layer.clipped ? 'Release clipping mask' : 'Create clipping mask'}
+                        title={
+                          layer.clipped ? 'Release clipping mask'
+                            : canBeClipBase(layerBelow(layers, layer.id)) ? 'Clip to the layer below'
+                            : 'Clipping needs a raster layer directly below'
+                        }
+                        disabled={!layer.clipped && !canBeClipBase(layerBelow(layers, layer.id))}
+                        onClick={() => onToggleClipped(layer.id)}
+                        className="!bg-transparent !w-7 !h-7"
+                      >
+                        <CornerDownRight size={12} className={layer.clipped ? 'text-accent' : undefined} />
+                      </IconButton>
+                    )}
                     <div className="flex-1" />
+                    {isGroup && onUngroup && (
+                      <IconButton size="sm" aria-label="Ungroup layers" title="Ungroup" onClick={() => onUngroup(layer.id)} className="!bg-transparent !w-7 !h-7">
+                        <FolderOpen size={12} />
+                      </IconButton>
+                    )}
                     <IconButton size="sm" aria-label="Duplicate layer" onClick={() => onDuplicate(layer.id)} className="!bg-transparent !w-7 !h-7">
                       <Copy size={12} />
                     </IconButton>

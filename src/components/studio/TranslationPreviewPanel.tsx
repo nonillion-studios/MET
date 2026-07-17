@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Search, ArrowRight, MessageSquare } from 'lucide-react';
 import type { Page } from '../../types';
 import { StudioPanel } from './StudioPanel';
+import { flattenTree } from './layerTree';
 import type { StudioLayer, TranslationStatus } from './studioTypes';
 
 interface DialogueRow {
@@ -36,7 +37,8 @@ export function TranslationPreviewPanel({ pages, layersByPage, activePageId, onJ
   const rows = useMemo<DialogueRow[]>(() => {
     const out: DialogueRow[] = [];
     pages.forEach((page, i) => {
-      const layers = layersByPage[page.id] ?? [];
+      // Flattened: text nested inside a group is still dialogue, and must not vanish from the list.
+      const layers = flattenTree(layersByPage[page.id] ?? []);
       for (const l of layers) {
         if (l.type === 'text' && l.text) {
           out.push({

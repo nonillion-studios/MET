@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Image as ImageIcon, Type, Eraser, MessageSquare, SlidersHorizontal } from 'lucide-react';
+import { Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder } from 'lucide-react';
 
 export type BlendMode =
   | 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
@@ -23,7 +23,7 @@ export const BLEND_TO_COMPOSITE: Record<BlendMode, GlobalCompositeOperation> = {
   lighten: 'lighten',
 };
 
-export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'bubble-mask' | 'adjustment';
+export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group';
 
 /** How a click changes the canvas selection: plain click replaces it, Shift/Ctrl-click toggles. */
 export type LayerSelectMode = 'replace' | 'toggle';
@@ -32,8 +32,8 @@ export const LAYER_TYPE_ICON: Record<StudioLayerType, LucideIcon> = {
   background: ImageIcon,
   'clean-patch': Eraser,
   text: Type,
-  'bubble-mask': MessageSquare,
   adjustment: SlidersHorizontal,
+  group: Folder,
 };
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
@@ -138,9 +138,15 @@ export const DEFAULT_TEXT_GRADIENT: TextGradient = {
 export type AdjustmentKind = 'brightness-contrast' | 'hue-saturation' | 'levels';
 
 /**
- * Non-destructive adjustment applied to the background page image (not to layers above it —
- * a real "affects everything below in the stack" compositor would need to flatten the whole
- * layer tree into one raster per frame, a bigger change; see CLAUDE.md known gaps).
+ * Non-destructive adjustment applied to **everything below it in its parent** — its position in the
+ * stack is what it affects. `layerTree.partitionAdjustments` turns each one into a wrapper around
+ * the layers beneath it, which both the canvas and `exportImage.ts` then walk.
+ *
+ * The layer's `opacity` eases the grade (folded into the filter by `adjustments.withStrength`, not
+ * applied to the wrapper node — that would fade the page itself to transparent). Its `blendMode` is
+ * **not** honoured and `LayersPanel` hides the control: Photoshop blends an adjustment's result
+ * against its unadjusted backdrop, and the wrapper contains the very stack that backdrop would come
+ * from.
  */
 export interface AdjustmentLayerData {
   kind: AdjustmentKind;
@@ -175,6 +181,24 @@ export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-c
   };
 }
 
+/**
+ * A raster mask on a layer. The pixels live in `paint/maskCanvasRegistry.ts` keyed by `id`,
+ * mirroring how `paintCanvasRegistry` holds clean-patch pixels — a layer's paint canvas and its
+ * mask canvas are two separate registry entries, which is why the mask carries its own id.
+ *
+ * The canvas is RGBA with the mask in the *alpha* channel, not grayscale RGB, so rendering is a
+ * plain `destination-in` composite with no conversion. PSD is the only consumer that wants
+ * grayscale, and it converts at that boundary.
+ */
+export interface LayerMask {
+  id: string;
+  enabled: boolean;
+  /** Unlinked masks don't follow the layer when it moves. Nothing moves raster layers yet. */
+  linked: boolean;
+  /** Photoshop's Alt-click-the-mask preview. Render-only, never exported. */
+  showAlone?: boolean;
+}
+
 export interface StudioLayer {
   id: string;
   type: StudioLayerType;
@@ -185,6 +209,17 @@ export interface StudioLayer {
   blendMode: BlendMode;
   /** Background layers can't be deleted, reordered below, or have opacity/blend changed. */
   isBackground?: boolean;
+  /**
+   * Present iff type === 'group'. Bottom-to-top, same convention as the root array — `layerTree.ts`
+   * owns that invariant, and nothing outside it may walk or edit this directly.
+   */
+  children?: StudioLayer[];
+  /** Groups only: whether the panel shows the subtree. Persisted, as Photoshop does. */
+  collapsed?: boolean;
+  /** Clipped to the nearest non-clipped sibling below it in the same parent. */
+  clipped?: boolean;
+  /** Raster layer mask. Any layer type may carry one, groups included. */
+  mask?: LayerMask;
   /** Only present when type === 'text'. */
   text?: TextLayerData;
   /** Only present when type === 'adjustment'. */
@@ -231,6 +266,27 @@ export function createAdjustmentLayer(kind: AdjustmentKind = 'brightness-contras
     blendMode: 'normal',
     adjustment: createDefaultAdjustmentData(kind),
   };
+}
+
+export function createGroupLayer(name = 'Group', children: StudioLayer[] = []): StudioLayer {
+  layerCounter += 1;
+  return {
+    id: `layer-${Date.now()}-${layerCounter}`,
+    type: 'group',
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blendMode: 'normal',
+    children,
+    collapsed: false,
+  };
+}
+
+let maskCounter = 0;
+export function createLayerMask(): LayerMask {
+  maskCounter += 1;
+  return { id: `mask-${Date.now()}-${maskCounter}`, enabled: true, linked: true };
 }
 
 /**

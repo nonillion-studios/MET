@@ -33,6 +33,14 @@ export interface MenuActions {
   moveLayerUp: () => void;
   moveLayerDown: () => void;
   hasActiveLayer: boolean;
+  groupLayers: () => void;
+  ungroupLayers: () => void;
+  /** Gates Ungroup — it's only meaningful when the primary selection is a group. */
+  isGroupActive: boolean;
+  toggleClipped: () => void;
+  /** False when the layer below can't be a clip base — only raster layers can, see `canBeClipBase`. */
+  canClip: boolean;
+  isClipped: boolean;
   addTextLayer: () => void;
   centerTextInBubble: () => void;
   hasActiveTextLayer: boolean;
@@ -110,6 +118,15 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'duplicate-layer', label: 'Duplicate Layer', action: a.duplicateLayer, disabled: !a.hasActiveLayer },
         { id: 'delete-layer', label: 'Delete Layer', action: a.deleteLayer, disabled: !a.hasActiveLayer },
         { id: 'sep1', label: '', separator: true },
+        { id: 'group-layers', label: 'Group Layers', shortcut: 'Ctrl+G', action: a.groupLayers, disabled: !a.hasActiveLayer },
+        { id: 'ungroup-layers', label: 'Ungroup Layers', shortcut: 'Ctrl+Shift+G', action: a.ungroupLayers, disabled: !a.isGroupActive },
+        {
+          id: 'clip-layer',
+          label: a.isClipped ? 'Release Clipping Mask' : 'Create Clipping Mask',
+          action: a.toggleClipped,
+          disabled: !a.canClip && !a.isClipped,
+        },
+        { id: 'sep2', label: '', separator: true },
         { id: 'move-up', label: 'Bring Forward', action: a.moveLayerUp, disabled: !a.hasActiveLayer },
         { id: 'move-down', label: 'Send Backward', action: a.moveLayerDown, disabled: !a.hasActiveLayer },
       ],

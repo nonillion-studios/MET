@@ -14,6 +14,12 @@ import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
+import { FloatingPanel } from './dock/FloatingPanel';
+import { DOCK_PANEL_GROUP_AUTOSAVE_ID } from './dock/dockLayout';
+import {
+  flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
+  collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
+} from './layerTree';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
 import type { PaintSettings, LiquifyMode, SymmetryMode } from './paint/paintEngine';
 import type { BrushShape } from './paint/brushTip';
@@ -28,7 +34,7 @@ import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, parseTyperScript,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, parseTyperScript,
   DEFAULT_TYPER_STYLES, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
   type AdjustmentLayerData, type LayerSelectMode,
 } from './studioTypes';
@@ -166,7 +172,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const result = await canvasRef.current?.commitCrop(rect);
     if (!result) return;
     onPagesChange?.(pages.map(p => p.id === activePage.id ? { ...p, original: result.original, cleaned: result.cleaned } : p));
-    updateLayers(current => current.map(l =>
+    updateLayers(current => mapTree(current, l =>
       l.type === 'text' && l.text ? { ...l, text: { ...l.text, x: l.text.x - rect.x, y: l.text.y - rect.y } } : l
     ), 'Crop');
     setSelection(NO_SELECTION);
@@ -209,6 +215,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onToggleFullscreen: toggleFullscreen,
     onTogglePanelsHidden: () => setPanelsHidden(v => !v),
     onExport: () => setExportOpen(true),
+    onGroupLayers: () => handleGroupLayers(),
+    onUngroupLayers: () => { if (activeLayerId) handleUngroupLayer(activeLayerId); },
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   const [activeTool, setActiveTool] = useState('select');
@@ -253,6 +261,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(['background']);
   const activeLayerId = selectedLayerIds.length > 0 ? selectedLayerIds[selectedLayerIds.length - 1] : null;
   const setActiveLayerId = useCallback((id: string | null) => setSelectedLayerIds(id ? [id] : []), []);
+  /**
+   * Which Layers-panel row has its properties disclosed. Lives here, not in `LayersPanel`, because
+   * selecting a text or adjustment layer switches the dock to that layer's panel — which shares the
+   * `top` region with Layers, so LayersPanel unmounts and local state would vanish. That made the
+   * opacity slider on a text or adjustment layer unreachable: the click that opened the row was the
+   * same click that navigated away from it, and the row was collapsed again on return.
+   */
+  const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
   // The character range selected inside the text layer currently being edited on canvas. Lives here
   // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
   // character styling to it.
@@ -374,9 +390,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         const nextLayersByPage: Record<string, StudioLayer[]> = {};
         const nextRasterByPage: Record<string, Record<string, string>> = {};
         for (const [pageId, serialized] of Object.entries(saved.layersByPage)) {
-          nextLayersByPage[pageId] = serialized.map(({ raster: _raster, ...layer }) => layer);
+          // Strip pixels out of the layer objects and into the raster side-map. Both walk the whole
+          // tree: a group's descendants carry pixels too, and the registry is keyed by layer id,
+          // flat, so nesting never reaches it.
+          nextLayersByPage[pageId] = mapTree(serialized, ({ raster: _raster, ...layer }) => layer) as StudioLayer[];
           const rasterMap: Record<string, string> = {};
-          for (const l of serialized) if (l.raster) rasterMap[l.id] = l.raster;
+          for (const l of flattenTree(serialized)) if (l.raster) rasterMap[l.id] = l.raster;
           if (Object.keys(rasterMap).length > 0) nextRasterByPage[pageId] = rasterMap;
         }
         setLayersByPage(nextLayersByPage);
@@ -417,7 +436,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const liveRaster = canvasRef.current?.exportRasterLayers() ?? {};
     const mergedLayersByPage: Record<string, SerializedStudioLayer[]> = {};
     for (const [pageId, pageLayers] of Object.entries(layersByPageRef.current)) {
-      mergedLayersByPage[pageId] = pageLayers.map((l) => {
+      mergedLayersByPage[pageId] = mapTree<SerializedStudioLayer>(pageLayers, (l) => {
         const raster = liveRaster[l.id] ?? rasterByPageRef.current[pageId]?.[l.id];
         return raster ? { ...l, raster } : l;
       });
@@ -479,7 +498,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleAddLayer() {
-    const layer = createLayer('clean-patch', `Layer ${layers.length}`);
+    const layer = createLayer('clean-patch', `Layer ${flattenTree(layers).length}`);
     updateLayers(current => [...current, layer], 'Add Layer');
     setActiveLayerId(layer.id);
     // New raster layers start as a working copy of the background — matches the standard
@@ -496,8 +515,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
-    updateLayers(current => current.map(l =>
-      l.id === id && l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
+    updateLayers(current => updateLayer(current, id, l =>
+      l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
     ));
   }
 
@@ -513,7 +532,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     } else {
       setSelectedLayerIds([id]);
     }
-    const type = layers.find(l => l.id === id)?.type;
+    const type = findLayer(layers, id)?.type;
     if (type === 'text') dock.selectTab('text');
     if (type === 'adjustment') dock.selectTab('adjustment');
   }
@@ -521,19 +540,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   /** Replaces the whole selection at once — used by the canvas's drag-a-box object marquee. */
   function selectLayers(ids: string[]) {
     setSelectedLayerIds(ids);
-    if (ids.length === 1 && layers.find(l => l.id === ids[0])?.type === 'text') dock.selectTab('text');
+    if (ids.length === 1 && findLayer(layers, ids[0])?.type === 'text') dock.selectTab('text');
   }
 
   function handleDuplicateLayer(id: string) {
-    const source = layers.find(l => l.id === id);
+    const source = findLayer(layers, id);
     if (!source || source.isBackground) return;
-    const copy: StudioLayer = { ...source, id: `${source.id}-copy-${Date.now()}`, name: `${source.name} copy` };
-    updateLayers(current => {
-      const index = current.findIndex(l => l.id === id);
-      const next = [...current];
-      next.splice(index + 1, 0, copy);
-      return next;
-    }, 'Duplicate Layer');
+    // cloneSubtree regenerates ids for the layer *and* every descendant, and hands back the map the
+    // registry needs — the pixels live under the old ids, so a copy without this is silently blank.
+    const { copy, idMap } = cloneSubtree(source);
+    canvasRef.current?.clonePaintCanvases(idMap);
+    updateLayers(current => insertAfter(current, id, copy), 'Duplicate Layer');
     setActiveLayerId(copy.id);
   }
 
@@ -541,13 +558,84 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handleDeleteLayers([id]);
   }
 
+  /**
+   * Wraps the current selection in a new group. `groupLayers` refuses a selection that spans
+   * parents (it would silently reorder layers the user never selected), so tell them why rather
+   * than no-op'ing in silence.
+   */
+  function handleGroupLayers() {
+    const ids = selectedLayerIds.filter(id => !findLayer(layers, id)?.isBackground);
+    if (ids.length === 0) {
+      swalToast({ icon: 'info', title: 'Select one or more layers to group' });
+      return;
+    }
+    const parents = new Set(ids.map(id => getParent(layers, id)?.id ?? null));
+    if (parents.size > 1) {
+      swalToast({ icon: 'info', title: 'Selected layers must be in the same group' });
+      return;
+    }
+    const group = createGroupLayer();
+    updateLayers(current => groupLayers(current, ids, group), 'Group Layers');
+    setSelectedLayerIds([group.id]);
+  }
+
+  function handleUngroupLayer(id: string) {
+    const target = findLayer(layers, id);
+    if (!target || target.type !== 'group') return;
+    const childIds = (target.children ?? []).map(c => c.id);
+    updateLayers(current => ungroup(current, id), 'Ungroup Layers');
+    // Select what came out; selecting the now-deleted group would leave every panel pointing at
+    // a layer that no longer exists.
+    setSelectedLayerIds(childIds.length > 0 ? childIds : ['background']);
+  }
+
+  /**
+   * Clips the active layer to the raster layer directly beneath it, or releases it.
+   *
+   * Only raster layers can be a base (`canBeClipBase`) — both renderers trim a run by re-drawing
+   * the base with `destination-in`, which needs the base to be a single drawable.
+   */
+  function handleToggleClipped(id: string) {
+    const layer = findLayer(layers, id);
+    if (!layer || layer.isBackground) return;
+
+    if (layer.clipped) {
+      updateLayers(current => updateLayer(current, id, l => ({ ...l, clipped: false })), 'Release Clipping Mask');
+      return;
+    }
+
+    const siblings = getSiblings(layers, id);
+    const index = siblings.findIndex(l => l.id === id);
+    const below = index > 0 ? siblings[index - 1] : null;
+    if (!canBeClipBase(below)) {
+      swalToast({ icon: 'info', title: 'Clipping needs a raster layer directly below' });
+      return;
+    }
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, clipped: true })), 'Create Clipping Mask');
+  }
+
+  function handleToggleGroupCollapsed(id: string) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, collapsed: !l.collapsed })));
+  }
+
+  /** Drag-and-drop reparent from the Layers panel. `layerTree.reparent` enforces legality — cycles,
+   *  the background, non-group parents — so an impossible drop lands as a no-op, not corruption. */
+  function handleReparentLayer(id: string, newParentId: string | null, index: number) {
+    updateLayers(current => reparent(current, id, newParentId, index), 'Move Layer');
+  }
+
   /** Deletes every given layer. The background is never deletable, so it's filtered out rather
    *  than special-cased at each call site. */
   function handleDeleteLayers(ids: string[]) {
-    const doomed = layers.filter(l => ids.includes(l.id) && !l.isBackground && !l.locked).map(l => l.id);
+    const doomed = ids
+      .map(id => findLayer(layers, id))
+      .filter((l): l is StudioLayer => !!l && !l.isBackground && !l.locked);
     if (doomed.length === 0) return;
-    updateLayers(current => current.filter(l => !doomed.includes(l.id)), doomed.length > 1 ? `Delete ${doomed.length} Layers` : 'Delete Layer');
-    doomed.forEach(id => canvasRef.current?.deletePaintCanvas(id));
+    const doomedIds = doomed.map(l => l.id);
+    updateLayers(current => removeLayers(current, doomedIds), doomed.length > 1 ? `Delete ${doomed.length} Layers` : 'Delete Layer');
+    // Deleting a group takes its whole subtree with it, so every descendant's canvas has to go too
+    // or the registry leaks them for the rest of the session (and into the next autosave).
+    doomed.flatMap(collectSubtree).forEach(l => canvasRef.current?.deletePaintCanvas(l.id));
     setActiveLayerId('background');
   }
 
@@ -568,31 +656,24 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleMoveLayer(id: string, direction: 'up' | 'down') {
-    updateLayers(current => {
-      const index = current.findIndex(l => l.id === id);
-      const swapWith = direction === 'up' ? index + 1 : index - 1;
-      if (swapWith < 0 || swapWith >= current.length || current[swapWith].isBackground) return current;
-      const next = [...current];
-      [next[index], next[swapWith]] = [next[swapWith], next[index]];
-      return next;
-    }, 'Reorder Layer');
+    updateLayers(current => moveWithinParent(current, id, direction), 'Reorder Layer');
   }
 
   function handleToggleVisible(id: string) {
-    updateLayers(current => current.map(l => l.id === id ? { ...l, visible: !l.visible } : l), 'Toggle Visibility');
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, visible: !l.visible })), 'Toggle Visibility');
   }
 
   function handleToggleLocked(id: string) {
-    updateLayers(current => current.map(l => l.id === id ? { ...l, locked: !l.locked } : l), 'Toggle Lock');
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, locked: !l.locked })), 'Toggle Lock');
   }
 
   function handleOpacityChange(id: string, opacity: number) {
     // Continuous slider drag — intentionally not tracked in history (would spam an entry per pixel).
-    updateLayers(current => current.map(l => l.id === id ? { ...l, opacity } : l));
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, opacity })));
   }
 
   function handleBlendChange(id: string, blendMode: StudioLayer['blendMode']) {
-    updateLayers(current => current.map(l => l.id === id ? { ...l, blendMode } : l), 'Change Blend Mode');
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
   function handleAddTextLayer(x: number, y: number, boxWidth?: number) {
@@ -627,15 +708,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>) {
-    updateLayers(current => current.map(l =>
-      l.id === id && l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
+    updateLayers(current => updateLayer(current, id, l =>
+      l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
     ));
   }
 
   /** Cross-page text edit, for the Translation Preview panel (search/replace, status, comments). */
   function handleUpdateTextLayerOnPage(pageId: string, id: string, patch: Partial<TextLayerData>) {
-    updateLayersOnPage(pageId, current => current.map(l =>
-      l.id === id && l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
+    updateLayersOnPage(pageId, current => updateLayer(current, id, l =>
+      l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
     ));
   }
 
@@ -649,7 +730,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     canvasRef.current?.centerTextLayerInBubble(id);
   }
 
-  const activeLayer = layers.find(l => l.id === activeLayerId) ?? null;
+  const activeLayer = findLayer(layers, activeLayerId) ?? null;
+  /** The layer directly beneath the active one among its siblings — its clip base, if it can be one. */
+  const layerBelowActive = (() => {
+    if (!activeLayerId) return null;
+    const siblings = getSiblings(layers, activeLayerId);
+    const index = siblings.findIndex(l => l.id === activeLayerId);
+    return index > 0 ? siblings[index - 1] : null;
+  })();
 
   // Paint-family tools need a clean-patch (raster) layer to draw onto — the Background layer has
   // no backing canvas, so without this every brush/fill/shape tool would silently no-op the moment
@@ -691,6 +779,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
       onMove={handleMoveLayer}
+      onGroup={handleGroupLayers}
+      onUngroup={handleUngroupLayer}
+      onToggleCollapsed={handleToggleGroupCollapsed}
+      onReparent={handleReparentLayer}
+      onToggleClipped={handleToggleClipped}
+      expandedLayerId={expandedLayerId}
+      onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
     />
   );
 
@@ -798,6 +893,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     moveLayerUp: () => activeLayerId && handleMoveLayer(activeLayerId, 'up'),
     moveLayerDown: () => activeLayerId && handleMoveLayer(activeLayerId, 'down'),
     hasActiveLayer: !!activeLayer && !activeLayer.isBackground,
+    groupLayers: handleGroupLayers,
+    ungroupLayers: () => activeLayerId && handleUngroupLayer(activeLayerId),
+    isGroupActive: activeLayer?.type === 'group',
+    toggleClipped: () => { if (activeLayerId) handleToggleClipped(activeLayerId); },
+    canClip: !!activeLayer && !activeLayer.isBackground && canBeClipBase(layerBelowActive),
+    isClipped: activeLayer?.clipped === true,
     addTextLayer: () => setActiveTool('text'),
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
     hasActiveTextLayer: activeLayer?.type === 'text',
@@ -842,6 +943,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }, []);
   const isDesktop = layoutMode === 'desktop';
 
+  // Flattened, so grouping layers doesn't dim a stage that's still genuinely satisfied.
+  const allLayers = flattenTree(layers);
   useEffect(() => {
     if (isDesktop) return;
     function onPointerDown(e: PointerEvent) {
@@ -857,8 +960,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'page', label: 'Page', active: !!activePage, tracked: true },
     { id: 'detection', label: 'Detection', active: false, tracked: false },
     { id: 'cleaning', label: 'Cleaning', active: !!activePage?.cleaned, tracked: true },
-    { id: 'drawing', label: 'Drawing', active: layers.some(l => l.type === 'clean-patch'), tracked: true },
-    { id: 'typesetting', label: 'Typesetting', active: layers.some(l => l.type === 'text' && !!l.text?.content), tracked: true },
+    { id: 'drawing', label: 'Drawing', active: allLayers.some(l => l.type === 'clean-patch'), tracked: true },
+    { id: 'typesetting', label: 'Typesetting', active: allLayers.some(l => l.type === 'text' && !!l.text?.content), tracked: true },
     { id: 'review', label: 'Review', active: false, tracked: false },
     { id: 'export', label: 'Export', active: false, tracked: false },
   ];

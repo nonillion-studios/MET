@@ -13,6 +13,8 @@ interface UseStudioShortcutsArgs {
   onToggleFullscreen: () => void;
   onTogglePanelsHidden: () => void;
   onExport: () => void;
+  onGroupLayers: () => void;
+  onUngroupLayers: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -24,7 +26,7 @@ function isTextInputFocused(): boolean {
 
 export function useStudioShortcuts({
   onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
-  onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport,
+  onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -37,8 +39,11 @@ export function useStudioShortcuts({
       // Not a literal "F11" binding — browsers intercept F11 at the chrome level before
       // JS reliably sees it, so Ctrl/Cmd+Shift+F is the in-app fullscreen shortcut instead.
       if (mod && e.shiftKey && key === 'f') { e.preventDefault(); onToggleFullscreen(); return; }
+      // Checked ahead of plain Ctrl+G below, or the ungroup combo would be swallowed by grouping.
+      if (mod && e.shiftKey && key === 'g') { e.preventDefault(); onUngroupLayers(); return; }
 
       if (mod) {
+        if (key === 'g') { e.preventDefault(); onGroupLayers(); return; }
         if (key === '=' || key === '+') { e.preventDefault(); onZoomIn(); return; }
         if (key === '-') { e.preventDefault(); onZoomOut(); return; }
         if (key === '0') { e.preventDefault(); onFit(); return; }

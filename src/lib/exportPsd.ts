@@ -1,5 +1,5 @@
 import type { Psd, Layer as PsdLayer, LayerEffectGradientOverlay, TextStyleRun } from 'ag-psd';
-import type { TextGradient, TextLayerData } from '../components/studio/studioTypes';
+import type { AdjustmentLayerData, TextGradient, TextLayerData } from '../components/studio/studioTypes';
 import { normalizeRuns, resolveRunStyle } from '../components/studio/textRuns';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
@@ -89,19 +89,66 @@ async function dataUrlToCanvas(dataUrl: string, width: number, height: number): 
   return canvas;
 }
 
+/**
+ * Maps our adjustment data onto ag-psd's own adjustment types, so the layer stays live and editable
+ * in Photoshop rather than being baked into pixels.
+ *
+ * Field names verified against the installed `ag-psd/dist/psd.d.ts` — they are not the obvious ones:
+ * levels uses `shadowInput`/`midtoneInput` (not `inputBlack`/`gamma`), and hue/saturation wants a
+ * full channel record. `a`–`d` are hue-range markers, irrelevant for `master`.
+ *
+ * `useLegacy: true` is load-bearing, not cosmetic: ag-psd only writes the modern `CgEd` descriptor
+ * when it's false, and our `brightnessContrastFilter` is a legacy-style linear op, not Photoshop's
+ * modern curve. The legacy flag is both the honest mapping and the one that round-trips.
+ */
+function psdAdjustment(data: AdjustmentLayerData): PsdLayer['adjustment'] {
+  switch (data.kind) {
+    case 'brightness-contrast':
+      return { type: 'brightness/contrast', brightness: data.brightness, contrast: data.contrast, useLegacy: true };
+    case 'hue-saturation':
+      return {
+        type: 'hue/saturation',
+        master: { a: 0, b: 0, c: 0, d: 0, hue: data.hue, saturation: data.saturation, lightness: data.lightness },
+      };
+    case 'levels':
+      return {
+        type: 'levels',
+        rgb: {
+          shadowInput: data.levels.inBlack,
+          highlightInput: data.levels.inWhite,
+          shadowOutput: data.levels.outBlack,
+          highlightOutput: data.levels.outWhite,
+          midtoneInput: data.levels.gamma,
+        },
+      };
+  }
+}
+
 async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height: number): Promise<PsdLayer> {
   const base: PsdLayer = {
     name: layer.name,
     opacity: layer.opacity,
     hidden: !layer.visible,
     blendMode: layer.blendMode,
+    // PSD's own clipping flag — the layer stays clipped to the one below it when reopened, rather
+    // than being flattened into it here.
+    clipping: layer.clipped === true,
     top: 0,
     left: 0,
     bottom: height,
     right: width,
   };
 
-  if (layer.raster) {
+  if (layer.type === 'group') {
+    // ag-psd models a group as a layer with `children` in the same bottom-to-top order we use, so
+    // this maps across directly and the group stays a real, collapsible folder in Photoshop.
+    base.children = await Promise.all((layer.children ?? []).map(c => buildPsdLayer(c, width, height)));
+    base.opened = !layer.collapsed;
+  } else if (layer.type === 'adjustment' && layer.adjustment) {
+    // Adjustment layers used to fall through every branch here and emit an empty named layer —
+    // the adjustment silently vanished from the PSD and nobody was told.
+    base.adjustment = psdAdjustment(layer.adjustment);
+  } else if (layer.raster) {
     base.canvas = await dataUrlToCanvas(layer.raster, width, height);
   } else if (layer.type === 'text' && layer.text) {
     const t = layer.text;

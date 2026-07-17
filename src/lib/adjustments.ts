@@ -103,3 +103,33 @@ export function filterForAdjustment(data: AdjustmentLayerData): (imageData: Imag
       return levelsFilter(data.levels.inBlack, data.levels.inWhite, data.levels.gamma, data.levels.outBlack, data.levels.outWhite);
   }
 }
+
+/**
+ * Scales a filter's strength: `out = original*(1-alpha) + filtered*alpha`, per pixel, RGB only.
+ *
+ * This is how an adjustment layer's **own opacity** is implemented, and it has to happen inside the
+ * filter rather than as the wrapper node's opacity. The wrapper *contains* the stack it adjusts
+ * (background included), so fading the wrapper would fade the page itself to transparent and expose
+ * the backing behind it — not "half the adjustment". Photoshop blends an adjustment's result with
+ * its unadjusted backdrop, and doing that here would otherwise mean rendering everything below the
+ * adjustment twice.
+ *
+ * Alpha is left untouched: this scales a colour grade, not coverage.
+ */
+export function withStrength(
+  filter: (imageData: ImageData) => void,
+  alpha: number,
+): (imageData: ImageData) => void {
+  if (alpha >= 1) return filter;
+  return (imageData: ImageData) => {
+    const original = imageData.data.slice();
+    filter(imageData);
+    if (alpha <= 0) { imageData.data.set(original); return; }
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = original[i] + (d[i] - original[i]) * alpha;
+      d[i + 1] = original[i + 1] + (d[i + 1] - original[i + 1]) * alpha;
+      d[i + 2] = original[i + 2] + (d[i + 2] - original[i + 2]) * alpha;
+    }
+  };
+}

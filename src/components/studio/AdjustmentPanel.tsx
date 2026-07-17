@@ -42,7 +42,8 @@ export function AdjustmentPanel({ layer, onUpdate }: AdjustmentPanelProps) {
   return (
     <StudioPanel title="Adjustment">
         <p className="text-micro text-ink-faint/70 leading-snug">
-          Applies to the page background. Text and paint layers above it aren't affected.
+          Applies to every layer below this one. Move it up or down the stack to change what it affects,
+          or lower its opacity to ease it off.
         </p>
 
         <label className="flex flex-col gap-1 text-micro text-ink-faint">

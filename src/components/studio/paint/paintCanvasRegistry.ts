@@ -25,3 +25,21 @@ export function getOrCreateCanvasFor(registry: PaintCanvasRegistry, layerId: str
 export function deleteCanvasFor(registry: PaintCanvasRegistry, layerId: string): void {
   delete registry[layerId];
 }
+
+/**
+ * Copies `fromId`'s pixels to a fresh canvas under `toId`. No-op when `fromId` has no canvas
+ * (a layer that's never been painted, or one whose page hasn't been visited this session).
+ *
+ * Duplicating a layer *must* go through this: the registry is keyed by layer id, so a copy that
+ * only clones the `StudioLayer` object gets handed a blank canvas by `getOrCreateCanvasFor` and
+ * silently loses every pixel.
+ */
+export function clonePaintCanvas(registry: PaintCanvasRegistry, fromId: string, toId: string): void {
+  const source = registry[fromId];
+  if (!source) return;
+  const copy = document.createElement('canvas');
+  copy.width = source.width;
+  copy.height = source.height;
+  copy.getContext('2d')?.drawImage(source, 0, 0);
+  registry[toId] = copy;
+}

@@ -1,21 +1,25 @@
-import { useEffect, useMemo, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, forwardRef, useImperativeHandle, type ReactNode } from 'react';
 import { Image as ImageIcon } from 'lucide-react';
-import { Stage, Layer, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer } from 'react-konva';
+import { Stage, Layer, Group, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer } from 'react-konva';
 import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
 import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type LayerSelectMode } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
+import {
+  findLayer, findPath, getAtPath, getSiblings, flattenTree, mapTree, partitionAdjustments, groupClipRuns,
+  type RenderNode, type ClipRun,
+} from './layerTree';
 import { layoutText } from './textLayout';
 import { reflowRunsForContent } from './textRuns';
 import { swalToast } from '../../lib/swalTheme';
-import { getOrCreateCanvasFor, deleteCanvasFor, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
+import { getOrCreateCanvasFor, deleteCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
 import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
 import { NO_SELECTION, combineModeFromModifiers, combineSelections, type Selection, type SelectionCombineMode } from './paint/selection';
 import { strokePenPath, type PaintSettings } from './paint/paintEngine';
 import { BrushCursor } from './paint/BrushCursor';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
-import { filterForAdjustment } from '../../lib/adjustments';
+import { filterForAdjustment, withStrength } from '../../lib/adjustments';
 
 /** A character range inside one text layer, as reported by the editing textarea. */
 export interface TextSelection {
@@ -95,6 +99,11 @@ export interface StudioCanvasHandle {
   getPaintCanvas: (layerId: string) => HTMLCanvasElement | null;
   /** Frees a raster layer's canvas when its layer is deleted. */
   deletePaintCanvas: (layerId: string) => void;
+  /**
+   * Clones raster pixels for every old→new id pair, for duplicating a layer or a whole group.
+   * Takes the id map from `layerTree.cloneSubtree` — pairs with no canvas are skipped.
+   */
+  clonePaintCanvases: (idMap: Map<string, string>) => void;
   /** Forces Konva to redraw a layer after its raster canvas was mutated directly (e.g. by undo/redo). */
   redrawLayer: (layerId: string) => void;
   /** Snapshots every raster layer with a live canvas backing (for persistence) as PNG data URLs, keyed by layer id. */
@@ -132,7 +141,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const textNodeRefs = useRef<Record<string, Konva.Group | null>>({});
-  const layerNodeRefs = useRef<Record<string, Konva.Layer | null>>({});
+  /**
+   * One Konva `Group` per StudioLayer. These used to be Konva `Layer`s — one canvas each — which
+   * is why blend modes silently did nothing: `Container.drawScene` applies the composite op while
+   * drawing children into the *current* canvas, and a Layer's own canvas starts empty, so
+   * "multiply" had nothing beneath it to multiply with. Groups share the one stage canvas, so a
+   * blend now composites against the background and everything under it, matching the exporter.
+   */
+  const layerNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  /** Groups have no batchDraw of their own — only Layer does — so redraws go via the owning Layer. */
+  const redrawLayerNode = useCallback((layerId: string | null | undefined) => {
+    layerNodeRefs.current[layerId ?? '']?.getLayer()?.batchDraw();
+  }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   /** Per-layer pristine pre-liquify snapshot, for Liquify's Reconstruct mode — see usePaintLayer.ts. */
   const liquifySnapshots = useRef<Record<string, ImageData>>({}).current;
@@ -194,7 +214,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     };
   }, []);
 
-  const activeLayer = layers.find(l => l.id === activeLayerId) ?? null;
+  const activeLayer = findLayer(layers, activeLayerId) ?? null;
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
   const paintLayerIdRef = useRef<string | null>(null);
   paintLayerIdRef.current = activeLayer?.type === 'clean-patch' ? activeLayer.id : null;
@@ -213,7 +233,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     onSelectionChange,
     onStrokeEnd: (before) => {
       const layerId = paintLayerIdRef.current;
-      layerNodeRefs.current[layerId ?? '']?.batchDraw();
+      redrawLayerNode(layerId ?? '');
       if (layerId) onPaintStrokeEnd(layerId, before);
     },
     getLayerId: () => paintLayerIdRef.current,
@@ -228,11 +248,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
     },
     redrawLayer(layerId: string) {
-      layerNodeRefs.current[layerId]?.batchDraw();
+      redrawLayerNode(layerId);
     },
     deletePaintCanvas(layerId: string) {
       deleteCanvasFor(paintCanvasRegistry.current, layerId);
       delete liquifySnapshots[layerId];
+    },
+    clonePaintCanvases(idMap: Map<string, string>) {
+      // Liquify snapshots are deliberately not cloned: they're a pristine pre-liquify baseline for
+      // Reconstruct, and the copy's baseline is its own starting pixels, captured on first use.
+      for (const [fromId, toId] of idMap) clonePaintCanvas(paintCanvasRegistry.current, fromId, toId);
     },
     exportRasterLayers() {
       // Exports every raster canvas the registry currently holds — not just the active page's —
@@ -260,7 +285,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-      layerNodeRefs.current[layerId]?.batchDraw();
+      redrawLayerNode(layerId);
     },
     getExportSnapshot() {
       const img = imageRef.current;
@@ -268,15 +293,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const bgCanvas = document.createElement('canvas');
       bgCanvas.width = img.width;
       bgCanvas.height = img.height;
+      // Deliberately *unfiltered*. Adjustments used to be baked in here, duplicating the filter
+      // pipeline; now they're layers in the tree and `exportImage.ts` applies them on its walk —
+      // one implementation, two consumers, which is what keeps the file matching the screen.
       const bgCtx = bgCanvas.getContext('2d')!;
       bgCtx.drawImage(img, 0, 0);
-      const bgAdjustments = layersRef.current.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
-      if (bgAdjustments.length > 0) {
-        const bgImageData = bgCtx.getImageData(0, 0, bgCanvas.width, bgCanvas.height);
-        for (const l of bgAdjustments) filterForAdjustment(l.adjustment!)(bgImageData);
-        bgCtx.putImageData(bgImageData, 0, 0);
-      }
-      const exportLayers: SerializedStudioLayer[] = layersRef.current.map((l) => {
+      // Walks the whole tree: pixels hang off layers at every depth, and a flat map would hand the
+      // exporter a group whose children carry no raster — i.e. silently export an empty group.
+      const exportLayers = mapTree<SerializedStudioLayer>(layersRef.current, (l) => {
         const canvas = paintCanvasRegistry.current[l.id];
         return canvas ? { ...l, raster: canvas.toDataURL('image/png') } : l;
       });
@@ -299,7 +323,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       this.zoomTo(scale / 1.25);
     },
     centerTextLayerInBubble(id: string) {
-      const layer = layersRef.current.find(l => l.id === id);
+      const layer = findLayer(layersRef.current, id);
       const img = imageRef.current;
       if (!layer?.text || !img) return;
       const lineCount = layer.text.content.split('\n').length || 1;
@@ -350,7 +374,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         old.width = rw;
         old.height = rh;
         old.getContext('2d')!.drawImage(cropped, 0, 0);
-        layerNodeRefs.current[layerId]?.batchDraw();
+        redrawLayerNode(layerId);
       }
 
       return { original: newOriginal, cleaned: newCleaned };
@@ -363,7 +387,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
-      layerNodeRefs.current[layerId]?.batchDraw();
+      redrawLayerNode(layerId);
     },
   }), [onUpdateTextLayer, scale, pos, containerSize, page]);
 
@@ -440,28 +464,135 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 
   useEffect(() => { fitToScreen(); }, [fitToScreen, page?.id, fitSignal]);
 
-  // Adjustment layers apply to the background page image only (see studioTypes.ts
-  // AdjustmentLayerData doc) — stacked in layer order, cached once and re-cached only
-  // when params/image change so idle repaints stay cheap on low-end devices.
-  const adjustmentLayers = layers.filter(l => l.type === 'adjustment' && l.visible && l.adjustment);
-  const adjustmentKey = adjustmentLayers.map(l => JSON.stringify(l.adjustment)).join('|');
+  /**
+   * Each adjustment renders as a wrapper Group around everything below it (see
+   * `layerTree.partitionAdjustments`), cached so `filters()` has a rasterised subtree to work on.
+   * `adjustmentNodeRefs` holds those wrappers, keyed by the adjustment layer's id.
+   */
+  const adjustmentNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  const adjustmentLayers = useMemo(
+    () => flattenTree(layers).filter(l => l.type === 'adjustment' && l.adjustment),
+    [layers],
+  );
+  const adjustmentKey = useMemo(
+    () => adjustmentLayers.map(l => `${l.id}:${l.visible}:${l.opacity}:${JSON.stringify(l.adjustment)}`).join('|'),
+    [adjustmentLayers],
+  );
+
+  /**
+   * Param changes call `filters()` and **never** `cache()`.
+   *
+   * Konva's `filters` setter only marks `_filterUpToDate = false`; `_getCachedSceneCanvas` then
+   * reuses the cached scene canvas and re-runs just getImageData -> filter -> putImageData, leaving
+   * the children alone. Calling `cache()` here instead would redraw the whole subtree on every
+   * slider tick, turning a filter pass into a full page render. The structural cache is set up in
+   * the effect below, keyed so it can't fire on a param change.
+   */
   useEffect(() => {
-    const node = bgImageNodeRef.current;
-    if (!node) return;
-    if (adjustmentLayers.length === 0) {
-      node.clearCache();
-      node.filters([]);
-      node.getLayer()?.batchDraw();
-      return;
+    for (const layer of adjustmentLayers) {
+      const node = adjustmentNodeRefs.current[layer.id];
+      if (!node) continue;
+      // Hiding an adjustment means dropping its filter, never hiding the wrapper — the wrapper is
+      // the stack it adjusts. Opacity is folded into the filter for the same reason: fading the
+      // wrapper would fade the page to transparent instead of easing the grade.
+      node.filters(layer.visible ? [withStrength(filterForAdjustment(layer.adjustment!), layer.opacity)] : []);
     }
-    node.filters(adjustmentLayers.map(l => filterForAdjustment(l.adjustment!)));
-    node.cache();
-    node.getLayer()?.batchDraw();
-  }, [adjustmentKey, image]);
+    stageRef.current?.batchDraw();
+  }, [adjustmentKey, adjustmentLayers]);
+
+  /**
+   * Whether a group is an isolation boundary — i.e. must be rasterized to its own canvas and blitted
+   * once, rather than letting its children draw straight onto what's below.
+   *
+   * This mirrors Photoshop's two group modes, and `isolatesGroup` in `exportImage.ts` **must stay
+   * identical** or the screen and the exported file disagree:
+   *
+   *  - opacity 1 + normal blend => *pass-through*: children composite against everything beneath the
+   *    group, exactly as if it weren't there. This is Photoshop's default for a new group, and it
+   *    falls out for free from an uncached Konva Group.
+   *  - anything else => *isolated*: the subtree composites against nothing but itself, then blits
+   *    through the group's own alpha/blend. A Multiply child inside an isolated group therefore has
+   *    nothing to multiply with and washes out — surprising, but it is what Photoshop does once a
+   *    group stops being pass-through.
+   *
+   * Child count is deliberately NOT a condition. It's tempting (with one child there's nothing to
+   * overlap, so the cache looks redundant) but it's wrong: isolation changes what the child blends
+   * *against*, not just how the results stack, so skipping it for single-child groups makes the
+   * canvas disagree with the exporter.
+   */
+  const needsIsolation = useCallback((layer: StudioLayer) =>
+    layer.type === 'group' && (layer.opacity < 1 || layer.blendMode !== 'normal'), []);
+
+  /** True when `layerId` is a clip base with layers riding on it — i.e. it renders as a clip run. */
+  const hasClippedFollowers = useCallback((layerId: string) => {
+    const siblings = getSiblings(layersRef.current, layerId);
+    return groupClipRuns(siblings).some(run => run.base.id === layerId && run.followers.length > 0);
+  }, []);
+
+  // Re-cache only when the *structure* changes — never on a param tick. `cache()` redraws the whole
+  // subtree, so calling it per slider frame would turn a blit into a full page render.
+  const groupStructureKey = useMemo(
+    () => flattenTree(layers)
+      .map(l => `${l.id}:${l.type}:${l.visible}:${l.opacity}:${l.blendMode}:${l.clipped ?? false}:${l.children?.length ?? 0}`)
+      .join('|'),
+    [layers],
+  );
+
+  useEffect(() => {
+    for (const layer of flattenTree(layersRef.current)) {
+      const node = layerNodeRefs.current[layer.id];
+      if (!node) continue;
+      // An adjustment wrapper must be cached whatever its params: `filters()` runs over the cached
+      // scene canvas, so without a cache there is nothing for the filter to read.
+      //
+      // A clip run must be cached too, and that one is a correctness requirement rather than a
+      // fidelity one: its trailing `destination-in` pass would otherwise composite against the
+      // shared stage canvas and erase every layer already drawn beneath it — the whole page.
+      const isolate = needsIsolation(layer)
+        || (layer.type === 'adjustment' && layer.visible)
+        || hasClippedFollowers(layer.id);
+      if (isolate) {
+        // pixelRatio 1 = page-space pixels. The stage scale is a transform above the cache, so
+        // caching at devicePixelRatio would make cost (and memory) scale with zoom for no gain.
+        node.cache({ pixelRatio: 1 });
+      } else if (node.isCached()) {
+        node.clearCache();
+      }
+    }
+    stageRef.current?.batchDraw();
+  }, [groupStructureKey, image, needsIsolation]);
+
+  /**
+   * A cached ancestor holds a stale snapshot of its subtree, so a brush stroke on a layer inside an
+   * isolated group wouldn't appear until the cache is rebuilt — and rebuilding per stroke segment
+   * is a full page redraw per pointermove. Instead, drop those caches for the duration of the
+   * stroke and restore them on commit. The group is transiently un-isolated while drawing, which is
+   * what Photoshop does on a heavy file too.
+   */
+  const suspendedCachesRef = useRef<string[]>([]);
+
+  const suspendAncestorCaches = useCallback((layerId: string | null) => {
+    if (!layerId) return;
+    const path = findPath(layersRef.current, layerId);
+    if (!path) return;
+    const ids: string[] = [];
+    for (let i = 1; i < path.length; i += 1) {
+      const ancestor = getAtPath(layersRef.current, path.slice(0, i));
+      const node = ancestor ? layerNodeRefs.current[ancestor.id] : null;
+      if (ancestor && node?.isCached()) { node.clearCache(); ids.push(ancestor.id); }
+    }
+    suspendedCachesRef.current = ids;
+  }, []);
+
+  const restoreAncestorCaches = useCallback(() => {
+    for (const id of suspendedCachesRef.current) layerNodeRefs.current[id]?.cache({ pixelRatio: 1 });
+    suspendedCachesRef.current = [];
+    stageRef.current?.batchDraw();
+  }, []);
 
   // Freshly created text layers start empty — drop straight into editing mode.
   useEffect(() => {
-    const layer = layersRef.current.find(l => l.id === activeLayerId);
+    const layer = findLayer(layersRef.current, activeLayerId);
     if (layer?.type === 'text' && layer.text?.content === '') {
       setEditingLayerId(layer.id);
     }
@@ -617,6 +748,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // A real stylus reports actual pressure; mouse/touch report a flat 0.5 per spec, which isn't
     // meaningful pressure data, so only let pen input affect brush size.
     const pressure = e.evt.pointerType === 'pen' ? e.evt.pressure || 0.5 : 1;
+    // Drop any cached ancestor group for the duration of the stroke, or its stale snapshot hides
+    // every segment until commit and the brush reads as broken.
+    suspendAncestorCaches(paintLayerIdRef.current);
     paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey, pressure);
   };
   // Window-level mousemove/mouseup for middle-mouse/space-drag panning, so the drag keeps
@@ -689,7 +823,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!p) return;
     const pressure = e.evt.pointerType === 'pen' ? e.evt.pressure || 0.5 : 1;
     paint.pointerMove(activeTool as Parameters<typeof paint.pointerMove>[0], p.x, p.y, pressure);
-    layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
+    redrawLayerNode(paintLayerIdRef.current);
   };
   const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
@@ -702,7 +836,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // A tiny box is a click on empty canvas, not a drag — handleStageClick clears the selection.
       if (!box || box.width < 4 || box.height < 4) return;
       objectMarqueeConsumedRef.current = true;
-      const hits = layers
+      const hits = flattenTree(layers)
         .filter(l => l.type === 'text' && !l.locked && l.visible)
         .filter(l => {
           const r = textLayerRect(l.id);
@@ -746,7 +880,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const p = imageSpacePointer();
     if (!p) return;
     paint.pointerUp(activeTool as Parameters<typeof paint.pointerUp>[0], p.x, p.y);
-    layerNodeRefs.current[paintLayerIdRef.current ?? '']?.batchDraw();
+    redrawLayerNode(paintLayerIdRef.current);
+    restoreAncestorCaches();
   };
 
   const commitPenPath = () => {
@@ -757,7 +892,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (canvas && ctx && layerId) {
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
       strokePenPath(ctx, penPoints, true, { fillColor: null, strokeColor: paintSettings.color, strokeWidth: Math.max(2, paintSettings.size / 6) }, selection);
-      layerNodeRefs.current[layerId]?.batchDraw();
+      redrawLayerNode(layerId);
       onPaintStrokeEnd(layerId, before);
     }
     setPenPoints([]);
@@ -777,7 +912,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (activeTool === 'crop') onCommitCrop?.();
   };
 
-  const editingLayer = editingLayerId ? layers.find(l => l.id === editingLayerId) ?? null : null;
+  const editingLayer = editingLayerId ? findLayer(layers, editingLayerId) ?? null : null;
 
   /**
    * The Select tool's drag-a-box-over-empty-canvas object marquee. Distinct from `selection`, which
@@ -892,6 +1027,176 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const showBrushCursor = !panning && BRUSH_CURSOR_TOOLS.has(activeTool) && brushCursorPos !== null;
   const cursorClass = panning ? 'cursor-grab' : showBrushCursor ? 'cursor-none' : '';
 
+  /**
+   * Renders a layer list (bottom-to-top) as nested Konva Groups.
+   *
+   * `visible` and `listening` are set from each layer's *own* flags, not effective ones: Konva
+   * already cascades both down a Group, so a hidden or locked group hides and deafens its whole
+   * subtree for free. (`layerTree`'s `isEffectivelyVisible/Locked` exist for the consumers that
+   * don't get that for free — the exporter, mainly.)
+   */
+  function renderLayerNodes(list: StudioLayer[]) {
+    // Adjustments become wrappers around the layers beneath them before anything is drawn.
+    return renderNodes(partitionAdjustments(list));
+  }
+
+  /**
+   * Renders the render-tree produced by `partitionAdjustments`.
+   *
+   * Clip runs are formed here, *after* the adjustment partition, over the plain-layer nodes only:
+   * an adjustment is not a clip base, and clipping to one is meaningless.
+   */
+  function renderNodes(nodes: RenderNode<StudioLayer>[]) {
+    const out: ReactNode[] = [];
+    let pending: StudioLayer[] = [];
+
+    const flushClipRuns = () => {
+      for (const run of groupClipRuns(pending)) {
+        out.push(run.followers.length > 0 ? renderClipRun(run) : renderLeaf(run.base));
+      }
+      pending = [];
+    };
+
+    for (const node of nodes) {
+      if (node.kind === 'adjustment') {
+        flushClipRuns();
+        out.push(renderAdjustmentWrapper(node.layer, node.children));
+      } else {
+        pending.push(node.layer);
+      }
+    }
+    flushClipRuns();
+    return out;
+  }
+
+  /**
+   * A base layer plus the layers clipped to it, drawn as one **cached** unit:
+   * `[base, ...followers, base again with destination-in]`.
+   *
+   * The trailing re-draw of the base trims the followers to the base's alpha. The cache is a
+   * correctness requirement, not an optimisation: `destination-in` against the shared stage canvas
+   * would erase everything already painted below it (see `needsIsolation`, which returns true for
+   * any run with followers).
+   *
+   * Why not `source-atop` on each follower? It would occupy the follower's own
+   * `globalCompositeOperation` slot, and a clipped **Multiply** layer is *the* standard manga
+   * shading idiom — followers have to keep their own blend mode. The run's opacity/blend are the
+   * base's, matching Photoshop, where the base drives the group.
+   *
+   * Only `clean-patch` bases (see `canBeClipBase`): the trim pass re-draws the base as a single
+   * `KonvaImage`, and single-child is what makes an uncached `destination-in` behave. A text base
+   * would re-draw its hit rect *and* its glyphs, and the per-child composite would wipe the run on
+   * the first (transparent) child instead of trimming to the glyphs.
+   */
+  function renderClipRun(run: ClipRun<StudioLayer>) {
+    const { base, followers } = run;
+    if (!image) return null;
+    const baseCanvas = getOrCreateCanvasFor(paintCanvasRegistry.current, base.id, image.width, image.height);
+    return (
+      <Group
+        key={`clip-${base.id}`}
+        ref={(node) => { layerNodeRefs.current[base.id] = node; }}
+        visible={base.visible}
+        opacity={base.opacity}
+        globalCompositeOperation={BLEND_TO_COMPOSITE[base.blendMode]}
+        listening={base.visible && !base.locked}
+      >
+        <KonvaImage image={baseCanvas} width={image.width} height={image.height} listening={false} />
+        {followers.map((f) => renderLeaf(f))}
+        <KonvaImage
+          image={baseCanvas}
+          width={image.width}
+          height={image.height}
+          listening={false}
+          globalCompositeOperation="destination-in"
+        />
+      </Group>
+    );
+  }
+
+  /**
+   * An adjustment layer: a cached Group enclosing everything below it, with the adjustment's filter
+   * hung off it. The cache is what gives `filters()` a rasterised subtree to run over — and it's why
+   * this is "affects everything below in the stack" rather than "filter the background".
+   *
+   * The wrapper's own opacity stays 1; the adjustment's opacity lives inside the filter (see the
+   * effect above), and its blend mode isn't representable here at all — `LayersPanel` hides that
+   * control for adjustments rather than offering one that does nothing.
+   */
+  function renderAdjustmentWrapper(layer: StudioLayer, children: RenderNode<StudioLayer>[]) {
+    return (
+      <Group
+        key={layer.id}
+        ref={(node) => {
+          adjustmentNodeRefs.current[layer.id] = node;
+          layerNodeRefs.current[layer.id] = node;
+        }}
+        // Deliberately NOT `visible={layer.visible}`. This Group *contains* everything the
+        // adjustment affects, background included, so hiding it would blank the page rather than
+        // switch the adjustment off. Hiding is expressed by dropping the filter instead — see the
+        // filter effect, which clears `filters()` for a hidden adjustment.
+      >
+        {renderNodes(children)}
+      </Group>
+    );
+  }
+
+  function renderLeaf(layer: StudioLayer) {
+    return (
+      <Group
+        key={layer.id}
+        ref={(node) => { layerNodeRefs.current[layer.id] = node; }}
+        visible={layer.visible}
+        opacity={layer.opacity}
+        globalCompositeOperation={BLEND_TO_COMPOSITE[layer.blendMode]}
+        listening={layer.visible && !layer.locked}
+      >
+        {layer.type === 'group' && renderLayerNodes(layer.children ?? [])}
+
+        {layer.type === 'background' && image && (
+          <>
+            <KonvaImage ref={bgImageNodeRef} image={image} width={image.width} height={image.height} />
+            {/* View Original sits directly above the page and below every real layer. It's inside
+                the background's group, so an adjustment above it grades the overlay too — correct,
+                since the overlay is a second view of the same page and grading only one would make
+                the comparison meaningless. */}
+            {overlayImage && (
+              <KonvaImage
+                image={overlayImage}
+                width={image.width}
+                height={image.height}
+                opacity={overlayOpacity}
+                listening={false}
+              />
+            )}
+          </>
+        )}
+
+        {layer.type === 'clean-patch' && image && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(paintCanvasRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
+
+        {layer.type === 'text' && layer.text && (
+          <TextLayerNode
+            layer={layer}
+            groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
+            editing={layer.id === editingLayerId}
+            selected={selectionIds.includes(layer.id) && activeTool === 'select'}
+            draggable={activeTool === 'select' && !layer.locked}
+            onSelect={(mode) => onSelectLayer(layer.id, mode)}
+            onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
+            onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
+          />
+        )}
+      </Group>
+    );
+  }
+
   return (
     <div
       ref={containerRef}
@@ -926,9 +1231,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onPointerMove={handlePaintPointerMove}
           onPointerUp={handlePaintPointerUp}
         >
+          {/*
+            ONE Konva Layer for the page and its whole stack. Konva `Layer`s are separate canvas
+            elements and cannot nest, so a layer-per-StudioLayer could express neither groups nor a
+            working blend mode (see `layerNodeRefs`). Sharing one canvas gives both, and makes the
+            screen agree with `exportImage.ts`, which has always composited onto a single canvas.
+          */}
           <Layer>
             {image && (
               <>
+                {/* Page backing + drop shadow. Deliberately outside the layer tree: it isn't a
+                    StudioLayer, and it must never end up inside a group's or adjustment's cache. */}
                 <Rect
                   x={-4}
                   y={-4}
@@ -939,53 +1252,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   shadowBlur={20}
                   shadowOpacity={0.6}
                 />
-                <KonvaImage ref={bgImageNodeRef} image={image} width={image.width} height={image.height} />
-                {overlayImage && (
-                  <KonvaImage
-                    image={overlayImage}
-                    width={image.width}
-                    height={image.height}
-                    opacity={overlayOpacity}
-                    listening={false}
-                  />
-                )}
+                {/* The whole stack, background included — the background is root index 0, so it has
+                    to be inside the tree for an adjustment above it to enclose (and grade) it. */}
+                {renderLayerNodes(layers)}
               </>
             )}
           </Layer>
-
-          {/* Each Studio layer (clean patches, text, bubble masks...) gets its own Konva
-              layer so opacity and blend mode compose independently of the background. */}
-          {layers.filter(l => !l.isBackground).map(layer => (
-            <Layer
-              key={layer.id}
-              ref={(node) => { layerNodeRefs.current[layer.id] = node; }}
-              visible={layer.visible}
-              opacity={layer.opacity}
-              globalCompositeOperation={BLEND_TO_COMPOSITE[layer.blendMode]}
-              listening={layer.visible && !layer.locked}
-            >
-              {layer.type === 'clean-patch' && image && (
-                <KonvaImage
-                  image={getOrCreateCanvasFor(paintCanvasRegistry.current, layer.id, image.width, image.height)}
-                  width={image.width}
-                  height={image.height}
-                  listening={false}
-                />
-              )}
-              {layer.type === 'text' && layer.text && (
-                <TextLayerNode
-                  layer={layer}
-                  groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
-                  editing={layer.id === editingLayerId}
-                  selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-                  draggable={activeTool === 'select' && !layer.locked}
-                  onSelect={(mode) => onSelectLayer(layer.id, mode)}
-                  onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
-                  onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
-                />
-              )}
-            </Layer>
-          ))}
 
           <Layer listening={false}>
             {/* Object marquee — solid accent fill, deliberately unlike the dashed white *pixel*
