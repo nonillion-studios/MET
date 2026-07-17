@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut } from 'lucide-react';
+import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut, Download, CloudUpload, Archive } from 'lucide-react';
 import { clear } from 'idb-keyval';
 import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
 import { GlassCard, Button, Input } from './ui';
@@ -13,6 +13,12 @@ import { Bell } from 'lucide-react';
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
   onShowTerms: () => void;
+  workspaceCount: number;
+  isCloudConnected: boolean;
+  onDownloadAllBackup: () => void;
+  isDownloadingAllBackup: boolean;
+  onBackupAllToCloud: () => void;
+  isBackingUpAll: boolean;
 }
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -23,7 +29,10 @@ const THEME_OPTIONS: { mode: ThemeMode; label: string; icon: typeof Sun }[] = [
 
 const APP_VERSION = '0.1.0';
 
-export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps) {
+export function SettingsPanel({
+  onShowPrivacy, onShowTerms, workspaceCount, isCloudConnected,
+  onDownloadAllBackup, isDownloadingAllBackup, onBackupAllToCloud, isBackingUpAll,
+}: SettingsPanelProps) {
   const { mode, setMode } = useTheme();
   const { session, signOut, updateProfile } = useTeamAuth();
   const profile = profileFromSession(session);
@@ -153,6 +162,22 @@ export function SettingsPanel({ onShowPrivacy, onShowTerms }: SettingsPanelProps
           </div>
         </GlassCard>
       )}
+
+      <GlassCard className="p-6 space-y-4">
+        <h3 className="text-base font-semibold text-ink font-display">Backup</h3>
+        <p className="text-xs text-ink-muted -mt-2">
+          Back up your entire library ({workspaceCount} workspace{workspaceCount === 1 ? '' : 's'}) — every series, volume, chapter, and Studio project.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <Button variant="secondary" onClick={onDownloadAllBackup} disabled={isDownloadingAllBackup || workspaceCount === 0} className="flex-1">
+            <Download size={14} /> {isDownloadingAllBackup ? 'Preparing...' : 'Download All (.zip)'}
+          </Button>
+          <Button onClick={onBackupAllToCloud} disabled={isBackingUpAll || workspaceCount === 0} className="flex-1">
+            {isBackingUpAll ? <Archive size={14} className="animate-pulse" /> : <CloudUpload size={14} />}
+            {isBackingUpAll ? 'Backing up...' : isCloudConnected ? 'Backup to Telegram Cloud' : 'Connect & Backup to Telegram'}
+          </Button>
+        </div>
+      </GlassCard>
 
       <GlassCard className="p-6 space-y-4">
         <h3 className="text-base font-semibold text-ink font-display">System</h3>

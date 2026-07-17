@@ -90,3 +90,29 @@ export async function saveImportedStudioData(studioDataByChapterId: Record<strin
     Object.entries(studioDataByChapterId).map(([chapterId, data]) => saveChapterStudioData(chapterId, data))
   );
 }
+
+/** Bundles every workspace's `.msp` into a single zip — the "back up everything locally" entry
+ *  point (Settings). Each entry stays a valid standalone `.msp` (extract + re-import individually). */
+export async function exportAllWorkspacesToZip(workspaces: Workspace[]): Promise<Blob> {
+  const zip = new JSZip();
+  const usedNames = new Set<string>();
+  for (const workspace of workspaces) {
+    const mspBlob = await exportWorkspaceToMsp(workspace);
+    let name = workspace.name.replace(/[^\w\-]+/g, '_') || workspace.id;
+    while (usedNames.has(name)) name = `${name}_${workspace.id.slice(0, 6)}`;
+    usedNames.add(name);
+    zip.file(`${name}.msp`, mspBlob);
+  }
+  return zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+}
+
+export function downloadFullBackup(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `met_backup_${new Date().toISOString().slice(0, 10)}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

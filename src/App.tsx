@@ -28,7 +28,7 @@ import { TextEditorPage } from './components/textEditor/TextEditorPage';
 import { useAutomationEngine } from './lib/automationEngine';
 import { useCloudClient } from './lib/cloudClient';
 import { migrateWorkspace } from './lib/migrate';
-import { exportWorkspaceToMsp, downloadMsp, importMspFile, saveImportedStudioData } from './lib/mspFile';
+import { exportWorkspaceToMsp, downloadMsp, importMspFile, saveImportedStudioData, exportAllWorkspacesToZip, downloadFullBackup } from './lib/mspFile';
 import {
   exportWorkspaceToZip, exportMangaToZip, exportVolumeToZip, exportChapterToZip,
   downloadZip, importWorkspaceFromZip,
@@ -70,6 +70,9 @@ export default function App() {
   // Cloud connect modal (shown from Library when uploading without an active Telegram session)
   const [showCloudConnectModal, setShowCloudConnectModal] = useState(false);
   const [pendingCloudUpload, setPendingCloudUpload] = useState<{ workspace: Workspace; scope: 'workspace' | 'series' | 'volume' | 'chapter' } | null>(null);
+  const [pendingBackupAll, setPendingBackupAll] = useState(false);
+  const [isBackingUpAll, setIsBackingUpAll] = useState(false);
+  const [isDownloadingAllBackup, setIsDownloadingAllBackup] = useState(false);
 
   // Create series modal
   const [showCreateSeriesModal, setShowCreateSeriesModal] = useState(false);
@@ -305,6 +308,47 @@ export default function App() {
     }
   };
 
+  const handleDownloadAllWorkspaces = async () => {
+    if (workspaces.length === 0) {
+      swal({ icon: 'info', title: 'Nothing to back up', text: 'Your library is empty.' });
+      return;
+    }
+    setIsDownloadingAllBackup(true);
+    try {
+      const blob = await exportAllWorkspacesToZip(workspaces);
+      downloadFullBackup(blob);
+      swalToast({ icon: 'success', title: 'Backup downloaded' });
+    } catch (err) {
+      console.error(err);
+      swal({ icon: 'error', title: 'Backup Failed', text: err instanceof Error ? err.message : 'Could not build the full backup.' });
+    } finally {
+      setIsDownloadingAllBackup(false);
+    }
+  };
+
+  const handleBackupAllToCloud = async () => {
+    if (workspaces.length === 0) {
+      swal({ icon: 'info', title: 'Nothing to back up', text: 'Your library is empty.' });
+      return;
+    }
+    if (!cloudClient.isConnected) {
+      setPendingBackupAll(true);
+      setShowCloudConnectModal(true);
+      return;
+    }
+    setIsBackingUpAll(true);
+    try {
+      for (const workspace of workspaces) {
+        await cloudClient.uploadWorkspaceBackup(workspace, { notes: 'Full library backup', tags: ['full-backup', ...(workspace.tags ?? [])], folderId: null, scope: 'workspace' });
+      }
+      swalToast({ icon: 'success', title: `Backed up ${workspaces.length} workspace${workspaces.length === 1 ? '' : 's'} to Telegram` });
+    } catch {
+      // uploadWorkspaceBackup already surfaces its own error toast
+    } finally {
+      setIsBackingUpAll(false);
+    }
+  };
+
   const handleImportMspFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -410,11 +454,16 @@ export default function App() {
 
   // Once the user connects from the Library-triggered modal, retry whichever upload was pending.
   useEffect(() => {
-    if (cloudClient.isConnected && showCloudConnectModal && pendingCloudUpload) {
+    if (!cloudClient.isConnected || !showCloudConnectModal) return;
+    if (pendingCloudUpload) {
       const { workspace, scope } = pendingCloudUpload;
       setShowCloudConnectModal(false);
       setPendingCloudUpload(null);
       uploadNodeToCloud(workspace, scope);
+    } else if (pendingBackupAll) {
+      setShowCloudConnectModal(false);
+      setPendingBackupAll(false);
+      handleBackupAllToCloud();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudClient.isConnected]);
@@ -517,7 +566,16 @@ export default function App() {
       <div className="flex flex-1 lg:pl-20">
         <main key={activeNavigationTab} className="animate-view-fade flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-6 sm:py-8 pb-28 lg:pb-10 max-w-6xl mx-auto w-full">
           {activeNavigationTab === 'settings' && (
-            <SettingsPanel onShowPrivacy={() => setShowPrivacyModal(true)} onShowTerms={() => setShowTermsModal(true)} />
+            <SettingsPanel
+              onShowPrivacy={() => setShowPrivacyModal(true)}
+              onShowTerms={() => setShowTermsModal(true)}
+              workspaceCount={workspaces.length}
+              isCloudConnected={cloudClient.isConnected}
+              onDownloadAllBackup={handleDownloadAllWorkspaces}
+              isDownloadingAllBackup={isDownloadingAllBackup}
+              onBackupAllToCloud={handleBackupAllToCloud}
+              isBackingUpAll={isBackingUpAll}
+            />
           )}
 
           {activeNavigationTab === 'cloud' && (
@@ -805,14 +863,12 @@ export default function App() {
                         <PackagePlus size={14} /> Import ZIP
                       </Button>
                       <input ref={zipImportInputRef} type="file" accept=".zip" className="hidden" onChange={handleImportZipFile} />
-                      <Button size="sm" onClick={() => setShowCreateWorkspaceModal(true)}><Plus size={14} /> New Workspace</Button>
                     </div>
                   </div>
                   {workspaces.length === 0 && (
                     <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
                       <Boxes className="text-ink-faint" size={30} />
-                      <p className="text-sm text-ink-muted max-w-sm">Create a workspace to start organizing your manga and manhwa libraries.</p>
-                      <Button onClick={() => setShowCreateWorkspaceModal(true)}><Plus size={14} /> Create Workspace</Button>
+                      <p className="text-sm text-ink-muted max-w-sm">Tap the + button below to create a workspace and start organizing your manga and manhwa libraries.</p>
                     </GlassCard>
                   )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
