@@ -4,7 +4,7 @@ import {
   Upload as UploadIcon, File, RefreshCw, ChevronDown,
   Tag, X, HardDrive, Boxes, FolderInput, CalendarClock, Play, Trash2, FolderOutput
 } from 'lucide-react';
-import { Input, Button, GlassCard, Modal, Switch } from '../ui';
+import { Input, Button, GlassCard, Modal, Switch, SkeletonCard } from '../ui';
 import { AdSlot } from '../AdSlot';
 import { CloudFolders } from './CloudFolders';
 import { ScheduleTransferModal } from './ScheduleTransferModal';
@@ -340,7 +340,7 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
 
         {cc.isLoading && cc.files.length === 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {[1, 2, 3].map(i => <div key={i} className="h-64 rounded-xl bg-ink/5 animate-pulse border border-hairline" />)}
+            {[1, 2, 3].map(i => <SkeletonCard key={i} className="h-64" />)}
           </div>
         ) : filteredFiles.length === 0 ? (
           <GlassCard className="text-center py-16">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Bell, CheckCheck } from 'lucide-react';
-import { Modal, Button } from './ui';
+import { Modal, Button, Skeleton } from './ui';
 import { AppNotification, listNotifications, markRead, markAllRead } from '../lib/notifications';
 
 export function NotificationsPanel({ open, onClose, onChanged }: { open: boolean; onClose: () => void; onChanged: () => void }) {
@@ -43,7 +43,17 @@ export function NotificationsPanel({ open, onClose, onChanged }: { open: boolean
       ) : undefined}
     >
       {loading ? (
-        <p className="text-xs text-ink-faint text-center py-4">Loading...</p>
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 p-2.5">
+              <Skeleton className="w-8 h-8 rounded-full shrink-0" />
+              <div className="flex-1 space-y-1.5">
+                <Skeleton className="h-3" style={{ width: '70%' }} />
+                <Skeleton className="h-2.5" style={{ width: '40%' }} />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : items.length === 0 ? (
         <div className="text-center py-6">
           <Bell size={22} className="text-ink-faint mx-auto mb-2" />

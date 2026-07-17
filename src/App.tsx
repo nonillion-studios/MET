@@ -20,7 +20,7 @@ import { TeamsPanel } from './components/TeamsPanel';
 import { AuthGate } from './components/AuthGate';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { UserAgreement } from './components/legal/UserAgreement';
-import { Modal, Button, Input, Textarea, GlassCard } from './components/ui';
+import { Modal, Button, Input, Textarea, GlassCard, SkeletonCard } from './components/ui';
 import { PageManager } from './components/studio/PageManager';
 import { Studio } from './components/studio/Studio';
 import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
@@ -42,6 +42,7 @@ export default function App() {
 
   // Workspaces > Series > Volumes > Chapters
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(true);
   const cloudClient = useCloudClient();
   const automationEngine = useAutomationEngine(cloudClient);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
@@ -129,7 +130,7 @@ export default function App() {
       if (legacyMangas && Array.isArray(legacyMangas) && legacyMangas.length > 0) {
         setWorkspaces([migrateWorkspace({ id: genId('workspace'), name: 'My Workspace', description: '', coverUrl: '', mangas: legacyMangas, tags: [] })]);
       }
-    }).catch(console.error);
+    }).catch(console.error).finally(() => setIsLoadingLibrary(false));
   }, []);
 
   useEffect(() => {
@@ -865,12 +866,20 @@ export default function App() {
                       <input ref={zipImportInputRef} type="file" accept=".zip" className="hidden" onChange={handleImportZipFile} />
                     </div>
                   </div>
-                  {workspaces.length === 0 && (
+                  {isLoadingLibrary && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                      {Array.from({ length: 8 }).map((_, i) => (
+                        <SkeletonCard key={i} className="aspect-[3/4]" />
+                      ))}
+                    </div>
+                  )}
+                  {!isLoadingLibrary && workspaces.length === 0 && (
                     <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
                       <Boxes className="text-ink-faint" size={30} />
                       <p className="text-sm text-ink-muted max-w-sm">Tap the + button below to create a workspace and start organizing your manga and manhwa libraries.</p>
                     </GlassCard>
                   )}
+                  {!isLoadingLibrary && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {interleaveWithAds(workspaces, ws => (
                       <button key={ws.id} onClick={() => setActiveWorkspaceId(ws.id)} className="stagger-item group relative text-left">
@@ -941,6 +950,7 @@ export default function App() {
                       </button>
                     ), 'library-workspaces')}
                   </div>
+                  )}
                 </div>
               )}
             </div>

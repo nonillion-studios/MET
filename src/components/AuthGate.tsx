@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { UserPlus, LogIn, Mail, Lock, User, ImagePlus, MailCheck, Check, X, KeyRound } from 'lucide-react';
-import { GlassCard, Button, Input } from './ui';
+import { GlassCard, Button, Input, Captcha } from './ui';
 import { swal } from '../lib/swalTheme';
 import { readAvatarFile } from '../lib/image';
 import { useTeamAuth, getKnownEmails } from '../lib/teamAuth';
@@ -42,15 +42,25 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [resetSent, setResetSent] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [captchaVerified, setCaptchaVerified] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-ink-faint text-sm">Loading...</div>;
   }
 
+  const switchMode = (next: 'signin' | 'signup' | 'forgot') => {
+    setCaptchaVerified(false);
+    setMode(next);
+  };
+
   const handleForgotPassword = async () => {
     if (!email.trim()) {
       swal({ icon: 'error', title: 'Missing email', text: 'Enter your email address.' });
+      return;
+    }
+    if (!captchaVerified) {
+      swal({ icon: 'error', title: 'Quick check failed', text: 'Solve the quick check before continuing.' });
       return;
     }
     setSubmitting(true);
@@ -86,7 +96,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (isRecovery) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
-        <GlassCard className="p-8 w-full max-w-sm space-y-5">
+        <GlassCard className="p-8 w-full max-w-sm space-y-5 animate-auth-card">
           <div className="text-center">
             <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft border border-accent/30 flex items-center justify-center mb-3">
               <KeyRound className="text-accent" size={22} />
@@ -131,20 +141,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (resetSent) {
       return (
         <div className="min-h-screen flex items-center justify-center p-4">
-          <GlassCard className="p-8 w-full max-w-sm space-y-4 text-center">
+          <GlassCard className="p-8 w-full max-w-sm space-y-4 text-center animate-auth-card">
             <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft border border-accent/30 flex items-center justify-center">
               <MailCheck className="text-accent" size={22} />
             </div>
             <h2 className="text-lg font-display font-bold text-ink">Check your email</h2>
             <p className="text-sm text-ink-muted">We sent a password reset link to <span className="font-semibold text-ink">{email}</span>. Click it to choose a new password.</p>
-            <Button className="w-full" onClick={() => { setResetSent(false); setMode('signin'); }}>Back to Sign In</Button>
+            <Button className="w-full" onClick={() => { setResetSent(false); switchMode('signin'); }}>Back to Sign In</Button>
           </GlassCard>
         </div>
       );
     }
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
-        <GlassCard className="p-8 w-full max-w-sm space-y-5">
+        <GlassCard className="p-8 w-full max-w-sm space-y-5 animate-auth-card">
           <div className="text-center">
             <h2 className="text-lg font-display font-bold text-ink">Reset your password</h2>
             <p className="text-xs text-ink-muted mt-1">Enter your email and we'll send you a reset link.</p>
@@ -159,11 +169,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               onKeyDown={(e) => { if (e.key === 'Enter') handleForgotPassword(); }}
             />
           </div>
+          <Captcha onChange={setCaptchaVerified} />
           <Button onClick={handleForgotPassword} disabled={submitting} className="w-full">
             <Mail size={14} /> {submitting ? 'Please wait...' : 'Send Reset Link'}
           </Button>
           <button
-            onClick={() => setMode('signin')}
+            onClick={() => switchMode('signin')}
             className="w-full text-center text-xs text-ink-muted hover:text-accent transition-colors"
           >
             Back to Sign In
@@ -176,13 +187,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (awaitingConfirmation) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
-        <GlassCard className="p-8 w-full max-w-sm space-y-4 text-center">
+        <GlassCard className="p-8 w-full max-w-sm space-y-4 text-center animate-auth-card">
           <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft border border-accent/30 flex items-center justify-center">
             <MailCheck className="text-accent" size={22} />
           </div>
           <h2 className="text-lg font-display font-bold text-ink">Confirm your email</h2>
           <p className="text-sm text-ink-muted">We sent a confirmation link to <span className="font-semibold text-ink">{email}</span>. Click it, then sign in below.</p>
-          <Button className="w-full" onClick={() => { setAwaitingConfirmation(false); setMode('signin'); }}>Back to Sign In</Button>
+          <Button className="w-full" onClick={() => { setAwaitingConfirmation(false); switchMode('signin'); }}>Back to Sign In</Button>
         </GlassCard>
       </div>
     );
@@ -212,6 +223,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       swal({ icon: 'error', title: 'Passwords don\'t match', text: 'Re-enter your password to confirm it.' });
       return;
     }
+    if (!captchaVerified) {
+      swal({ icon: 'error', title: 'Quick check failed', text: 'Solve the quick check before continuing.' });
+      return;
+    }
     setSubmitting(true);
     const result = await signUp(email.trim(), password, name.trim(), avatar);
     setSubmitting(false);
@@ -238,10 +253,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
       {/* Form panel */}
       <div className="flex items-center justify-center w-full lg:flex-1 lg:h-screen">
-      <GlassCard className="p-8 w-full max-w-sm space-y-5">
+      <GlassCard className="p-8 w-full max-w-sm space-y-5 animate-auth-card">
         <div className="flex flex-col items-center text-center gap-2 lg:hidden">
           <img src={logo} alt="MET" className="w-12 h-12 rounded-2xl object-cover ring-1 ring-hairline" />
         </div>
+        <div key={mode} className="animate-auth-mode space-y-5">
         <div className="text-center lg:text-left">
           <h2 className="text-lg font-display font-bold text-ink">{mode === 'signup' ? 'Create your profile' : 'Welcome back'}</h2>
           <p className="text-xs text-ink-muted mt-1">{mode === 'signup' ? 'This is your identity across the whole app.' : 'Sign in to continue.'}</p>
@@ -298,7 +314,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
             {mode === 'signin' && (
               <button
                 type="button"
-                onClick={() => setMode('forgot')}
+                onClick={() => switchMode('forgot')}
                 className="text-[11px] text-ink-faint hover:text-accent transition-colors"
               >
                 Forgot password?
@@ -323,6 +339,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               )}
             </div>
           )}
+          {mode === 'signup' && <Captcha onChange={setCaptchaVerified} />}
         </div>
 
         <Button onClick={mode === 'signup' ? handleSignUp : handleSignIn} disabled={submitting} className="w-full">
@@ -331,11 +348,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         </Button>
 
         <button
-          onClick={() => setMode(m => m === 'signup' ? 'signin' : 'signup')}
+          onClick={() => switchMode(mode === 'signup' ? 'signin' : 'signup')}
           className="w-full text-center text-xs text-ink-muted hover:text-accent transition-colors"
         >
           {mode === 'signup' ? 'Already have a profile? Sign in' : "Don't have a profile? Sign up"}
         </button>
+        </div>
       </GlassCard>
       </div>
     </div>

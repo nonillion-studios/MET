@@ -424,6 +424,33 @@
   animation: slideUpSheet 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Auth window: whole-card entrance + per-mode crossfade (sign in / sign up / forgot / recovery) */
+@keyframes authCardIn {
+  0% { opacity: 0; transform: scale(0.94) translateY(14px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-auth-card {
+  animation: authCardIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes authModeIn {
+  0% { opacity: 0; transform: translateX(10px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+.animate-auth-mode {
+  animation: authModeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Skeleton loading placeholders — shimmering sweep over a liquid-glass block */
+@keyframes skeletonShimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.animate-skeleton {
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--color-ink) 6%, transparent) 0%, color-mix(in srgb, var(--color-ink) 12%, transparent) 50%, color-mix(in srgb, var(--color-ink) 6%, transparent) 100%);
+  background-size: 800px 100%;
+  animation: skeletonShimmer 1.4s ease-in-out infinite;
+}
+
 /* Studio build transition: stacking/rotating cubes */
 @keyframes studioCubeBuild {
   0% { transform: translateY(24px) rotate(0deg) scale(0.6); opacity: 0; }
