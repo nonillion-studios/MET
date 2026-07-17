@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
@@ -2820,7 +2820,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     return () => { mounted = false; unsubMsgs(); unsubReactions(); typingRef.current?.unsubscribe(); };
   }, [team.id, members, search]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (nearBottomRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
     else setShowJumpToEnd(true);
   }, [messages.length]);
@@ -2881,8 +2881,10 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       setEditingId(null);
       return;
     }
+    nearBottomRef.current = true;
     await sendTeamMessage(team.id, text, { replyToId: replyTo?.id });
     setReplyTo(null);
+    bottomRef.current?.scrollIntoView({ block: 'end' });
 
     const mentioned = parseMentions(text, members);
     for (const userId of mentioned) {
@@ -3081,7 +3083,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     return () => { mounted = false; unsubscribe(); unsubReactions(); };
   }, [team.id, partnerId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (nearBottomRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
     else setShowJumpToEnd(true);
   }, [messages.length]);
@@ -3126,8 +3128,10 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
       setEditingId(null);
       return;
     }
+    nearBottomRef.current = true;
     await sendDirectMessage(team.id, partnerId, text, { replyToId: replyTo?.id });
     setReplyTo(null);
+    bottomRef.current?.scrollIntoView({ block: 'end' });
     notify(partnerId, `New message from ${session?.user.email || 'a teammate'}`, text.slice(0, 80));
   };
 
