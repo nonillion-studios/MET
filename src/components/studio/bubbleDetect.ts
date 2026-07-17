@@ -7,6 +7,10 @@
 export interface BubbleCenter {
   x: number;
   y: number;
+  /** Full-resolution bounding-box size of the detected region, for callers that also need to size
+   *  a text box to the bubble (not just recenter a fixed-size one). */
+  width: number;
+  height: number;
 }
 
 const SAMPLE_WIDTH = 280;
@@ -61,5 +65,7 @@ export function detectBubbleCenter(image: HTMLImageElement, seedX: number, seedY
   return {
     x: ((minX + maxX) / 2 / w) * image.width,
     y: ((minY + maxY) / 2 / h) * image.height,
+    width: ((maxX - minX) / w) * image.width,
+    height: ((maxY - minY) / h) * image.height,
   };
 }

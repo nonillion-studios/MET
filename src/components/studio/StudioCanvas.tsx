@@ -106,6 +106,10 @@ interface StudioCanvasProps {
 export interface StudioCanvasHandle {
   /** Flood-fills the page around a text layer to find its speech bubble and re-centers it there. */
   centerTextLayerInBubble: (id: string) => void;
+  /** Flood-fills the page from an arbitrary point (e.g. a TypeR armed-placement click) to find the
+   *  speech bubble there, without needing an existing text layer. `centerX`/`centerY` are the
+   *  detected region's bounding-box center, not a top-left — null if no bubble was detected. */
+  detectBubbleBounds: (x: number, y: number) => { centerX: number; centerY: number; width: number; height: number } | null;
   /** Returns the raster canvas for a layer id, creating it if the layer has no backing yet. */
   getPaintCanvas: (layerId: string) => HTMLCanvasElement | null;
   /** Frees a raster layer's canvas when its layer is deleted. */
@@ -436,6 +440,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         y: result.y - textHeight / 2,
       });
       swalToast({ icon: 'success', title: 'Centered in bubble' });
+    },
+    detectBubbleBounds(x: number, y: number) {
+      const img = imageRef.current;
+      if (!img) return null;
+      const result = detectBubbleCenter(img, x, y);
+      if (!result) return null;
+      return { centerX: result.x, centerY: result.y, width: result.width, height: result.height };
     },
     async commitCrop(rect) {
       if (!page) return null;

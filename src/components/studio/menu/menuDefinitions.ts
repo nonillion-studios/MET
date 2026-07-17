@@ -43,6 +43,8 @@ export interface MenuActions {
   isClipped: boolean;
   addTextLayer: () => void;
   centerTextInBubble: () => void;
+  increaseTextSize: () => void;
+  decreaseTextSize: () => void;
   hasActiveTextLayer: boolean;
   panelTabs: { id: string; label: string }[];
   showPanel: (id: string) => void;
@@ -143,6 +145,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       items: [
         { id: 'add-text', label: 'New Text Layer', action: a.addTextLayer },
         { id: 'center-bubble', label: 'Center in Bubble', action: a.centerTextInBubble, disabled: !a.hasActiveTextLayer },
+        { id: 'increase-text-size', label: 'Increase Size', shortcut: 'Ctrl+.', action: a.increaseTextSize, disabled: !a.hasActiveTextLayer },
+        { id: 'decrease-text-size', label: 'Decrease Size', shortcut: 'Ctrl+,', action: a.decreaseTextSize, disabled: !a.hasActiveTextLayer },
       ],
     },
     {

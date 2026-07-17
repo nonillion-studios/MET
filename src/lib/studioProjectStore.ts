@@ -1,9 +1,9 @@
 import { get, set } from 'idb-keyval';
 import { genId } from './id';
-import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TyperStyle } from '../components/studio/studioTypes';
+import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
 
 /** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes. */
-export const STUDIO_SCHEMA_VERSION = 5;
+export const STUDIO_SCHEMA_VERSION = 6;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
 
@@ -23,6 +23,10 @@ export interface ChapterStudioData {
   layersByPage: Record<string, SerializedStudioLayer[]>;
   typerScript: string;
   typerStyles: TyperStyle[];
+  typerFolders: TyperFolder[];
+  ignoreLinePrefixes: string[];
+  ignoreTags: string[];
+  defaultStyleId: string | null;
   updatedAt: string;
 }
 
@@ -42,7 +46,17 @@ function versionsKey(chapterId: string) {
 }
 
 export function createEmptyStudioData(): ChapterStudioData {
-  return { schemaVersion: SCHEMA_VERSION, layersByPage: {}, typerScript: '', typerStyles: [], updatedAt: new Date().toISOString() };
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    layersByPage: {},
+    typerScript: '',
+    typerStyles: [],
+    typerFolders: [],
+    ignoreLinePrefixes: ['##'],
+    ignoreTags: [],
+    defaultStyleId: null,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /** Backfills one layer. Recurses into groups; on pre-v5 data no layer has children, so it bottoms
@@ -90,7 +104,35 @@ function migrateStudioLayers(data: ChapterStudioData): ChapterStudioData {
   for (const [pageId, layers] of Object.entries(data.layersByPage ?? {})) {
     layersByPage[pageId] = (layers ?? []).map(migrateLayer);
   }
-  return { ...data, layersByPage, schemaVersion: SCHEMA_VERSION };
+
+  // v5 -> v6: TypeR styles gained a real folder tree (`TyperFolder`, `TyperStyle.folderId`)
+  // replacing the old cosmetic `TyperStyle.folder` name string, plus configurable
+  // ignoreLinePrefixes/ignoreTags/defaultStyleId. Synthesize one root-level folder per distinct
+  // legacy folder name and repoint styles at it; a style that already has `folderId` (including
+  // `null`, meaning already-unsorted) passes through untouched.
+  const legacyStyles = (data.typerStyles ?? []) as (TyperStyle & { folder?: string })[];
+  let typerFolders = data.typerFolders ?? [];
+  if (!typerFolders.length) {
+    const names = Array.from(new Set(legacyStyles.map(s => s.folder).filter((f): f is string => !!f)));
+    typerFolders = names.map((name, index) => ({ id: `folder-legacy-${index}`, name, parentId: null, order: index }));
+  }
+  const typerStyles: TyperStyle[] = legacyStyles.map(s => {
+    if (s.folderId !== undefined) return s as TyperStyle;
+    const { folder, ...rest } = s;
+    const matchedFolder = typerFolders.find(f => f.name === folder);
+    return { ...rest, folderId: matchedFolder?.id ?? null };
+  });
+
+  return {
+    ...data,
+    layersByPage,
+    typerStyles,
+    typerFolders,
+    ignoreLinePrefixes: data.ignoreLinePrefixes ?? ['##'],
+    ignoreTags: data.ignoreTags ?? [],
+    defaultStyleId: data.defaultStyleId ?? null,
+    schemaVersion: SCHEMA_VERSION,
+  };
 }
 
 export async function loadChapterStudioData(chapterId: string): Promise<ChapterStudioData | null> {

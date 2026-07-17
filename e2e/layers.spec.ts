@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { openStudio, countDarkPixels, paintStroke, readStudioStore, typeIntoTextLayer } from './studioFixture';
+import { STUDIO_SCHEMA_VERSION } from '../src/lib/studioProjectStore';
 
 /**
  * Drives the real Layers panel against a real Konva stage. These exist because the layer-tree
@@ -120,7 +121,7 @@ test('a text layer persists at schema v5', async ({ page }) => {
   // under load.
   await expect.poll(async () => (await readStudioStore(page))?.layersJson ?? '', { timeout: 15_000 })
     .toContain('hello');
-  expect((await readStudioStore(page))!.schemaVersion).toBe(5);
+  expect((await readStudioStore(page))!.schemaVersion).toBe(STUDIO_SCHEMA_VERSION);
 });
 
 test('a painted raster layer persists its pixels', async ({ page }) => {

@@ -33,9 +33,10 @@ import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
 import {
   createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, parseTyperScript,
-  DEFAULT_TYPER_STYLES, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
-  type AdjustmentLayerData, type LayerSelectMode,
+  DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
+  type TyperFolder, type AdjustmentLayerData, type LayerSelectMode,
 } from './studioTypes';
+import { layoutText } from './textLayout';
 import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
@@ -237,6 +238,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onGroupLayers: () => handleGroupLayers(),
     onUngroupLayers: () => { if (activeLayerId) handleUngroupLayer(activeLayerId); },
     onToggleQuickMask: handleToggleQuickMask,
+    onTextSizeStep: handleTextSizeStep,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   const [activeTool, setActiveTool] = useState('select');
@@ -297,9 +299,33 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // TypeR: scripted lettering — paste a script, arm it, click bubbles to stamp lines in order.
   const [typerScript, setTyperScript] = useState('');
   const [typerStyles, setTyperStyles] = useState<TyperStyle[]>(DEFAULT_TYPER_STYLES);
+  const [typerFolders, setTyperFolders] = useState<TyperFolder[]>(DEFAULT_TYPER_FOLDERS);
   const [typerIndex, setTyperIndex] = useState(0);
   const [typerArmed, setTyperArmed] = useState(false);
-  const typerLines = useMemo(() => parseTyperScript(typerScript, typerStyles), [typerScript, typerStyles]);
+  // Configurable versions of what used to be a hardcoded "##" ignore-prefix and an implicit
+  // empty-prefix-style default, plus arbitrary mid-line tag stripping — mirrors the real TypeR
+  // extension's ignoreLinePrefixes/ignoreTags/defaultStyleId settings.
+  const [ignoreLinePrefixes, setIgnoreLinePrefixes] = useState<string[]>(['##']);
+  const [ignoreTags, setIgnoreTags] = useState<string[]>([]);
+  const [defaultStyleId, setDefaultStyleId] = useState<string | null>(null);
+  // Auto-detect bubble: flood-fills from an armed placement click to find & size/center the new
+  // text layer in its speech bubble, instead of dropping it at the raw click point.
+  const [typerAutoCenterBubble, setTyperAutoCenterBubble] = useState(false);
+  // Shared by the TyperPanel per-style quick +/- buttons and the global text-size-step shortcut.
+  const [typerSizeStep, setTyperSizeStep] = useState(2);
+  // "Current folder" for prefix-matching priority: the folder of the style that placed the current
+  // line, mirroring the real extension's implicit `state.currentStyle.folder`. Kept as state (not
+  // derived inline) since it feeds back into parsing the very lines it's read from.
+  const [typerCurrentFolderId, setTyperCurrentFolderId] = useState<string | null>(null);
+  const typerLines = useMemo(
+    () => parseTyperScript(typerScript, typerStyles, {
+      folders: typerFolders, ignoreLinePrefixes, ignoreTags, defaultStyleId, currentFolderId: typerCurrentFolderId,
+    }),
+    [typerScript, typerStyles, typerFolders, ignoreLinePrefixes, ignoreTags, defaultStyleId, typerCurrentFolderId]
+  );
+  useEffect(() => {
+    setTyperCurrentFolderId(typerLines[typerIndex]?.style.folderId ?? null);
+  }, [typerIndex, typerLines]);
   // Multi-Bubble mode: draw a rect per bubble (Rectangular Marquee) and queue it instead of
   // placing immediately, then place every queued rect's line in one go, in script order.
   const [multiBubbleMode, setMultiBubbleModeState] = useState(false);
@@ -397,6 +423,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   typerScriptRef.current = typerScript;
   const typerStylesRef = useRef(typerStyles);
   typerStylesRef.current = typerStyles;
+  const typerFoldersRef = useRef(typerFolders);
+  typerFoldersRef.current = typerFolders;
+  const ignoreLinePrefixesRef = useRef(ignoreLinePrefixes);
+  ignoreLinePrefixesRef.current = ignoreLinePrefixes;
+  const ignoreTagsRef = useRef(ignoreTags);
+  ignoreTagsRef.current = ignoreTags;
+  const defaultStyleIdRef = useRef(defaultStyleId);
+  defaultStyleIdRef.current = defaultStyleId;
 
   useEffect(() => {
     let cancelled = false;
@@ -421,6 +455,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         setLayersByPage(nextLayersByPage);
         setTyperScript(saved.typerScript);
         if (saved.typerStyles.length > 0) setTyperStyles(saved.typerStyles);
+        if (saved.typerFolders?.length > 0) setTyperFolders(saved.typerFolders);
+        if (saved.ignoreLinePrefixes?.length > 0) setIgnoreLinePrefixes(saved.ignoreLinePrefixes);
+        setIgnoreTags(saved.ignoreTags ?? []);
+        setDefaultStyleId(saved.defaultStyleId ?? null);
         rasterByPageRef.current = nextRasterByPage;
       }
       loadedRef.current = true;
@@ -472,6 +510,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       layersByPage: mergedLayersByPage,
       typerScript: typerScriptRef.current,
       typerStyles: typerStylesRef.current,
+      typerFolders: typerFoldersRef.current,
+      ignoreLinePrefixes: ignoreLinePrefixesRef.current,
+      ignoreTags: ignoreTagsRef.current,
+      defaultStyleId: defaultStyleIdRef.current,
       updatedAt: new Date().toISOString(),
     };
     saveChapterStudioData(chapterId, data).catch(console.error);
@@ -481,7 +523,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   useEffect(() => {
     if (loadedRef.current) scheduleAutosave();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layersByPage, typerScript, typerStyles]);
+  }, [layersByPage, typerScript, typerStyles, typerFolders, ignoreLinePrefixes, ignoreTags, defaultStyleId]);
 
   // Flush a pending save immediately when leaving this chapter's Studio (e.g. "Back to Pages").
   useEffect(() => () => {
@@ -703,6 +745,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleAddTextLayer(x: number, y: number, boxWidth?: number) {
+    // TypeR auto-detect-bubble: a plain click (not a drag-to-size box) while armed flood-fills
+    // from the click point to find the speech bubble there, and sizes/centers the new layer to it
+    // instead of dropping it at the raw click point — same centering math as handlePlaceAllBubbles.
+    if (typerArmed && typerAutoCenterBubble && boxWidth === undefined && typerLines[typerIndex]) {
+      const bubble = canvasRef.current?.detectBubbleBounds(x, y);
+      if (bubble) {
+        const lineCount = typerLines[typerIndex].content.split('\n').length || 1;
+        const textWidth = Math.max(40, Math.min(bubble.width, 400));
+        const textHeight = lineCount * typerLines[typerIndex].style.fontSize * 1.15;
+        x = bubble.centerX - textWidth / 2;
+        y = bubble.centerY - textHeight / 2;
+        boxWidth = textWidth;
+      }
+    }
+
     const layer = createTextLayer(x, y, boxWidth);
 
     if (typerArmed && typerLines[typerIndex]) {
@@ -754,6 +811,24 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   function handleCenterTextLayer(id: string) {
     canvasRef.current?.centerTextLayerInBubble(id);
+  }
+
+  /**
+   * Bumps the active text layer's font size by `typerSizeStep * delta` and re-centers it around
+   * its old midpoint (mirrors the real TypeR extension's size-increment shortcut). Line spacing
+   * scaling falls out for free here since `lineHeight` is already a multiplier of `fontSize`, not
+   * an absolute value — unlike Photoshop's `leading`, nothing needs adjusting alongside it.
+   */
+  function handleTextSizeStep(delta: number) {
+    if (!activeLayerId || activeLayer?.type !== 'text' || !activeLayer.text) return;
+    const before = layoutText(activeLayer.text);
+    const fontSize = Math.max(1, activeLayer.text.fontSize + delta * typerSizeStep);
+    const after = layoutText({ ...activeLayer.text, fontSize });
+    handleUpdateTextLayer(activeLayerId, {
+      fontSize,
+      x: activeLayer.text.x - (after.width - before.width) / 2,
+      y: activeLayer.text.y - (after.height - before.height) / 2,
+    });
   }
 
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
@@ -865,6 +940,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onScriptChange={setTyperScript}
       styles={typerStyles}
       onStylesChange={setTyperStyles}
+      folders={typerFolders}
+      onFoldersChange={setTyperFolders}
+      ignoreLinePrefixes={ignoreLinePrefixes}
+      onIgnoreLinePrefixesChange={setIgnoreLinePrefixes}
+      ignoreTags={ignoreTags}
+      onIgnoreTagsChange={setIgnoreTags}
+      defaultStyleId={defaultStyleId}
+      onDefaultStyleIdChange={setDefaultStyleId}
+      autoCenterBubble={typerAutoCenterBubble}
+      onAutoCenterBubbleChange={setTyperAutoCenterBubble}
+      sizeStep={typerSizeStep}
+      onSizeStepChange={setTyperSizeStep}
       index={typerIndex}
       onIndexChange={setTyperIndex}
       armed={typerArmed}
@@ -930,6 +1017,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     isClipped: activeLayer?.clipped === true,
     addTextLayer: () => setActiveTool('text'),
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
+    increaseTextSize: () => handleTextSizeStep(1),
+    decreaseTextSize: () => handleTextSizeStep(-1),
     hasActiveTextLayer: activeLayer?.type === 'text',
     panelTabs: allTabs.map(t => ({ id: t.id, label: t.label })),
     showPanel: (id) => { if (id === 'pages') { setLeftOpen(true); } else { dock.selectTab(id); setRightOpen(true); } },

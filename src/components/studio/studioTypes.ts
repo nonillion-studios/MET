@@ -340,8 +340,9 @@ export function createTextLayer(x: number, y: number, boxWidth?: number): Studio
 export interface TyperStyle {
   id: string;
   name: string;
-  /** Purely organizational (grouping in the panel) — folder membership does not itself affect prefix matching priority; see parseTyperScript. */
-  folder?: string;
+  /** Which TyperFolder this style belongs to, or null/undefined if unsorted. Also drives
+   *  prefix-matching priority — see parseTyperScript's `currentFolderId` option. */
+  folderId?: string | null;
   /** Empty prefix ("") matches any line that no other, more specific style claims first. */
   prefix: string;
   fontFamily: string;
@@ -353,20 +354,132 @@ export interface TyperStyle {
   strokeWidth: number;
 }
 
-export const DEFAULT_TYPER_STYLES: TyperStyle[] = [
-  { id: 'dialogue', name: 'Dialogue', folder: 'General', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 },
-  { id: 'sfx', name: 'SFX', folder: 'General', prefix: '!!', fontFamily: 'Impact', fontSize: 44, color: '#ffffff', bold: true, italic: false, strokeColor: '#000000', strokeWidth: 3 },
-  { id: 'thought', name: 'Thought', folder: 'General', prefix: '~', fontFamily: FONT_FAMILIES[0], fontSize: 24, color: '#000000', bold: false, italic: true, strokeColor: '#ffffff', strokeWidth: 0 },
+/** A node in the TypeR style-folder tree. Nesting is expressed via `parentId`; `order` is the
+ *  sibling sort key (mirrors `layerTree.ts`'s sibling-order convention for layer groups). */
+export interface TyperFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  order: number;
+}
+
+export const DEFAULT_TYPER_FOLDERS: TyperFolder[] = [
+  { id: 'general', name: 'General', parentId: null, order: 0 },
 ];
 
-export function createTyperStyle(name = 'New Style'): TyperStyle {
-  return { id: genTyperId(), name, folder: 'General', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 };
+export const DEFAULT_TYPER_STYLES: TyperStyle[] = [
+  { id: 'dialogue', name: 'Dialogue', folderId: 'general', prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 },
+  { id: 'sfx', name: 'SFX', folderId: 'general', prefix: '!!', fontFamily: 'Impact', fontSize: 44, color: '#ffffff', bold: true, italic: false, strokeColor: '#000000', strokeWidth: 3 },
+  { id: 'thought', name: 'Thought', folderId: 'general', prefix: '~', fontFamily: FONT_FAMILIES[0], fontSize: 24, color: '#000000', bold: false, italic: true, strokeColor: '#ffffff', strokeWidth: 0 },
+];
+
+export function createTyperStyle(name = 'New Style', folderId: string | null = null): TyperStyle {
+  return { id: genTyperId(), name, folderId, prefix: '', fontFamily: FONT_FAMILIES[0], fontSize: 26, color: '#000000', bold: false, italic: false, strokeColor: '#ffffff', strokeWidth: 0 };
 }
 
 let typerIdCounter = 0;
 function genTyperId() {
   typerIdCounter += 1;
   return `style-${Date.now()}-${typerIdCounter}`;
+}
+
+let typerFolderIdCounter = 0;
+function genTyperFolderId() {
+  typerFolderIdCounter += 1;
+  return `folder-${Date.now()}-${typerFolderIdCounter}`;
+}
+
+interface TyperFolderNode extends TyperFolder {
+  children: TyperFolderNode[];
+}
+
+/** Nests folders by `parentId`, sorted by `order` at every level (recursive, mirrors editStyle.jsx's buildFolderTree). */
+export function buildFolderTree(folders: TyperFolder[]): TyperFolderNode[] {
+  const map = new Map<string, TyperFolderNode>();
+  folders.forEach(f => map.set(f.id, { ...f, children: [] }));
+  const roots: TyperFolderNode[] = [];
+  map.forEach(node => {
+    const parent = node.parentId ? map.get(node.parentId) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  });
+  const sortRec = (nodes: TyperFolderNode[]) => {
+    nodes.sort((a, b) => a.order - b.order);
+    nodes.forEach(n => sortRec(n.children));
+  };
+  sortRec(roots);
+  return roots;
+}
+
+export interface TyperFolderOption {
+  id: string;
+  depth: number;
+  label: string;
+}
+
+/** Flattens a folder tree into an indented breadcrumb list, for a folder-picker `<select>`. */
+export function flattenFolderTree(nodes: TyperFolderNode[], parents: string[] = [], depth = 0): TyperFolderOption[] {
+  const list: TyperFolderOption[] = [];
+  for (const node of nodes) {
+    const breadcrumb = [...parents, node.name];
+    list.push({ id: node.id, depth, label: breadcrumb.join(' / ') });
+    list.push(...flattenFolderTree(node.children, breadcrumb, depth + 1));
+  }
+  return list;
+}
+
+function collectDescendantFolderIds(folders: TyperFolder[], folderId: string): string[] {
+  const ids: string[] = [];
+  const queue = [folderId];
+  while (queue.length) {
+    const current = queue.shift()!;
+    for (const child of folders.filter(f => f.parentId === current)) {
+      ids.push(child.id);
+      queue.push(child.id);
+    }
+  }
+  return ids;
+}
+
+function isDescendantFolder(folders: TyperFolder[], ancestorId: string, targetId: string): boolean {
+  let current = folders.find(f => f.id === targetId);
+  while (current) {
+    if (current.parentId === ancestorId) return true;
+    current = current.parentId ? folders.find(f => f.id === current!.parentId) : undefined;
+  }
+  return false;
+}
+
+export function createTyperFolder(folders: TyperFolder[], name: string, parentId: string | null = null): TyperFolder {
+  const siblings = folders.filter(f => f.parentId === parentId);
+  return { id: genTyperFolderId(), name: name.trim() || 'New Folder', parentId, order: siblings.length };
+}
+
+/** Renames a folder. No-ops on an empty/whitespace-only name rather than leaving the folder unnamed. */
+export function renameFolder(folders: TyperFolder[], folderId: string, name: string): TyperFolder[] {
+  const trimmed = name.trim();
+  if (!trimmed) return folders;
+  return folders.map(f => (f.id === folderId ? { ...f, name: trimmed } : f));
+}
+
+/** Moves a folder under a new parent. No-ops on self-parenting or on a cycle (parenting a folder
+ *  under its own descendant) — mirrors layerTree.ts's "illegal drag drop degrades to nothing
+ *  happening" rule rather than corrupting the tree. */
+export function reparentFolder(folders: TyperFolder[], folderId: string, newParentId: string | null): TyperFolder[] {
+  if (folderId === newParentId) return folders;
+  if (newParentId && isDescendantFolder(folders, folderId, newParentId)) return folders;
+  const siblings = folders.filter(f => f.parentId === newParentId && f.id !== folderId);
+  return folders.map(f => (f.id === folderId ? { ...f, parentId: newParentId, order: siblings.length } : f));
+}
+
+/** Deletes a folder and its descendants; styles inside any of them become unsorted rather than
+ *  deleted (matches the real extension's default, non-permanent folder delete). */
+export function deleteTyperFolder(folders: TyperFolder[], styles: TyperStyle[], folderId: string): { folders: TyperFolder[]; styles: TyperStyle[] } {
+  const idsToRemove = new Set([folderId, ...collectDescendantFolderIds(folders, folderId)]);
+  return {
+    folders: folders.filter(f => !idsToRemove.has(f.id)),
+    styles: styles.map(s => (s.folderId && idsToRemove.has(s.folderId) ? { ...s, folderId: null } : s)),
+  };
 }
 
 export interface TyperLine {
@@ -397,24 +510,52 @@ function stripInlineEmphasis(content: string): { content: string; boldOverride?:
   return { content };
 }
 
+export interface ParseTyperScriptOptions {
+  /** The folder tree, used only to expand `currentFolderId` to include its descendant folders. */
+  folders?: TyperFolder[];
+  /** Line prefixes that mark a note/comment line to skip entirely. Defaults to `['##']`. */
+  ignoreLinePrefixes?: string[];
+  /** Substrings stripped from anywhere in a line's content (not just a prefix) before placement. */
+  ignoreTags?: string[];
+  /** Fallback style when no prefix matches, preferred over the empty-prefix-style convention. */
+  defaultStyleId?: string | null;
+  /** The folder whose styles get first crack at matching a line's prefix — mirrors the real
+   *  extension's "current folder tag priority": the folder of the style just placed. */
+  currentFolderId?: string | null;
+}
+
 /**
  * Parses a pasted script into placeable lines.
- * - "##" prefix lines are ignored (notes).
+ * - Lines starting with a configured ignore-prefix (default `##`) are skipped (notes).
+ * - Configured `ignoreTags` are stripped from anywhere in a line's content.
  * - "Page N" control lines (English/Arabic, Arabic-Indic digits ok) don't place text
  *   themselves — they tag the next real line with a `pageHint` for auto page-switching.
  * - "//" lines append to the previously placed line (a continuation), joined with a newline.
- * - Longer prefixes are checked first so "!!" doesn't get shadowed by an empty-prefix style.
+ * - Styles in `currentFolderId` (and its descendant folders) are tried first, longest-prefix-first;
+ *   then all styles, longest-prefix-first; then `defaultStyleId`; then the empty-prefix style.
  * - A line fully wrapped in bold or italic markdown/HTML markers gets a per-placement style override.
  */
-export function parseTyperScript(script: string, styles: TyperStyle[]): TyperLine[] {
+export function parseTyperScript(script: string, styles: TyperStyle[], options: ParseTyperScriptOptions = {}): TyperLine[] {
+  const { folders = [], ignoreLinePrefixes = ['##'], ignoreTags = [], defaultStyleId = null, currentFolderId = null } = options;
   const sortedStyles = [...styles].sort((a, b) => b.prefix.length - a.prefix.length);
+  const priorityFolderIds = currentFolderId ? new Set([currentFolderId, ...collectDescendantFolderIds(folders, currentFolderId)]) : null;
+  const folderStyles = priorityFolderIds ? sortedStyles.filter(s => s.folderId && priorityFolderIds.has(s.folderId)) : [];
+  const defaultStyle = defaultStyleId ? styles.find(s => s.id === defaultStyleId) : undefined;
+
+  const matchStyle = (trimmed: string): TyperStyle =>
+    folderStyles.find(s => s.prefix && trimmed.startsWith(s.prefix))
+      ?? sortedStyles.find(s => s.prefix && trimmed.startsWith(s.prefix))
+      ?? defaultStyle
+      ?? sortedStyles.find(s => s.prefix === '')
+      ?? styles[0];
+
   const lines: TyperLine[] = [];
   let pendingPageHint: string | undefined;
 
   for (const rawLine of script.split('\n')) {
     const trimmed = rawLine.trim();
     if (trimmed.length === 0) continue;
-    if (trimmed.startsWith('##')) continue;
+    if (ignoreLinePrefixes.some(p => p && trimmed.startsWith(p))) continue;
 
     const pageMatch = trimmed.match(PAGE_LINE_RE);
     if (pageMatch) {
@@ -431,11 +572,10 @@ export function parseTyperScript(script: string, styles: TyperStyle[]): TyperLin
       continue;
     }
 
-    const style = sortedStyles.find(s => s.prefix && trimmed.startsWith(s.prefix))
-      ?? sortedStyles.find(s => s.prefix === '')
-      ?? styles[0];
+    const style = matchStyle(trimmed);
     const stripped = style.prefix ? trimmed.slice(style.prefix.length).trim() : trimmed;
-    const { content, boldOverride, italicOverride } = stripInlineEmphasis(stripped);
+    const withoutTags = ignoreTags.reduce((acc, tag) => (tag ? acc.split(tag).join('') : acc), stripped);
+    const { content, boldOverride, italicOverride } = stripInlineEmphasis(withoutTags);
 
     lines.push({ raw: rawLine, content, style, pageHint: pendingPageHint, boldOverride, italicOverride });
     pendingPageHint = undefined;

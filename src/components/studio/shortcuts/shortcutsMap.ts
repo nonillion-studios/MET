@@ -28,4 +28,6 @@ export const FIXED_SHORTCUTS_HELP: { keys: string; description: string }[] = [
   { keys: 'Ctrl/Cmd+=', description: 'Zoom in' },
   { keys: 'Ctrl/Cmd+-', description: 'Zoom out' },
   { keys: 'Ctrl/Cmd+0', description: 'Fit to screen' },
+  { keys: 'Ctrl/Cmd+.', description: 'Increase active text layer size (re-centers)' },
+  { keys: 'Ctrl/Cmd+,', description: 'Decrease active text layer size (re-centers)' },
 ];
