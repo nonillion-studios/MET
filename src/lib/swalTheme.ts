@@ -18,4 +18,21 @@ export function swalToast(options: SweetAlertOptions) {
   return swal({ toast: true, position: 'top-end', showConfirmButton: false, timer: 2500, ...options });
 }
 
+/** Lightweight math CAPTCHA confirmation for money-moving actions (deposit,
+ *  penalize, transfer, withdrawal decisions) — a cheap deterrent against
+ *  fat-finger/accidental clicks, not real bot protection. */
+export async function confirmWithCaptcha(title: string): Promise<boolean> {
+  const a = 1 + Math.floor(Math.random() * 8);
+  const b = 1 + Math.floor(Math.random() * 8);
+  const { value } = await swal({
+    title,
+    input: 'number',
+    inputLabel: `To confirm, what is ${a} + ${b}?`,
+    showCancelButton: true,
+    confirmButtonText: 'Confirm',
+    inputValidator: (v: string) => (v === '' ? 'Required' : undefined),
+  });
+  return Number(value) === a + b;
+}
+
 export { Swal };

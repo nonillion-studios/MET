@@ -28,6 +28,16 @@ export interface CloudFolder {
   id: number;
   name: string;
   parentId: number | null;
+  /** User ids allowed to upload into this folder. Empty = unrestricted. Admins always bypass. */
+  members: string[];
+}
+
+export interface CloudFileComment {
+  id: number;
+  fileId: number;
+  author: string;
+  body: string;
+  date: string;
 }
 
 function formatSize(bytes: number): string {
@@ -215,6 +225,7 @@ export function useCloudClient() {
               id: m.id,
               name: data.name || 'Untitled Folder',
               parentId: typeof data.parentId === 'number' ? data.parentId : null,
+              members: Array.isArray(data.members) ? data.members : [],
             });
           }
         } catch {
@@ -252,10 +263,10 @@ export function useCloudClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, chatId]);
 
-  const createFolder = async (name: string, parentId: number | null) => {
+  const createFolder = async (name: string, parentId: number | null, members: string[] = []) => {
     if (!client || !chatId) return;
     try {
-      await client.sendMessage(chatId, { message: JSON.stringify({ type: 'folder', name, parentId }) });
+      await client.sendMessage(chatId, { message: JSON.stringify({ type: 'folder', name, parentId, members }) });
       await fetchFiles();
     } catch (err: any) {
       swal({ title: 'Error', text: err.message || 'Failed to create folder', icon: 'error' });
@@ -536,11 +547,15 @@ export function useCloudClient() {
       if (m.media) {
         let meta: any = null;
         try { meta = m.message ? JSON.parse(m.message) : null; } catch { /* plain caption, not JSON */ }
+        // Only genuine uploaded files are surfaced here — workspace-backup covers/JSONs
+        // (meta.type === 'workspace_backup') and TypeR-internal cover images are excluded,
+        // this browser is for actual team file uploads/task work only.
+        if (meta?.type === 'workspace_backup' || meta?.type === 'file_comment') return;
         cloudFiles.push({
           id: m.id,
           msg: m,
-          type: meta?.type === 'workspace_backup' ? 'workspace_backup' : 'team_file',
-          scope: (['workspace', 'series', 'volume', 'chapter'].includes(meta?.scope) ? meta.scope : 'workspace') as BackupScope,
+          type: 'team_file',
+          scope: 'workspace' as BackupScope,
           name: meta?.name || m.message || (m as any).file?.name || 'Untitled',
           description: meta?.description || '',
           tags: Array.isArray(meta?.tags) ? meta.tags : [],
@@ -554,7 +569,7 @@ export function useCloudClient() {
         try {
           const data = JSON.parse(m.message);
           if (data?.type === 'folder') {
-            cloudFolders.push({ id: m.id, name: data.name || 'Untitled Folder', parentId: typeof data.parentId === 'number' ? data.parentId : null });
+            cloudFolders.push({ id: m.id, name: data.name || 'Untitled Folder', parentId: typeof data.parentId === 'number' ? data.parentId : null, members: Array.isArray(data.members) ? data.members : [] });
           }
         } catch { /* not a folder marker */ }
       }
@@ -563,14 +578,68 @@ export function useCloudClient() {
     return { files: cloudFiles, folders: cloudFolders };
   };
 
-  const createChannelFolder = async (channelId: string, name: string, parentId: number | null): Promise<void> => {
+  const listFileComments = async (channelId: string, fileId: number): Promise<CloudFileComment[]> => {
+    if (!client || !channelId) return [];
+    const msgs = await client.getMessages(channelId, { limit: 300 });
+    const comments: CloudFileComment[] = [];
+    msgs.forEach(m => {
+      if (!m.message) return;
+      try {
+        const data = JSON.parse(m.message);
+        if (data?.type === 'file_comment' && data.fileId === fileId) {
+          comments.push({ id: m.id, fileId, author: data.author || 'Team Member', body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
+        }
+      } catch { /* not a comment marker */ }
+    });
+    return comments.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  };
+
+  const postFileComment = async (channelId: string, fileId: number, body: string): Promise<void> => {
     if (!client || !channelId) return;
-    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'folder', name, parentId }) });
+    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'file_comment', fileId, author: meName || 'Team Member', body, date: new Date().toISOString() }) });
+  };
+
+  const downloadChannelFile = async (file: CloudFile): Promise<void> => {
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadLabel(file.name);
+    setDownloadTotalBytes(file.sizeBytes);
+    try {
+      const buffer = await client?.downloadMedia(file.msg, {
+        progressCallback: (progress: number) => setDownloadProgress(Math.round(progress * 100)),
+      } as any);
+      if (buffer) {
+        const blob = new Blob([buffer]);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }
+    } catch (e: any) {
+      swal({ title: 'Error', text: e?.message || 'Download failed', icon: 'error' });
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const createChannelFolder = async (channelId: string, name: string, parentId: number | null, members: string[] = []): Promise<void> => {
+    if (!client || !channelId) return;
+    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'folder', name, parentId, members }) });
   };
 
   const deleteChannelFolder = async (channelId: string, folder: CloudFolder): Promise<void> => {
     if (!client || !channelId) return;
     await client.deleteMessages(channelId, [folder.id], { revoke: true });
+  };
+
+  const updateChannelFolderMembers = async (channelId: string, folder: CloudFolder, members: string[]): Promise<void> => {
+    if (!client || !channelId) return;
+    await client.editMessage(channelId, { message: folder.id, text: JSON.stringify({ type: 'folder', name: folder.name, parentId: folder.parentId, members }) });
   };
 
   const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<void> => {
@@ -656,7 +725,11 @@ export function useCloudClient() {
     fetchChannelFiles,
     createChannelFolder,
     deleteChannelFolder,
+    updateChannelFolderMembers,
     uploadChannelFile,
+    downloadChannelFile,
+    listFileComments,
+    postFileComment,
 
     formatSize,
   };

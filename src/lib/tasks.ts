@@ -28,6 +28,7 @@ export interface Task {
   tags: string[];
   recurrence: 'none' | 'daily' | 'weekly' | 'monthly';
   recurrence_parent_id: string | null;
+  offer_expires_at: string | null;
   assignee?: { name: string; avatar: string; email: string } | null;
 }
 
@@ -41,6 +42,8 @@ export async function createTaskWithWorkflow(input: {
   jobTypes: string[]; dueDate: string | null; reward?: number;
   attachment?: { msgId: number; name: string; size: number };
   priority?: TaskPriority; tags?: string[]; recurrence?: 'none' | 'daily' | 'weekly' | 'monthly';
+  assigneeId?: string | null; offerExpiresAt?: string | null;
+  mentionedUserIds?: string[];
 }): Promise<string | null> {
   const { data, error } = await supabase.rpc('task_create', {
     _team_id: input.teamId, _title: input.title, _description: input.description,
@@ -52,6 +55,8 @@ export async function createTaskWithWorkflow(input: {
     _priority: input.priority ?? 'normal',
     _tags: input.tags ?? [],
     _recurrence: input.recurrence ?? 'none',
+    _assignee_id: input.assigneeId ?? null,
+    _offer_expires_at: input.offerExpiresAt ?? null,
   });
   if (error) return error.message;
   const created = data as Task | null;
@@ -65,6 +70,9 @@ export async function createTaskWithWorkflow(input: {
     if ((member?.notification_prefs as { tasks?: boolean } | null)?.tasks !== false) {
       await notify(created.assignee_id, 'New task assigned', input.title);
     }
+  }
+  for (const userId of input.mentionedUserIds ?? []) {
+    if (userId !== created?.assignee_id) await notify(userId, 'Mentioned in a task', input.title);
   }
   return null;
 }

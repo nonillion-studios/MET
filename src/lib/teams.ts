@@ -38,6 +38,8 @@ export interface TeamMember {
   can_manage_join_requests: boolean;
   can_manage_vacations: boolean;
   can_manage_tasks: boolean;
+  custom_permissions: string[];
+  custom_title: string | null;
   notification_prefs: { broadcasts?: boolean; tasks?: boolean; chat?: boolean };
   profile?: { name: string; avatar: string; email: string } | null;
 }
@@ -53,7 +55,7 @@ export async function updateMyNotificationPrefs(teamId: string, prefs: { broadca
 }
 
 export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember,
-  'job_title' | 'priority' | 'balance' | 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks'
+  'job_title' | 'priority' | 'balance' | 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'custom_permissions' | 'custom_title'
 >>): Promise<string | null> {
   const { error } = await supabase.from('team_members').update(fields).eq('id', memberRowId);
   return error ? error.message : null;

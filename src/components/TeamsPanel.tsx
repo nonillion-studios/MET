@@ -6,7 +6,7 @@ import {
   Megaphone, AlertTriangle, ChevronDown,
 } from 'lucide-react';
 import { GlassCard, Button, Input, Textarea, Modal, Switch, SkeletonCard, SkeletonRow } from './ui';
-import { swal, swalToast } from '../lib/swalTheme';
+import { swal, swalToast, confirmWithCaptcha } from '../lib/swalTheme';
 import { readAvatarFile, uploadImageToStorage } from '../lib/image';
 import { useTeamAuth } from '../lib/teamAuth';
 import {
@@ -50,7 +50,7 @@ import { requestOwnerTransfer, decideOwnerTransfer, getMyPendingOwnerTransfers, 
 import { listTeamBadges, TeamBadge, listMemberBadges, MemberBadge } from '../lib/teamBadges';
 import { getCurrentSeasonLeaderboard, closeCurrentSeason, SeasonLeaderboardRow } from '../lib/seasons';
 import { exportTeamReportDocx } from '../lib/teamReport';
-import type { CloudClient, CloudFile, CloudFolder } from '../lib/cloudClient';
+import type { CloudClient, CloudFile, CloudFolder, CloudFileComment } from '../lib/cloudClient';
 import { CloudFolders } from './cloud/CloudFolders';
 import { Folder as FolderIcon, Upload, Download } from 'lucide-react';
 
@@ -374,12 +374,68 @@ function DashboardSection({ team, myMember, canManage, members, onChanged }: { t
         </GlassCard>
       )}
 
+      <TopPerformersCard team={team} members={members} />
+
       {!myMember && !canManage && (
         <GlassCard className="p-8 text-center md:col-span-2">
           <p className="text-sm text-ink-muted">No personal dashboard for this account yet.</p>
         </GlassCard>
       )}
     </div>
+  );
+}
+
+function TopPerformersCard({ team, members }: { team: Team; members: TeamMember[] }) {
+  const [tasks, setTasks] = useState<Task[]>([]);
+
+  useEffect(() => { listTeamTasks(team.id).then(setTasks); }, [team.id]);
+
+  const jobs = Array.from(new Set(members.map(m => m.job_title).filter((j): j is JobTitle => !!j)));
+  const doneTasks = tasks.filter(t => t.status === 'done' && t.assignee_id);
+
+  const rankingByJob = jobs.map(job => {
+    const counts = new Map<string, number>();
+    for (const t of doneTasks) {
+      if (!t.job_types.includes(job)) continue;
+      counts.set(t.assignee_id, (counts.get(t.assignee_id) || 0) + 1);
+    }
+    const ranked = Array.from(counts.entries())
+      .map(([userId, count]) => ({ userId, count, member: members.find(m => m.user_id === userId) }))
+      .filter(r => r.member)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3);
+    return { job, ranked };
+  }).filter(r => r.ranked.length > 0);
+
+  if (rankingByJob.length === 0) return null;
+
+  const medalColor = ['text-amber-500', 'text-slate-400', 'text-orange-700'];
+
+  return (
+    <GlassCard className="p-6 md:col-span-2">
+      <h3 className="text-sm font-semibold text-ink mb-4 flex items-center gap-1.5"><Trophy size={14} className="text-accent" /> Top performers by job</h3>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {rankingByJob.map(({ job, ranked }) => (
+          <div key={job} className="space-y-1.5">
+            <p className="text-[11px] font-semibold text-ink-faint uppercase tracking-wide">{job}</p>
+            <div className="flex flex-col gap-1">
+              {ranked.map((r, i) => (
+                <div
+                  key={r.userId}
+                  className="flex items-center gap-2 p-1.5 rounded-lg bg-ink/[0.03] transition-all duration-500 ease-out"
+                  style={{ order: i }}
+                >
+                  <span className={`text-xs font-bold w-4 shrink-0 ${medalColor[i] || 'text-ink-faint'}`}>#{i + 1}</span>
+                  <ChatAvatar name={r.member?.profile?.name || r.member?.invited_email || 'Member'} avatar={r.member?.profile?.avatar} size={22} />
+                  <span className="text-xs text-ink truncate flex-1">{r.member?.profile?.name || r.member?.invited_email}</span>
+                  <span className="text-[10px] font-bold text-accent shrink-0">{r.count}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </GlassCard>
   );
 }
 
@@ -426,6 +482,9 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
   const [jobTitle, setJobTitle] = useState<JobTitle | ''>(member.job_title || '');
   const [priority, setPriority] = useState(String(member.priority ?? ''));
   const [balance, setBalance] = useState(String(member.balance ?? 0));
+  const [customTitle, setCustomTitle] = useState(member.custom_title || '');
+  const [customPerms, setCustomPerms] = useState<string[]>(member.custom_permissions || []);
+  const [customPermInput, setCustomPermInput] = useState('');
   const [perms, setPerms] = useState({
     can_review_tasks: member.can_review_tasks,
     can_manage_bank: member.can_manage_bank,
@@ -435,12 +494,20 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
   });
   const [saving, setSaving] = useState(false);
 
+  const addCustomPerm = () => {
+    const p = customPermInput.trim();
+    if (p && !customPerms.includes(p)) setCustomPerms(prev => [...prev, p]);
+    setCustomPermInput('');
+  };
+
   const handleSave = async () => {
     setSaving(true);
     const error = await updateMemberFields(member.id, {
       job_title: (jobTitle || null) as JobTitle | null,
       priority: priority ? Number(priority) : null,
       balance: Number(balance) || 0,
+      custom_title: customTitle.trim() || null,
+      custom_permissions: customPerms,
       ...perms,
     });
     setSaving(false);
@@ -470,6 +537,10 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
           <label className="text-xs text-accent font-semibold">Balance ($)</label>
           <Input type="number" step="0.01" value={balance} onChange={e => setBalance(e.target.value)} />
         </div>
+        <div className="space-y-1">
+          <label className="text-xs text-accent font-semibold">Display title (e.g. "Bank Officer")</label>
+          <Input value={customTitle} onChange={e => setCustomTitle(e.target.value)} placeholder="Optional" />
+        </div>
 
         {member.role === 'leader' && (
           <div className="space-y-1.5 pt-2 border-t border-hairline">
@@ -480,6 +551,22 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
                 <Switch checked={perms[p.key]} onChange={v => setPerms(prev => ({ ...prev, [p.key]: v }))} />
               </div>
             ))}
+            <div className="pt-1.5 space-y-1.5">
+              <label className="text-[11px] text-ink-muted">Custom permission tags</label>
+              <div className="flex gap-2">
+                <Input placeholder="e.g. can_edit_cloud" value={customPermInput} onChange={e => setCustomPermInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addCustomPerm())} className="flex-1" />
+                <Button type="button" variant="secondary" size="sm" onClick={addCustomPerm}>Add</Button>
+              </div>
+              {customPerms.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {customPerms.map(p => (
+                    <span key={p} className="text-[10px] font-semibold px-2 py-1 rounded-full bg-ink/5 text-ink-muted flex items-center gap-1">
+                      {p} <button type="button" onClick={() => setCustomPerms(prev => prev.filter(x => x !== p))} className="hover:text-danger">✕</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -630,6 +717,7 @@ function TeamRoster({
                   <p className="text-xs font-semibold text-ink truncate flex items-center gap-1">
                     {m.profile?.name || m.invited_email}
                     {m.role === 'leader' && <Crown size={11} className="text-accent shrink-0" />}
+                    {m.custom_title && <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-accent-soft text-accent shrink-0">{m.custom_title}</span>}
                   </p>
                   <p className="text-[10px] text-ink-faint truncate">
                     {m.job_title || 'No job title'}{m.priority != null ? ` · P${m.priority}` : ''}
@@ -1497,16 +1585,24 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
       swal({ icon: 'error', title: 'Missing details', text: 'Give the task a title and pick at least one job type.' });
       return;
     }
+    if (assignMode === 'manual' && !assigneeId) {
+      swal({ icon: 'error', title: 'Pick an assignee', text: 'Choose a member or switch back to auto-assign.' });
+      return;
+    }
     setCreating(true);
+    const mentionedUserIds = parseMentions(description, members);
     const error = await createTaskWithWorkflow({
       teamId: team.id, title: title.trim(), description: description.trim(),
       jobTypes, dueDate: dueDate || null, reward: reward ? Number(reward) : undefined,
       attachment: attachment ?? undefined, priority, tags, recurrence,
+      assigneeId: assignMode === 'manual' ? assigneeId : null,
+      offerExpiresAt: offerExpiresAt ? new Date(offerExpiresAt).toISOString() : null,
+      mentionedUserIds,
     });
     setCreating(false);
     if (error) { swal({ icon: 'error', title: 'Could not create task', text: error }); return; }
-    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setReward(''); setAttachment(null); setPriority('normal'); setTags([]); setTagInput(''); setTemplateId(''); setRecurrence('none');
-    swalToast({ icon: 'success', title: 'Task created and auto-assigned' });
+    setTitle(''); setDescription(''); setJobTypes([]); setDueDate(''); setReward(''); setAttachment(null); setPriority('normal'); setTags([]); setTagInput(''); setTemplateId(''); setRecurrence('none'); setAssignMode('auto'); setAssigneeId(''); setOfferExpiresAt('');
+    swalToast({ icon: 'success', title: assignMode === 'manual' ? 'Task created and assigned' : 'Task created and auto-assigned' });
     refresh();
   };
 
@@ -1586,9 +1682,28 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
               ))}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-              <Input type="number" step="0.01" placeholder="Reward ($, optional)" value={reward} onChange={(e) => setReward(e.target.value)} />
+              <div>
+                <label className="text-[9px] font-semibold text-ink-faint uppercase tracking-wide px-1">Deadline</label>
+                <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              </div>
+              <Input type="number" step="0.01" placeholder="Reward ($, optional)" value={reward} onChange={(e) => setReward(e.target.value)} className="mt-auto" />
             </div>
+            <div>
+              <label className="text-[9px] font-semibold text-ink-faint uppercase tracking-wide px-1">Offer expiry (auto-decline if unaccepted)</label>
+              <Input type="datetime-local" value={offerExpiresAt} onChange={(e) => setOfferExpiresAt(e.target.value)} />
+            </div>
+            <div className="flex gap-1.5">
+              <button type="button" onClick={() => setAssignMode('auto')} className={`flex-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors ${assignMode === 'auto' ? 'bg-accent text-white border-accent' : 'border-hairline text-ink-muted hover:border-accent/40'}`}>Auto-assign</button>
+              <button type="button" onClick={() => setAssignMode('manual')} className={`flex-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors ${assignMode === 'manual' ? 'bg-accent text-white border-accent' : 'border-hairline text-ink-muted hover:border-accent/40'}`}>Choose member</button>
+            </div>
+            {assignMode === 'manual' && (
+              <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)} className="w-full text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+                <option value="">Select a member...</option>
+                {members.filter(m => m.status === 'active' && m.user_id).map(m => (
+                  <option key={m.id} value={m.user_id!}>{m.profile?.name || m.invited_email}</option>
+                ))}
+              </select>
+            )}
             <div className="flex flex-wrap gap-1.5">
               {(['low', 'normal', 'high', 'urgent'] as TaskPriority[]).map(p => (
                 <button
@@ -1927,6 +2042,8 @@ function BankTab({ team, members, myMember, canManageBank: canManage }: { team: 
 
   const run = async (fn: () => Promise<string | null>, successTitle: string) => {
     if (!amount || Number(amount) <= 0) { swal({ icon: 'error', title: 'Enter a valid amount' }); return; }
+    const ok = await confirmWithCaptcha(`Confirm: ${successTitle.replace(/ (sent|applied|requested)$/, '')} of $${amount}`);
+    if (!ok) { swal({ icon: 'error', title: 'Verification failed', text: 'The answer was incorrect — action cancelled.' }); return; }
     setBusy(true);
     const error = await fn();
     setBusy(false);
@@ -1937,6 +2054,8 @@ function BankTab({ team, members, myMember, canManageBank: canManage }: { team: 
   };
 
   const handleWithdrawalDecision = async (id: string, approve: boolean) => {
+    const ok = await confirmWithCaptcha(`Confirm: ${approve ? 'approve' : 'reject'} this withdrawal`);
+    if (!ok) { swal({ icon: 'error', title: 'Verification failed', text: 'The answer was incorrect — action cancelled.' }); return; }
     const error = await decideWithdrawal(id, approve);
     if (error) { swal({ icon: 'error', title: 'Action failed', text: error }); return; }
     refresh();
@@ -2339,7 +2458,13 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [commentsForFile, setCommentsForFile] = useState<CloudFile | null>(null);
+  const [comments, setComments] = useState<CloudFileComment[]>([]);
+  const [commentBody, setCommentBody] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { session } = useTeamAuth();
+  const myUserId = session?.user.id;
 
   const refresh = async () => {
     if (!team.telegram_channel_id) { setLoading(false); return; }
@@ -2347,9 +2472,35 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
     const { files: f, folders: fo } = await cc.fetchChannelFiles(team.telegram_channel_id);
     setFiles(f); setFolders(fo);
     setLoading(false);
+    return fo;
   };
 
   useEffect(() => { refresh(); }, [team.telegram_channel_id]);
+
+  // One-time seed of the fixed Tasks > Finished/Unfinished folder structure.
+  useEffect(() => {
+    if (!canManage || loading || seeding || !team.telegram_channel_id) return;
+    const tasksRoot = folders.find(f => f.parentId === null && f.name === 'Tasks');
+    if (!tasksRoot) {
+      setSeeding(true);
+      cc.createChannelFolder(team.telegram_channel_id, 'Tasks', null).then(() => refresh()).finally(() => setSeeding(false));
+      return;
+    }
+    const hasFinished = folders.some(f => f.parentId === tasksRoot.id && f.name === 'Finished');
+    const hasUnfinished = folders.some(f => f.parentId === tasksRoot.id && f.name === 'Unfinished');
+    if (!hasFinished || !hasUnfinished) {
+      setSeeding(true);
+      (async () => {
+        if (!hasFinished) await cc.createChannelFolder(team.telegram_channel_id, 'Finished', tasksRoot.id);
+        if (!hasUnfinished) await cc.createChannelFolder(team.telegram_channel_id, 'Unfinished', tasksRoot.id);
+        await refresh();
+      })().finally(() => setSeeding(false));
+    }
+  }, [canManage, loading, folders, team.telegram_channel_id]);
+
+  const currentFolder = folders.find(f => f.id === currentFolderId) || null;
+  const isProtectedFolder = (name: string) => name === 'Tasks' || name === 'Finished' || name === 'Unfinished';
+  const canUploadHere = canManage || !currentFolder || currentFolder.members.length === 0 || (!!myUserId && currentFolder.members.includes(myUserId));
 
   const handleCreateFolder = async (name: string, parentId: number | null) => {
     await cc.createChannelFolder(team.telegram_channel_id, name, parentId);
@@ -2357,13 +2508,20 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
   };
 
   const handleDeleteFolder = async (folder: CloudFolder) => {
+    if (isProtectedFolder(folder.name)) { swal({ icon: 'info', title: 'Protected folder', text: 'The Tasks/Finished/Unfinished structure cannot be deleted.' }); return; }
     const result = await swal({ icon: 'warning', title: `Delete folder "${folder.name}"?`, text: 'Files inside will remain, unfiled.', showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
     if (!result.isConfirmed) return;
     await cc.deleteChannelFolder(team.telegram_channel_id, folder);
     refresh();
   };
 
+  const handleEditFolderMembers = async (folder: CloudFolder, members: string[]) => {
+    await cc.updateChannelFolderMembers(team.telegram_channel_id, folder, members);
+    refresh();
+  };
+
   const handleUpload = async (file: File) => {
+    if (!canUploadHere) { swal({ icon: 'error', title: 'Not allowed', text: 'You are not a member of this folder.' }); return; }
     setUploading(true);
     await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId);
     setUploading(false);
@@ -2372,7 +2530,19 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
   };
 
   const handleDownload = async (file: CloudFile) => {
-    await cc.downloadTaskAttachment(team.telegram_channel_id, file.id, file.name);
+    await cc.downloadChannelFile(file);
+  };
+
+  const openComments = async (file: CloudFile) => {
+    setCommentsForFile(file);
+    setComments(await cc.listFileComments(team.telegram_channel_id, file.id));
+  };
+
+  const handlePostComment = async () => {
+    if (!commentBody.trim() || !commentsForFile) return;
+    await cc.postFileComment(team.telegram_channel_id, commentsForFile.id, commentBody.trim());
+    setCommentBody('');
+    setComments(await cc.listFileComments(team.telegram_channel_id, commentsForFile.id));
   };
 
   if (!team.telegram_channel_id) {
@@ -2393,6 +2563,7 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
   }
 
   const filesInFolder = files.filter(f => f.folderId === currentFolderId);
+  const inFinished = currentFolder?.name === 'Finished';
 
   return (
     <div className="space-y-4">
@@ -2406,13 +2577,16 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
           onCreateFolder={canManage ? handleCreateFolder : () => {}}
           onDeleteFolder={canManage ? handleDeleteFolder : () => {}}
           fileCountFor={(folderId) => files.filter(f => f.folderId === folderId).length}
+          onEditMembers={canManage ? handleEditFolderMembers : undefined}
         />
       </div>
 
-      {canManage && (
+      {canUploadHere ? (
         <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
           <Upload size={13} /> {uploading ? 'Uploading...' : 'Upload File'}
         </Button>
+      ) : (
+        <p className="text-[11px] text-ink-faint">You're not a member of this folder — ask an admin to add you before uploading here.</p>
       )}
 
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -2420,17 +2594,59 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
           <p className="text-xs text-ink-faint text-center py-6 sm:col-span-2 lg:col-span-3">No files in this folder yet.</p>
         )}
         {filesInFolder.map(f => (
-          <GlassCard key={f.id} className="p-3 flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-ink truncate">{f.name}</p>
-              <p className="text-[10px] text-ink-faint">{cc.formatSize(f.sizeBytes)} · {f.sender}</p>
+          <GlassCard key={f.id} className="p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-semibold text-ink truncate">{f.name}</p>
+                <p className="text-[10px] text-ink-faint">
+                  {cc.formatSize(f.sizeBytes)} · {inFinished ? <span className="font-semibold text-accent">{f.sender}</span> : f.sender}
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => openComments(f)} aria-label={`Comments on ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                  <MessageCircle size={14} />
+                </button>
+                <button onClick={() => handleDownload(f)} aria-label={`Download ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                  <Download size={14} />
+                </button>
+              </div>
             </div>
-            <button onClick={() => handleDownload(f)} aria-label={`Download ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
-              <Download size={14} />
-            </button>
           </GlassCard>
         ))}
       </div>
+
+      <Modal open={cc.isDownloading} onClose={() => {}} dismissible={false} title="Downloading" size="sm">
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-semibold text-ink truncate">{cc.downloadLabel}</p>
+            <p className="text-xs text-ink-faint font-mono mt-0.5">{cc.formatSize(Math.round(cc.downloadTotalBytes * (cc.downloadProgress / 100)))} / {cc.formatSize(cc.downloadTotalBytes)}</p>
+          </div>
+          <div className="w-full bg-ink/10 border border-hairline h-3 rounded-full overflow-hidden relative">
+            <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.downloadProgress}%` }} />
+            <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.downloadProgress}%</span>
+          </div>
+        </div>
+      </Modal>
+
+      {commentsForFile && (
+        <Modal open onClose={() => setCommentsForFile(null)} title={`Comments — ${commentsForFile.name}`} size="sm">
+          <div className="space-y-3">
+            <div className="max-h-64 overflow-y-auto space-y-2">
+              {comments.length === 0 && <p className="text-xs text-ink-faint text-center py-4">No comments yet.</p>}
+              {comments.map(c => (
+                <div key={c.id} className="p-2 rounded-lg bg-ink/[0.03]">
+                  <p className="text-[10px] font-semibold text-accent">{c.author}</p>
+                  <p className="text-xs text-ink whitespace-pre-line">{c.body}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Input placeholder="Add a comment..." value={commentBody} onChange={e => setCommentBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePostComment()} className="flex-1" />
+              <Button size="sm" onClick={handlePostComment}>Post</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

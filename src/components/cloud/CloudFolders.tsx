@@ -1,4 +1,4 @@
-import { Folder, FolderPlus, ChevronRight, Trash2, Home } from 'lucide-react';
+import { Folder, FolderPlus, ChevronRight, Trash2, Home, Users } from 'lucide-react';
 import { GlassCard, Button } from '../ui';
 import { swal } from '../../lib/swalTheme';
 import type { CloudFolder } from '../../lib/cloudClient';
@@ -10,9 +10,10 @@ interface CloudFoldersProps {
   onCreateFolder: (name: string, parentId: number | null) => void;
   onDeleteFolder: (folder: CloudFolder) => void;
   fileCountFor: (folderId: number) => number;
+  onEditMembers?: (folder: CloudFolder, members: string[]) => void;
 }
 
-export function CloudFolders({ folders, currentFolderId, onNavigate, onCreateFolder, onDeleteFolder, fileCountFor }: CloudFoldersProps) {
+export function CloudFolders({ folders, currentFolderId, onNavigate, onCreateFolder, onDeleteFolder, fileCountFor, onEditMembers }: CloudFoldersProps) {
   const childFolders = folders.filter(f => f.parentId === currentFolderId);
 
   const breadcrumb: CloudFolder[] = [];
@@ -34,6 +35,21 @@ export function CloudFolders({ folders, currentFolderId, onNavigate, onCreateFol
     });
     const name = (result.value || '').trim();
     if (result.isConfirmed && name) onCreateFolder(name, currentFolderId);
+  };
+
+  const handleEditMembers = async (folder: CloudFolder) => {
+    if (!onEditMembers) return;
+    const result = await swal({
+      title: `Members of "${folder.name}"`,
+      input: 'text',
+      inputLabel: 'Comma-separated user IDs allowed to upload here (empty = everyone)',
+      inputValue: folder.members.join(', '),
+      showCancelButton: true,
+      confirmButtonText: 'Save',
+    });
+    if (!result.isConfirmed) return;
+    const members = (result.value || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+    onEditMembers(folder, members);
   };
 
   return (
@@ -66,14 +82,25 @@ export function CloudFolders({ folders, currentFolderId, onNavigate, onCreateFol
             <GlassCard key={folder.id} className="group relative p-4 flex flex-col items-center gap-2 cursor-pointer hover:border-accent/50 transition-colors" onClick={() => onNavigate(folder.id)}>
               <Folder className="text-accent/70" size={26} />
               <span className="text-xs font-semibold text-ink text-center truncate w-full">{folder.name}</span>
-              <span className="text-[10px] text-ink-faint">{fileCountFor(folder.id)} file(s)</span>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDeleteFolder(folder); }}
-                className="absolute top-1.5 right-1.5 p-1 rounded-lg bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                aria-label={`Delete folder ${folder.name}`}
-              >
-                <Trash2 size={11} />
-              </button>
+              <span className="text-[10px] text-ink-faint">{fileCountFor(folder.id)} file(s){folder.members.length > 0 ? ` · ${folder.members.length} member(s)` : ''}</span>
+              <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                {onEditMembers && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleEditMembers(folder); }}
+                    className="p-1 rounded-lg bg-black/40 text-white"
+                    aria-label={`Edit members of ${folder.name}`}
+                  >
+                    <Users size={11} />
+                  </button>
+                )}
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDeleteFolder(folder); }}
+                  className="p-1 rounded-lg bg-black/40 text-white"
+                  aria-label={`Delete folder ${folder.name}`}
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
             </GlassCard>
           ))}
         </div>
