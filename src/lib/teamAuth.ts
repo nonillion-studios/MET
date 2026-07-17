@@ -82,7 +82,7 @@ export function useTeamAuth() {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { name, avatar } },
+      options: { data: { name, avatar }, emailRedirectTo: window.location.origin },
     });
     if (error) return { error: error.message, needsConfirmation: false };
     rememberEmail(email);
