@@ -16,7 +16,6 @@ import { BottomTabBar } from './components/BottomTabBar';
 import { SidebarRail } from './components/SidebarRail';
 import { CloudStorage } from './components/CloudStorage';
 import { AdSlot } from './components/AdSlot';
-import { LibraryAnnouncementBanner } from './components/LibraryAnnouncementBanner';
 import { TeamsPanel } from './components/TeamsPanel';
 import { AuthGate } from './components/AuthGate';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
@@ -758,7 +757,6 @@ export default function App() {
 
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
-              {!activeChapter && <LibraryAnnouncementBanner />}
               {!activeChapter && <AdSlot placement="library-top" />}
 
               {/* Breadcrumb */}
