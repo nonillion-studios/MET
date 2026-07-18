@@ -4,8 +4,7 @@ import {
   Upload as UploadIcon, File, RefreshCw, ChevronDown,
   Tag, X, HardDrive, Boxes, FolderInput, CalendarClock, Play, Trash2, FolderOutput
 } from 'lucide-react';
-import { Input, Button, GlassCard, Modal, Switch, SkeletonCard, Skeleton } from '../ui';
-import { AdSlot } from '../AdSlot';
+import { Input, Button, GlassCard, Switch, SkeletonCard, Skeleton } from '../ui';
 import { CloudFolders } from './CloudFolders';
 import { ScheduleTransferModal } from './ScheduleTransferModal';
 import { swal, swalToast } from '../../lib/swalTheme';
@@ -135,8 +134,6 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
       return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
 
-  const uploadedBytes = Math.round(cc.uploadTotalBytes * (cc.uploadProgress / 100));
-
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-6">
       {/* Folder navigation */}
@@ -212,51 +209,6 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
           </div>
         )}
       </GlassCard>
-
-      {/* Upload progress modal */}
-      <Modal open={cc.isUploading} onClose={() => {}} dismissible={false} title="Uploading to Cloud" size="sm">
-        <div className="space-y-4">
-          <div>
-            <p className="text-sm font-semibold text-ink truncate">{cc.uploadLabel}</p>
-            <p className="text-xs text-ink-faint font-mono mt-0.5">{cc.formatSize(uploadedBytes)} / {cc.formatSize(cc.uploadTotalBytes)}</p>
-          </div>
-          <div className="w-full bg-ink/10 border border-hairline h-3 rounded-full overflow-hidden relative">
-            <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.uploadProgress}%` }} />
-            <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.uploadProgress}%</span>
-          </div>
-          <AdSlot placement="upload-progress" />
-        </div>
-      </Modal>
-
-      {/* Download progress modal */}
-      <Modal open={cc.isDownloading} onClose={() => {}} dismissible={false} title="Downloading from Cloud" size="sm">
-        <div className="space-y-4">
-          <div>
-            <p className="text-sm font-semibold text-ink truncate">{cc.downloadLabel}</p>
-            <p className="text-xs text-ink-faint font-mono mt-0.5">{cc.formatSize(Math.round(cc.downloadTotalBytes * (cc.downloadProgress / 100)))} / {cc.formatSize(cc.downloadTotalBytes)}</p>
-          </div>
-          <div className="w-full bg-ink/10 border border-hairline h-3 rounded-full overflow-hidden relative">
-            <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.downloadProgress}%` }} />
-            <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.downloadProgress}%</span>
-          </div>
-          <AdSlot placement="download-progress" />
-        </div>
-      </Modal>
-
-      {/* Restore progress modal */}
-      <Modal open={cc.isRestoring} onClose={() => {}} dismissible={false} title="Fetching from Cloud" size="sm">
-        <div className="space-y-4">
-          <div>
-            <p className="text-sm font-semibold text-ink truncate">{cc.restoreLabel}</p>
-            <p className="text-xs text-ink-faint font-mono mt-0.5">{cc.formatSize(Math.round(cc.restoreTotalBytes * (cc.restoreProgress / 100)))} / {cc.formatSize(cc.restoreTotalBytes)}</p>
-          </div>
-          <div className="w-full bg-ink/10 border border-hairline h-3 rounded-full overflow-hidden relative">
-            <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.restoreProgress}%` }} />
-            <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.restoreProgress}%</span>
-          </div>
-          <AdSlot placement="restore-progress" />
-        </div>
-      </Modal>
 
       <ScheduleTransferModal
         open={showScheduleModal}

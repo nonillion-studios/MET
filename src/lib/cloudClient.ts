@@ -367,6 +367,7 @@ export function useCloudClient() {
         progressCallback: (progress: number) => setUploadProgress(Math.round(progress * 100)),
       });
 
+      localStorage.setItem('tg_last_backup_at', Date.now().toString());
       swalToast({ icon: 'success', title: `"${workspace.name}" backed up to Cloud Storage` });
       fetchFiles();
     } catch (err: any) {
