@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { UserPlus, LogIn, Mail, Lock, User, ImagePlus, MailCheck, Check, X, KeyRound } from 'lucide-react';
-import { GlassCard, Button, Input, Captcha, Skeleton } from './ui';
+import { GlassCard, Button, Input, Skeleton } from './ui';
 import { swal } from '../lib/swalTheme';
 import { readAvatarFile } from '../lib/image';
 import { useTeamAuth, getKnownEmails } from '../lib/teamAuth';
@@ -44,7 +44,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [resetCode, setResetCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
-  const [captchaVerified, setCaptchaVerified] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   if (loading) {
@@ -66,17 +65,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
 
   const switchMode = (next: 'signin' | 'signup' | 'forgot') => {
-    setCaptchaVerified(false);
     setMode(next);
   };
 
   const handleForgotPassword = async () => {
     if (!email.trim()) {
       swal({ icon: 'error', title: 'Missing email', text: 'Enter your email address.' });
-      return;
-    }
-    if (!captchaVerified) {
-      swal({ icon: 'error', title: 'Quick check failed', text: 'Solve the quick check before continuing.' });
       return;
     }
     setSubmitting(true);
@@ -237,7 +231,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               onKeyDown={(e) => { if (e.key === 'Enter') handleForgotPassword(); }}
             />
           </div>
-          <Captcha onChange={setCaptchaVerified} />
           <Button onClick={handleForgotPassword} disabled={submitting} className="w-full">
             <Mail size={14} /> {submitting ? 'Please wait...' : 'Send Code'}
           </Button>
@@ -312,10 +305,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     }
     if (password !== confirmPassword) {
       swal({ icon: 'error', title: 'Passwords don\'t match', text: 'Re-enter your password to confirm it.' });
-      return;
-    }
-    if (!captchaVerified) {
-      swal({ icon: 'error', title: 'Quick check failed', text: 'Solve the quick check before continuing.' });
       return;
     }
     setSubmitting(true);
@@ -430,7 +419,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               )}
             </div>
           )}
-          {mode === 'signup' && <Captcha onChange={setCaptchaVerified} />}
         </div>
 
         <Button onClick={mode === 'signup' ? handleSignUp : handleSignIn} disabled={submitting} className="w-full">

@@ -2,12 +2,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
-  ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank, Home, MessageCircle, Globe, Lock, ArrowLeft, UserPlus, Hash,
+  ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank, Home, MessageCircle, Globe, Lock, ArrowLeft, UserPlus,
   Megaphone, AlertTriangle, ChevronDown,
 } from 'lucide-react';
 import { GlassCard, Button, Input, Textarea, Modal, Switch, SkeletonCard, SkeletonRow } from './ui';
-import { swal, swalToast, confirmWithCaptcha } from '../lib/swalTheme';
-import { readAvatarFile, uploadImageToStorage } from '../lib/image';
+import { swal, swalToast, confirmAction } from '../lib/swalTheme';
+import { readAvatarFile, readImageFile, uploadImageToStorage } from '../lib/image';
+import {
+  CloudFileVisibility, TeamCloudFileMeta, TeamCloudFolderMeta,
+  listCloudFileMeta, listCloudFolderMeta, upsertCloudFileMeta, setCloudFileVisibility, setCloudFolderSecret, uploadCloudFileCover,
+} from '../lib/teamCloudFiles';
 import { useTeamAuth } from '../lib/teamAuth';
 import {
   Team, TeamMember, JOB_TITLES, JobTitle,
@@ -50,6 +54,9 @@ import { requestOwnerTransfer, decideOwnerTransfer, getMyPendingOwnerTransfers, 
 import { listTeamBadges, TeamBadge, listMemberBadges, MemberBadge } from '../lib/teamBadges';
 import { getCurrentSeasonLeaderboard, closeCurrentSeason, SeasonLeaderboardRow } from '../lib/seasons';
 import { exportTeamReportDocx } from '../lib/teamReport';
+import {
+  TeamMemberJob, listMyJobs, listTeamMemberJobs, claimJobPriority, removeMemberJob, setMemberJobActive, adminSetMemberJob, adminRemoveMemberJob,
+} from '../lib/teamJobs';
 import type { CloudClient, CloudFile, CloudFolder, CloudFileComment } from '../lib/cloudClient';
 import { CloudFolders } from './cloud/CloudFolders';
 import { Folder as FolderIcon, Upload, Download } from 'lucide-react';
@@ -163,6 +170,7 @@ interface Perms {
   canManageJoinRequests: boolean;
   canManageVacations: boolean;
   canManageTasks: boolean; // delegable, in addition to blanket leader access
+  canPreviewTasks: boolean; // view-only access to the full team task board
 }
 
 function SectionHeader({ icon: Icon, title, description }: { icon: typeof Users; title: string; description?: string }) {
@@ -210,6 +218,7 @@ function TeamWorkspace({
     canManageJoinRequests: isOwner || !!myMember?.can_manage_join_requests,
     canManageVacations: isOwner || !!myMember?.can_manage_vacations,
     canManageTasks: canManage || !!myMember?.can_manage_tasks,
+    canPreviewTasks: canManage || !!myMember?.can_manage_tasks || !!myMember?.can_preview_tasks,
   };
 
   const visibleSections = SECTIONS.filter(s => !s.forOwnerOnly || isOwner);
@@ -245,7 +254,7 @@ function TeamWorkspace({
       {activeSection === 'tasks' && (
         <div>
           <SectionHeader icon={ListTodo} title="Tasks" description={SECTION_DESCRIPTIONS.tasks} />
-          <TasksSection team={team} members={members} canManageTasks={perms.canManageTasks} canReviewTasks={perms.canReviewTasks} myMember={myMember} cc={cc} />
+          <TasksSection team={team} members={members} canManageTasks={perms.canManageTasks} canReviewTasks={perms.canReviewTasks} canPreviewTasks={perms.canPreviewTasks} myMember={myMember} cc={cc} />
         </div>
       )}
 
@@ -266,7 +275,7 @@ function TeamWorkspace({
       {activeSection === 'files' && (
         <div>
           <SectionHeader icon={FolderIcon} title="Files" description={SECTION_DESCRIPTIONS.files} />
-          <TeamFilesSection team={team} canManage={canManage} cc={cc} />
+          <TeamFilesSection team={team} canManage={canManage} cc={cc} members={members} />
         </div>
       )}
 
@@ -361,6 +370,8 @@ function DashboardSection({ team, myMember, canManage, members, onChanged }: { t
       )}
 
       {myMember && <MyNotificationPrefsCard team={team} myMember={myMember} onChanged={onChanged} />}
+
+      {myMember && <MyJobsCard team={team} />}
 
       {canManage && (
         <GlassCard className="p-6">
@@ -550,19 +561,95 @@ function MyNotificationPrefsCard({ team, myMember, onChanged }: { team: Team; my
   );
 }
 
+function MyJobsCard({ team }: { team: Team }) {
+  const [jobs, setJobs] = useState<TeamMemberJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [jobPick, setJobPick] = useState<JobTitle | ''>('');
+  const [priorityPick, setPriorityPick] = useState('1');
+  const [saving, setSaving] = useState(false);
+
+  const reload = () => { listMyJobs(team.id).then(j => { setJobs(j); setLoading(false); }); };
+  useEffect(() => { reload(); }, [team.id]);
+
+  const availableJobs = JOB_TITLES.filter(j => !jobs.some(job => job.job_type === j));
+
+  const handleAdd = async () => {
+    if (!jobPick) return;
+    setSaving(true);
+    const { error } = await claimJobPriority(team.id, jobPick, Number(priorityPick) || 1);
+    setSaving(false);
+    if (error) { swal({ icon: 'error', title: 'Could not set job', text: error }); return; }
+    setJobPick(''); setPriorityPick('1');
+    reload();
+  };
+
+  const handleRemove = async (jobType: string) => {
+    const error = await removeMemberJob(team.id, jobType);
+    if (error) { swal({ icon: 'error', title: 'Could not remove job', text: error }); return; }
+    reload();
+  };
+
+  const handleToggleActive = async (jobType: string, active: boolean) => {
+    const error = await setMemberJobActive(team.id, jobType, active);
+    if (error) { swal({ icon: 'error', title: 'Could not update job', text: error }); return; }
+    reload();
+  };
+
+  const handleChangePriority = async (jobType: string, priority: string) => {
+    const { error } = await claimJobPriority(team.id, jobType, Number(priority) || 1);
+    if (error) { swal({ icon: 'error', title: 'Could not update priority', text: error }); return; }
+    reload();
+  };
+
+  if (loading) return <SkeletonCard className="h-40" />;
+
+  return (
+    <GlassCard className="p-6 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold text-ink">My Jobs</h3>
+        <p className="text-[11px] text-ink-faint mt-0.5">Priority 1 always gets first offer for that job; if you're busy or inactive, it cascades to the next priority.</p>
+      </div>
+
+      {jobs.length === 0 && <p className="text-xs text-ink-faint">No jobs set yet — pick at least one below.</p>}
+      {jobs.map(j => (
+        <div key={j.job_type} className="flex items-center gap-2 p-2 rounded-xl border border-hairline">
+          <span className="text-xs font-semibold text-ink flex-1">{j.job_type}</span>
+          <Input type="number" min={1} value={j.priority} onChange={e => handleChangePriority(j.job_type, e.target.value)} className="w-16 text-xs" />
+          <Switch checked={j.active} onChange={v => handleToggleActive(j.job_type, v)} />
+          <button onClick={() => handleRemove(j.job_type)} aria-label={`Remove ${j.job_type}`} className="p-1 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors">
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+
+      {availableJobs.length > 0 && (
+        <div className="flex gap-1.5 pt-1">
+          <select value={jobPick} onChange={e => setJobPick(e.target.value as JobTitle)} className="flex-1 text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+            <option value="">Add a job...</option>
+            {availableJobs.map(j => <option key={j} value={j}>{j}</option>)}
+          </select>
+          <Input type="number" min={1} placeholder="Priority" value={priorityPick} onChange={e => setPriorityPick(e.target.value)} className="w-20 text-xs" />
+          <Button size="sm" onClick={handleAdd} disabled={saving || !jobPick}>Add</Button>
+        </div>
+      )}
+    </GlassCard>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Roster
 // ---------------------------------------------------------------------------
 
-const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks'; label: string }[] = [
+const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'can_preview_tasks'; label: string }[] = [
   { key: 'can_review_tasks', label: 'Review tasks' },
   { key: 'can_manage_bank', label: 'Manage bank' },
   { key: 'can_manage_join_requests', label: 'Manage join requests' },
   { key: 'can_manage_vacations', label: 'Manage vacations' },
   { key: 'can_manage_tasks', label: 'Create/manage tasks' },
+  { key: 'can_preview_tasks', label: 'Preview tasks (view-only)' },
 ];
 
-function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onClose: () => void; onSaved: () => void }) {
+function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMember; teamId: string; onClose: () => void; onSaved: () => void }) {
   const [jobTitle, setJobTitle] = useState<JobTitle | ''>(member.job_title || '');
   const [priority, setPriority] = useState(String(member.priority ?? ''));
   const [balance, setBalance] = useState(String(member.balance ?? 0));
@@ -575,7 +662,45 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
     can_manage_join_requests: member.can_manage_join_requests,
     can_manage_vacations: member.can_manage_vacations,
     can_manage_tasks: member.can_manage_tasks,
+    can_preview_tasks: member.can_preview_tasks,
   });
+  const [memberJobs, setMemberJobs] = useState<TeamMemberJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [jobPick, setJobPick] = useState<JobTitle | ''>('');
+  const [jobPriorityPick, setJobPriorityPick] = useState('1');
+
+  const reloadJobs = () => {
+    if (!member.user_id) { setJobsLoading(false); return; }
+    listTeamMemberJobs(teamId).then(all => {
+      setMemberJobs(all.filter(j => j.user_id === member.user_id));
+      setJobsLoading(false);
+    });
+  };
+  useEffect(() => { reloadJobs(); }, [teamId, member.user_id]);
+
+  const availableJobPicks = JOB_TITLES.filter(j => !memberJobs.some(mj => mj.job_type === j));
+
+  const handleAddJob = async () => {
+    if (!jobPick || !member.user_id) return;
+    const { error } = await adminSetMemberJob(teamId, member.user_id, jobPick, Number(jobPriorityPick) || 1);
+    if (error) { swal({ icon: 'error', title: 'Could not set job', text: error }); return; }
+    setJobPick(''); setJobPriorityPick('1');
+    reloadJobs();
+  };
+
+  const handleRemoveJob = async (jobType: string) => {
+    if (!member.user_id) return;
+    const error = await adminRemoveMemberJob(teamId, member.user_id, jobType);
+    if (error) { swal({ icon: 'error', title: 'Could not remove job', text: error }); return; }
+    reloadJobs();
+  };
+
+  const handleChangeJobPriority = async (jobType: string, priorityValue: string) => {
+    if (!member.user_id) return;
+    const { error } = await adminSetMemberJob(teamId, member.user_id, jobType, Number(priorityValue) || 1);
+    if (error) { swal({ icon: 'error', title: 'Could not update priority', text: error }); return; }
+    reloadJobs();
+  };
   const [saving, setSaving] = useState(false);
 
   const addCustomPerm = () => {
@@ -607,15 +732,11 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
     }>
       <div className="space-y-3">
         <div className="space-y-1">
-          <label className="text-xs text-accent font-semibold">Job Title</label>
+          <label className="text-xs text-accent font-semibold">Primary Job Title (display only)</label>
           <select value={jobTitle} onChange={e => setJobTitle(e.target.value as JobTitle)} className="w-full bg-ink/5 border border-hairline rounded-xl px-3 py-2.5 text-ink text-sm outline-none focus:border-accent">
             <option value="">Unassigned</option>
             {JOB_TITLES.map(j => <option key={j} value={j}>{j}</option>)}
           </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-accent font-semibold">Priority</label>
-          <Input type="number" min={1} value={priority} onChange={e => setPriority(e.target.value)} />
         </div>
         <div className="space-y-1">
           <label className="text-xs text-accent font-semibold">Balance ($)</label>
@@ -624,6 +745,30 @@ function EditMemberModal({ member, onClose, onSaved }: { member: TeamMember; onC
         <div className="space-y-1">
           <label className="text-xs text-accent font-semibold">Display title (e.g. "Bank Officer")</label>
           <Input value={customTitle} onChange={e => setCustomTitle(e.target.value)} placeholder="Optional" />
+        </div>
+
+        <div className="space-y-1.5 pt-2 border-t border-hairline">
+          <label className="text-xs text-accent font-semibold">Jobs &amp; Priorities</label>
+          <p className="text-[10px] text-ink-faint -mt-0.5">Drives task auto-assignment. Priority 1 gets first offer for that job.</p>
+          {!jobsLoading && memberJobs.map(j => (
+            <div key={j.job_type} className="flex items-center gap-2 p-1.5 rounded-lg border border-hairline">
+              <span className="text-xs font-semibold text-ink flex-1">{j.job_type}</span>
+              <Input type="number" min={1} value={j.priority} onChange={e => handleChangeJobPriority(j.job_type, e.target.value)} className="w-16 text-xs" />
+              <button onClick={() => handleRemoveJob(j.job_type)} aria-label={`Remove ${j.job_type}`} className="p-1 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors">
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          {!jobsLoading && availableJobPicks.length > 0 && (
+            <div className="flex gap-1.5">
+              <select value={jobPick} onChange={e => setJobPick(e.target.value as JobTitle)} className="flex-1 text-xs px-2 py-1.5 rounded-lg border border-hairline bg-transparent text-ink">
+                <option value="">Add a job...</option>
+                {availableJobPicks.map(j => <option key={j} value={j}>{j}</option>)}
+              </select>
+              <Input type="number" min={1} placeholder="Priority" value={jobPriorityPick} onChange={e => setJobPriorityPick(e.target.value)} className="w-16 text-xs" />
+              <Button type="button" variant="secondary" size="sm" onClick={handleAddJob}>Add</Button>
+            </div>
+          )}
         </div>
 
         {member.role === 'leader' && (
@@ -738,8 +883,8 @@ function TeamRoster({
   };
 
   return (
-    <GlassCard className="overflow-hidden max-w-2xl">
-      {editing && <EditMemberModal member={editing} onClose={() => setEditing(null)} onSaved={onChanged} />}
+    <GlassCard className="overflow-hidden">
+      {editing && <EditMemberModal member={editing} teamId={team.id} onClose={() => setEditing(null)} onSaved={onChanged} />}
       {reassignFrom && (
         <ReassignTasksModal
           team={team}
@@ -1241,7 +1386,6 @@ function TeamDirectory() {
   const [teams, setTeams] = useState<PublicTeamCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [joinTarget, setJoinTarget] = useState<PublicTeamCard | { id: string; name: string } | null>(null);
-  const [teamIdInput, setTeamIdInput] = useState('');
   const [view, setView] = useState<'directory' | 'leaderboard' | 'season'>('directory');
   const initialPrefs = useRef(loadDirectoryPrefs()).current;
   const [category, setCategory] = useState<TeamCategory>(initialPrefs.category);
@@ -1255,11 +1399,6 @@ function TeamDirectory() {
   useEffect(() => {
     localStorage.setItem(DIRECTORY_PREFS_KEY, JSON.stringify({ category, search, tag: tagFilter }));
   }, [category, search, tagFilter]);
-
-  const handleJoinById = () => {
-    if (!teamIdInput.trim()) return;
-    setJoinTarget({ id: teamIdInput.trim(), name: 'this team' });
-  };
 
   if (loading) {
     return (
@@ -1286,14 +1425,6 @@ function TeamDirectory() {
   return (
     <div className="space-y-4">
       {joinTarget && <RequestJoinModal target={joinTarget} onClose={() => setJoinTarget(null)} />}
-
-      <GlassCard className="p-6 space-y-2 max-w-md mx-auto text-center">
-        <h3 className="text-sm font-semibold text-ink flex items-center justify-center gap-2"><Hash size={15} className="text-accent" /> Join by Team ID</h3>
-        <div className="flex gap-2">
-          <Input placeholder="Paste a team ID" value={teamIdInput} onChange={e => setTeamIdInput(e.target.value)} className="flex-1" />
-          <Button onClick={handleJoinById}>Request</Button>
-        </div>
-      </GlassCard>
 
       <div className="flex justify-center gap-1.5">
         <button type="button" onClick={() => setView('directory')} className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${view === 'directory' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-ink/10'}`}>Directory</button>
@@ -1580,7 +1711,7 @@ function RateSubmissionControl({ task, onChanged }: { task: Task; onChanged: () 
   );
 }
 
-function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember, cc }: { team: Team; members: TeamMember[]; canManageTasks: boolean; canReviewTasks: boolean; myMember: TeamMember | null; cc: CloudClient }) {
+function TasksSection({ team, members, canManageTasks, canReviewTasks, canPreviewTasks, myMember, cc }: { team: Team; members: TeamMember[]; canManageTasks: boolean; canReviewTasks: boolean; canPreviewTasks: boolean; myMember: TeamMember | null; cc: CloudClient }) {
   const [loading, setLoading] = useState(true);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [title, setTitle] = useState('');
@@ -1654,11 +1785,11 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
     await expireStaleOffers(team.id);
     await notifyUpcomingTaskDeadlines(team.id);
     if (canManageTasks) await spawnRecurringTasks(team.id);
-    setTasks(canManageTasks ? await listTeamTasks(team.id) : await listMyTasks(team.id));
+    setTasks((canManageTasks || canPreviewTasks) ? await listTeamTasks(team.id) : await listMyTasks(team.id));
     setLoading(false);
   };
 
-  useEffect(() => { refresh(); }, [team.id, canManageTasks]);
+  useEffect(() => { refresh(); }, [team.id, canManageTasks, canPreviewTasks]);
 
   const toggleJobType = (job: string) => {
     setJobTypes(prev => prev.includes(job) ? prev.filter(j => j !== job) : [...prev, job]);
@@ -1724,21 +1855,21 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
 
   if (loading) {
     return (
-      <GlassCard className="overflow-hidden max-w-2xl divide-y divide-hairline">
+      <GlassCard className="overflow-hidden divide-y divide-hairline">
         {Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)}
       </GlassCard>
     );
   }
 
   return (
-    <GlassCard className="overflow-hidden max-w-2xl">
+    <GlassCard className="overflow-hidden">
       <div className="p-6 border-b border-hairline bg-ink/[0.02] flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-accent-soft border border-accent/20 flex items-center justify-center shrink-0">
           <ListTodo size={18} className="text-accent" />
         </div>
         <div>
-          <h3 className="text-base font-display font-semibold text-ink">{canManageTasks ? 'Tasks' : 'My Tasks'}</h3>
-          <p className="text-xs text-ink-muted mt-0.5">{canManageTasks ? 'Create and route work across the team' : 'Offered, in progress, and awaiting review'}</p>
+          <h3 className="text-base font-display font-semibold text-ink">{canManageTasks ? 'Tasks' : canPreviewTasks ? 'Team Tasks (Preview)' : 'My Tasks'}</h3>
+          <p className="text-xs text-ink-muted mt-0.5">{canManageTasks ? 'Create and route work across the team' : canPreviewTasks ? 'View-only — everyone\'s tasks across the team' : 'Offered, in progress, and awaiting review'}</p>
         </div>
       </div>
 
@@ -1863,8 +1994,8 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
           </div>
         </div>
 
-        <div className="space-y-2">
-          {filteredTasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3">{canManageTasks ? 'No tasks match.' : 'No tasks assigned to you.'}</p>}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+          {filteredTasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3 lg:col-span-2">{canManageTasks ? 'No tasks match.' : 'No tasks assigned to you.'}</p>}
           {filteredTasks.map(t => {
             const isMine = myMember && t.assignee_id === myMember.user_id;
             return (
@@ -1877,10 +2008,24 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, myMember,
                     </div>
                     {t.description && <p className="text-xs text-ink-muted mt-0.5 whitespace-pre-line">{t.description}</p>}
                     <p className="text-[10px] text-ink-faint mt-1 flex flex-wrap items-center gap-x-2">
-                      {canManageTasks && <span>{t.assignee?.name || 'Unassigned'}</span>}
+                      {(canManageTasks || canPreviewTasks) && <span>{t.assignee?.name || 'Unassigned'}</span>}
                       {t.reward != null && <span>${t.reward}</span>}
-                      {t.job_types?.length > 0 && <span>{t.job_types.join(', ')}</span>}
+                      {t.job_types?.length === 1 && <span>{t.job_types[0]}</span>}
                     </p>
+                    {t.job_types?.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                        {t.job_types.map((job, i) => (
+                          <span key={job} className="flex items-center gap-1">
+                            <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${
+                              i < t.stage_index ? 'bg-success/15 text-success'
+                              : i === t.stage_index ? 'bg-accent text-white'
+                              : 'bg-ink/5 text-ink-faint'
+                            }`}>{job}</span>
+                            {i < t.job_types.length - 1 && <span className="text-ink-faint text-[9px]">→</span>}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {t.tags?.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1">
                         {t.tags.map(tag => <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded-full bg-ink/5 text-ink-faint">{tag}</span>)}
@@ -2126,8 +2271,8 @@ function BankTab({ team, members, myMember, canManageBank: canManage }: { team: 
 
   const run = async (fn: () => Promise<string | null>, successTitle: string) => {
     if (!amount || Number(amount) <= 0) { swal({ icon: 'error', title: 'Enter a valid amount' }); return; }
-    const ok = await confirmWithCaptcha(`Confirm: ${successTitle.replace(/ (sent|applied|requested)$/, '')} of $${amount}`);
-    if (!ok) { swal({ icon: 'error', title: 'Verification failed', text: 'The answer was incorrect — action cancelled.' }); return; }
+    const ok = await confirmAction(`Confirm: ${successTitle.replace(/ (sent|applied|requested)$/, '')} of $${amount}`);
+    if (!ok) return;
     setBusy(true);
     const error = await fn();
     setBusy(false);
@@ -2138,8 +2283,8 @@ function BankTab({ team, members, myMember, canManageBank: canManage }: { team: 
   };
 
   const handleWithdrawalDecision = async (id: string, approve: boolean) => {
-    const ok = await confirmWithCaptcha(`Confirm: ${approve ? 'approve' : 'reject'} this withdrawal`);
-    if (!ok) { swal({ icon: 'error', title: 'Verification failed', text: 'The answer was incorrect — action cancelled.' }); return; }
+    const ok = await confirmAction(`Confirm: ${approve ? 'approve' : 'reject'} this withdrawal`);
+    if (!ok) return;
     const error = await decideWithdrawal(id, approve);
     if (error) { swal({ icon: 'error', title: 'Action failed', text: error }); return; }
     refresh();
@@ -2543,30 +2688,84 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
 // still contribute files via task submission (Tasks section), not here.
 // ---------------------------------------------------------------------------
 
-function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: boolean; cc: CloudClient }) {
+// Shared so both the Team Files browser and Chat (routing attachments into
+// the secret .chat-uploads folder) can reach the same folder without either
+// duplicating folder-lookup/creation logic or depending on the other's
+// component state.
+async function ensureChatUploadsFolderId(cc: CloudClient, team: Team): Promise<number | null> {
+  if (!team.telegram_channel_id) return null;
+  const { folders } = await cc.fetchChannelFiles(team.telegram_channel_id);
+  const existing = folders.find(f => f.parentId === null && f.name === '.chat-uploads');
+  if (existing) return existing.id;
+  await cc.createChannelFolder(team.telegram_channel_id, '.chat-uploads', null, []);
+  const { folders: refreshed } = await cc.fetchChannelFiles(team.telegram_channel_id);
+  const created = refreshed.find(f => f.parentId === null && f.name === '.chat-uploads');
+  if (created) await setCloudFolderSecret(team.id, created.id, true);
+  return created?.id ?? null;
+}
+
+async function ensurePrivateFolderId(cc: CloudClient, team: Team, userId: string): Promise<number | null> {
+  if (!team.telegram_channel_id) return null;
+  const { folders } = await cc.fetchChannelFiles(team.telegram_channel_id);
+  const name = `Private: ${userId}`;
+  const existing = folders.find(f => f.parentId === null && f.name === name);
+  if (existing) return existing.id;
+  await cc.createChannelFolder(team.telegram_channel_id, name, null, [userId]);
+  const { folders: refreshed } = await cc.fetchChannelFiles(team.telegram_channel_id);
+  return refreshed.find(f => f.parentId === null && f.name === name)?.id ?? null;
+}
+
+function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canManage: boolean; cc: CloudClient; members: TeamMember[] }) {
   const [files, setFiles] = useState<CloudFile[]>([]);
   const [folders, setFolders] = useState<CloudFolder[]>([]);
+  const [fileMeta, setFileMeta] = useState<TeamCloudFileMeta[]>([]);
+  const [folderMeta, setFolderMeta] = useState<TeamCloudFolderMeta[]>([]);
+  const [comments, setComments] = useState<CloudFileComment[]>([]);
+  const [commentDrafts, setCommentDrafts] = useState<Record<number, string>>({});
   const [currentFolderId, setCurrentFolderId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [seeding, setSeeding] = useState(false);
-  const [commentsForFile, setCommentsForFile] = useState<CloudFile | null>(null);
-  const [comments, setComments] = useState<CloudFileComment[]>([]);
-  const [commentBody, setCommentBody] = useState('');
+  const [coverBusyId, setCoverBusyId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const coverTargetRef = useRef<CloudFile | null>(null);
   const { session } = useTeamAuth();
   const myUserId = session?.user.id;
 
   const refresh = async () => {
     if (!team.telegram_channel_id) { setLoading(false); return; }
     setLoading(true);
-    const { files: f, folders: fo } = await cc.fetchChannelFiles(team.telegram_channel_id);
-    setFiles(f); setFolders(fo);
+    const [{ files: f, folders: fo }, fm, fom, allComments] = await Promise.all([
+      cc.fetchChannelFiles(team.telegram_channel_id),
+      listCloudFileMeta(team.id),
+      listCloudFolderMeta(team.id),
+      cc.listAllComments(team.telegram_channel_id),
+    ]);
+    setFiles(f); setFolders(fo); setFileMeta(fm); setFolderMeta(fom); setComments(allComments);
     setLoading(false);
     return fo;
   };
 
-  useEffect(() => { refresh(); }, [team.telegram_channel_id]);
+  useEffect(() => { refresh(); }, [team.telegram_channel_id, team.id]);
+
+  const metaByMsgId = new Map(fileMeta.map(m => [m.channel_msg_id, m]));
+  const folderMetaByMsgId = new Map(folderMeta.map(m => [m.folder_msg_id, m]));
+
+  const uploaderName = (f: CloudFile): string => {
+    const meta = metaByMsgId.get(f.id);
+    if (meta?.uploader_user_id) {
+      const member = members.find(m => m.user_id === meta.uploader_user_id);
+      if (member?.profile?.name) return member.profile.name;
+    }
+    return f.sender;
+  };
+
+  const canSeeFile = (f: CloudFile): boolean => {
+    const meta = metaByMsgId.get(f.id);
+    if (!meta || meta.visibility !== 'private') return true;
+    return canManage || meta.owner_user_id === myUserId;
+  };
 
   // One-time seed of the fixed Tasks > Finished/Unfinished folder structure.
   useEffect(() => {
@@ -2606,34 +2805,69 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
     refresh();
   };
 
-  const handleEditFolderMembers = async (folder: CloudFolder, members: string[]) => {
-    await cc.updateChannelFolderMembers(team.telegram_channel_id, folder, members);
+  const handleEditFolderMembers = async (folder: CloudFolder, memberIds: string[]) => {
+    await cc.updateChannelFolderMembers(team.telegram_channel_id, folder, memberIds);
     refresh();
   };
 
   const handleUpload = async (file: File) => {
     if (!canUploadHere) { swal({ icon: 'error', title: 'Not allowed', text: 'You are not a member of this folder.' }); return; }
     setUploading(true);
-    await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId);
+    const msgId = await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId);
+    if (msgId && myUserId) {
+      const isPrivate = currentFolder?.name?.startsWith('Private: ');
+      await upsertCloudFileMeta({
+        teamId: team.id, channelMsgId: msgId, folderMsgId: currentFolderId,
+        uploaderUserId: myUserId,
+        visibility: isPrivate ? 'private' : 'team',
+        ownerUserId: isPrivate ? myUserId : null,
+      });
+    }
     setUploading(false);
     swalToast({ icon: 'success', title: 'File uploaded' });
     refresh();
+  };
+
+  const handleOpenMyPrivateFolder = async () => {
+    if (!myUserId) return;
+    const id = await ensurePrivateFolderId(cc, team, myUserId);
+    if (id != null) { await refresh(); setCurrentFolderId(id); }
   };
 
   const handleDownload = async (file: CloudFile) => {
     await cc.downloadChannelFile(file);
   };
 
-  const openComments = async (file: CloudFile) => {
-    setCommentsForFile(file);
-    setComments(await cc.listFileComments(team.telegram_channel_id, file.id));
+  const handleSetVisibility = async (file: CloudFile, visibility: CloudFileVisibility) => {
+    const ownerUserId = visibility === 'private' ? (metaByMsgId.get(file.id)?.owner_user_id ?? myUserId ?? null) : null;
+    const error = await setCloudFileVisibility(team.id, file.id, visibility, ownerUserId);
+    if (error) { swal({ icon: 'error', title: 'Could not update visibility', text: error }); return; }
+    refresh();
   };
 
-  const handlePostComment = async () => {
-    if (!commentBody.trim() || !commentsForFile) return;
-    await cc.postFileComment(team.telegram_channel_id, commentsForFile.id, commentBody.trim());
-    setCommentBody('');
-    setComments(await cc.listFileComments(team.telegram_channel_id, commentsForFile.id));
+  const handleCoverPick = (file: CloudFile) => {
+    coverTargetRef.current = file;
+    coverInputRef.current?.click();
+  };
+
+  const handleCoverFile = (f: File) => {
+    const target = coverTargetRef.current;
+    if (!target) return;
+    readImageFile(f, async (dataUrl) => {
+      setCoverBusyId(target.id);
+      const error = await uploadCloudFileCover(team.id, target.id, dataUrl);
+      setCoverBusyId(null);
+      if (error) { swal({ icon: 'error', title: 'Could not set cover', text: error }); return; }
+      refresh();
+    });
+  };
+
+  const handlePostComment = async (file: CloudFile) => {
+    const body = (commentDrafts[file.id] || '').trim();
+    if (!body) return;
+    await cc.postFileComment(team.telegram_channel_id, file.id, body);
+    setCommentDrafts(prev => ({ ...prev, [file.id]: '' }));
+    setComments(await cc.listAllComments(team.telegram_channel_id));
   };
 
   if (!team.telegram_channel_id) {
@@ -2647,22 +2881,24 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
 
   if (loading) {
     return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {Array.from({ length: 8 }).map((_, i) => <SkeletonCard key={i} className="aspect-square" />)}
       </div>
     );
   }
 
-  const filesInFolder = files.filter(f => f.folderId === currentFolderId);
+  const visibleFolders = folders.filter(f => canManage || !folderMetaByMsgId.get(f.id)?.is_secret);
+  const filesInFolder = files.filter(f => f.folderId === currentFolderId && canSeeFile(f));
   const inFinished = currentFolder?.name === 'Finished';
 
   return (
     <div className="space-y-4">
       <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} />
+      <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCoverFile(f); e.target.value = ''; }} />
 
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <CloudFolders
-          folders={folders}
+          folders={visibleFolders}
           currentFolderId={currentFolderId}
           onNavigate={setCurrentFolderId}
           onCreateFolder={canManage ? handleCreateFolder : () => {}}
@@ -2670,6 +2906,9 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
           fileCountFor={(folderId) => files.filter(f => f.folderId === folderId).length}
           onEditMembers={canManage ? handleEditFolderMembers : undefined}
         />
+        <Button size="sm" variant="secondary" onClick={handleOpenMyPrivateFolder}>
+          <Lock size={12} /> My Private Folder
+        </Button>
       </div>
 
       {canUploadHere ? (
@@ -2680,30 +2919,86 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
         <p className="text-[11px] text-ink-faint">You're not a member of this folder — ask an admin to add you before uploading here.</p>
       )}
 
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filesInFolder.length === 0 && (
           <p className="text-xs text-ink-faint text-center py-6 sm:col-span-2 lg:col-span-3">No files in this folder yet.</p>
         )}
-        {filesInFolder.map(f => (
-          <GlassCard key={f.id} className="p-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-ink truncate">{f.name}</p>
-                <p className="text-[10px] text-ink-faint">
-                  {cc.formatSize(f.sizeBytes)} · {inFinished ? <span className="font-semibold text-accent">{f.sender}</span> : f.sender}
-                </p>
+        {filesInFolder.map(f => {
+          const meta = metaByMsgId.get(f.id);
+          const visibility: CloudFileVisibility = meta?.visibility ?? 'team';
+          const fileComments = comments.filter(c => c.fileId === f.id);
+          const displayName = meta?.display_name || f.name;
+          return (
+            <GlassCard key={f.id} className="overflow-hidden flex flex-col">
+              {meta?.cover_image_path ? (
+                <div className="w-full aspect-[16/9] bg-ink/5 flex items-center justify-center overflow-hidden">
+                  <img src={`${meta.cover_image_path}?v=${meta.cover_version}`} alt="" className="w-full h-full object-contain" />
+                </div>
+              ) : null}
+              <div className="p-3 space-y-2 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-ink truncate">{displayName}</p>
+                    <p className="text-[10px] text-ink-faint">
+                      {cc.formatSize(f.sizeBytes)} · {inFinished ? <span className="font-semibold text-accent">{uploaderName(f)}</span> : uploaderName(f)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {canManage && (
+                      <button onClick={() => handleCoverPick(f)} disabled={coverBusyId === f.id} aria-label={`Set cover for ${displayName}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                        <ImagePlus size={14} />
+                      </button>
+                    )}
+                    <button onClick={() => handleDownload(f)} aria-label={`Download ${displayName}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                      <Download size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {canManage && (
+                  <div className="flex items-center gap-1.5">
+                    {(['team', 'public', 'private'] as CloudFileVisibility[]).map(v => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => handleSetVisibility(f, v)}
+                        className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full border capitalize flex items-center gap-1 transition-colors ${visibility === v ? 'bg-accent text-white border-accent' : 'border-hairline text-ink-muted hover:border-accent/40'}`}
+                      >
+                        {v === 'private' ? <Lock size={9} /> : <Globe size={9} />} {v}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!canManage && visibility === 'private' && (
+                  <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-ink/5 text-ink-faint inline-flex items-center gap-1"><Lock size={9} /> Private</span>
+                )}
+
+                <div className="pt-2 border-t border-hairline space-y-1.5">
+                  <p className="text-[9px] font-semibold text-accent uppercase tracking-wide">Comments</p>
+                  <div className="max-h-32 overflow-y-auto space-y-1">
+                    {fileComments.length === 0 && <p className="text-[10px] text-ink-faint">No comments yet.</p>}
+                    {fileComments.map(c => (
+                      <div key={c.id} className="p-1.5 rounded-lg bg-ink/[0.03]">
+                        <p className="text-[9px] font-semibold text-accent">{c.author}</p>
+                        <p className="text-[11px] text-ink whitespace-pre-line">{c.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-1.5">
+                    <Input
+                      placeholder="Add a comment..."
+                      value={commentDrafts[f.id] || ''}
+                      onChange={e => setCommentDrafts(prev => ({ ...prev, [f.id]: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && handlePostComment(f)}
+                      className="flex-1 text-xs"
+                    />
+                    <Button size="sm" variant="secondary" onClick={() => handlePostComment(f)}>Post</Button>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => openComments(f)} aria-label={`Comments on ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
-                  <MessageCircle size={14} />
-                </button>
-                <button onClick={() => handleDownload(f)} aria-label={`Download ${f.name}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
-                  <Download size={14} />
-                </button>
-              </div>
-            </div>
-          </GlassCard>
-        ))}
+            </GlassCard>
+          );
+        })}
       </div>
 
       <Modal open={cc.isDownloading} onClose={() => {}} dismissible={false} title="Downloading" size="sm">
@@ -2718,26 +3013,6 @@ function TeamFilesSection({ team, canManage, cc }: { team: Team; canManage: bool
           </div>
         </div>
       </Modal>
-
-      {commentsForFile && (
-        <Modal open onClose={() => setCommentsForFile(null)} title={`Comments — ${commentsForFile.name}`} size="sm">
-          <div className="space-y-3">
-            <div className="max-h-64 overflow-y-auto space-y-2">
-              {comments.length === 0 && <p className="text-xs text-ink-faint text-center py-4">No comments yet.</p>}
-              {comments.map(c => (
-                <div key={c.id} className="p-2 rounded-lg bg-ink/[0.03]">
-                  <p className="text-[10px] font-semibold text-accent">{c.author}</p>
-                  <p className="text-xs text-ink whitespace-pre-line">{c.body}</p>
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <Input placeholder="Add a comment..." value={commentBody} onChange={e => setCommentBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePostComment()} className="flex-1" />
-              <Button size="sm" onClick={handlePostComment}>Post</Button>
-            </div>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
@@ -2889,11 +3164,14 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
 
   const reload = () => { listTeamMessages(team.id, search ? { search } : undefined).then(setMessages); };
 
+  const membersRef = useRef(members);
+  useEffect(() => { membersRef.current = members; }, [members]);
+
   useEffect(() => {
     let mounted = true;
     reload();
     listReactions(team.id, 'team_messages').then(r => { if (mounted) setReactions(r); });
-    const unsubMsgs = subscribeToTeamMessages(team.id, msg => setMessages(prev => upsertById(prev, hydrateSender(msg, members))));
+    const unsubMsgs = subscribeToTeamMessages(team.id, msg => setMessages(prev => upsertById(prev, hydrateSender(msg, membersRef.current))));
     const unsubReactions = subscribeToReactions(team.id, () => listReactions(team.id, 'team_messages').then(setReactions));
     typingRef.current = subscribeToTyping(team.id, (userId, name) => {
       if (userId === myUserId) return;
@@ -2904,7 +3182,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       }, 3000);
     });
     return () => { mounted = false; unsubMsgs(); unsubReactions(); typingRef.current?.unsubscribe(); };
-  }, [team.id, members, search]);
+  }, [team.id, search]);
 
   useLayoutEffect(() => {
     if (nearBottomRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
@@ -2950,7 +3228,11 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       return;
     }
     setAttaching(true);
-    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    const folderId = await ensureChatUploadsFolderId(cc, team);
+    const result = await cc.uploadChatAttachment(team.telegram_channel_id, file, folderId);
+    if (result && myUserId) {
+      await upsertCloudFileMeta({ teamId: team.id, channelMsgId: result.msgId, folderMsgId: folderId, uploaderUserId: myUserId, isChatUpload: true });
+    }
     setAttaching(false);
     if (result) {
       await sendTeamMessage(team.id, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
@@ -2970,7 +3252,6 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     nearBottomRef.current = true;
     await sendTeamMessage(team.id, text, { replyToId: replyTo?.id });
     setReplyTo(null);
-    bottomRef.current?.scrollIntoView({ block: 'end' });
 
     const mentioned = parseMentions(text, members);
     for (const userId of mentioned) {
@@ -3204,7 +3485,11 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
       return;
     }
     setAttaching(true);
-    const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
+    const folderId = await ensureChatUploadsFolderId(cc, team);
+    const result = await cc.uploadChatAttachment(team.telegram_channel_id, file, folderId);
+    if (result && myUserId) {
+      await upsertCloudFileMeta({ teamId: team.id, channelMsgId: result.msgId, folderMsgId: folderId, uploaderUserId: myUserId, isChatUpload: true, visibility: 'private', ownerUserId: myUserId });
+    }
     setAttaching(false);
     if (result) {
       await sendDirectMessage(team.id, partnerId, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
@@ -3224,7 +3509,6 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     nearBottomRef.current = true;
     await sendDirectMessage(team.id, partnerId, text, { replyToId: replyTo?.id });
     setReplyTo(null);
-    bottomRef.current?.scrollIntoView({ block: 'end' });
     notify(partnerId, `New message from ${session?.user.email || 'a teammate'}`, text.slice(0, 80));
   };
 

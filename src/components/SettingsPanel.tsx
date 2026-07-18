@@ -9,6 +9,7 @@ import { readAvatarFile, uploadImageToStorage } from '../lib/image';
 import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
 import { requestNotificationPermission } from '../lib/notifications';
 import { Bell } from 'lucide-react';
+import { AdminAnnouncementsPanel } from './AdminAnnouncementsPanel';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -34,7 +35,7 @@ export function SettingsPanel({
   onDownloadAllBackup, isDownloadingAllBackup, onBackupAllToCloud, isBackingUpAll,
 }: SettingsPanelProps) {
   const { mode, setMode } = useTheme();
-  const { session, signOut, updateProfile } = useTeamAuth();
+  const { session, signOut, updateProfile, isAdmin } = useTeamAuth();
   const profile = profileFromSession(session);
   const [name, setName] = useState(profile.name);
   const [avatar, setAvatar] = useState(profile.avatar);
@@ -199,6 +200,8 @@ export function SettingsPanel({
           </div>
         </div>
       </GlassCard>
+
+      {isAdmin && <AdminAnnouncementsPanel />}
 
       <GlassCard className="p-6 space-y-3">
         <h3 className="text-base font-semibold text-ink font-display">Legal</h3>

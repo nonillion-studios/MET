@@ -600,6 +600,57 @@ export function useCloudClient() {
     await client.sendMessage(channelId, { message: JSON.stringify({ type: 'file_comment', fileId, author: meName || 'Team Member', body, date: new Date().toISOString() }) });
   };
 
+  // Single-pass variant of listFileComments — fetches the channel's messages
+  // once and groups every comment by fileId, instead of one Telegram fetch
+  // per file card (what per-card comment loading would otherwise cost).
+  const listAllComments = async (channelId: string): Promise<CloudFileComment[]> => {
+    if (!client || !channelId) return [];
+    const msgs = await client.getMessages(channelId, { limit: 300 });
+    const comments: CloudFileComment[] = [];
+    msgs.forEach(m => {
+      if (!m.message) return;
+      try {
+        const data = JSON.parse(m.message);
+        if (data?.type === 'file_comment') {
+          comments.push({ id: m.id, fileId: data.fileId, author: data.author || 'Team Member', body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
+        }
+      } catch { /* not a comment marker */ }
+    });
+    return comments.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  };
+
+  // Chat attachments need the same folder/metadata handling as the Team
+  // Files browser (uploadChannelFile) so they land filed under a folder
+  // (the caller passes the secret .chat-uploads folder id) rather than
+  // uploadTaskAttachment's bare, unfoldered caption — while still returning
+  // uploadTaskAttachment's { msgId, name, size } shape that chat messages
+  // store as their attachment reference.
+  const uploadChatAttachment = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<{ msgId: number; name: string; size: number } | null> => {
+    if (!client || !channelId) {
+      swal({ title: 'Error', text: 'Connect Telegram and make sure the team has a channel set first', icon: 'error' });
+      return null;
+    }
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const fileBuffer: any = Buffer.from(arrayBuffer);
+      fileBuffer.name = file.name;
+      const metadata = { type: 'team_file', name: file.name, description: '', tags: [], sender: meName || 'Team Member', folderId, sizeBytes: file.size, date: new Date().toISOString() };
+      const msg = await client.sendFile(channelId, {
+        file: fileBuffer,
+        caption: JSON.stringify(metadata),
+        forceDocument: true,
+        fileSize: file.size,
+        progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
+      });
+      if (!msg || !msg.id) return null;
+      return { msgId: msg.id, name: file.name, size: file.size };
+    } catch (err: any) {
+      console.error(err);
+      swal({ title: 'Upload Error', text: err.message || 'An error occurred during upload', icon: 'error' });
+      return null;
+    }
+  };
+
   const downloadChannelFile = async (file: CloudFile): Promise<void> => {
     setIsDownloading(true);
     setDownloadProgress(0);
@@ -643,26 +694,28 @@ export function useCloudClient() {
     await client.editMessage(channelId, { message: folder.id, text: JSON.stringify({ type: 'folder', name: folder.name, parentId: folder.parentId, members }) });
   };
 
-  const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<void> => {
+  const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<number | null> => {
     if (!client || !channelId) {
       swal({ title: 'Error', text: 'Connect Telegram and make sure the team has a channel set first', icon: 'error' });
-      return;
+      return null;
     }
     try {
       const arrayBuffer = await file.arrayBuffer();
       const fileBuffer: any = Buffer.from(arrayBuffer);
       fileBuffer.name = file.name;
       const metadata = { type: 'team_file', name: file.name, description: '', tags: [], sender: meName || 'Team Member', folderId, sizeBytes: file.size, date: new Date().toISOString() };
-      await client.sendFile(channelId, {
+      const msg = await client.sendFile(channelId, {
         file: fileBuffer,
         caption: JSON.stringify(metadata),
         forceDocument: true,
         fileSize: file.size,
         progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
       });
+      return msg?.id ?? null;
     } catch (err: any) {
       console.error(err);
       swal({ title: 'Upload Error', text: err.message || 'An error occurred during upload', icon: 'error' });
+      return null;
     }
   };
 
@@ -730,7 +783,9 @@ export function useCloudClient() {
     uploadChannelFile,
     downloadChannelFile,
     listFileComments,
+    listAllComments,
     postFileComment,
+    uploadChatAttachment,
 
     formatSize,
   };

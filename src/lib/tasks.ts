@@ -29,7 +29,22 @@ export interface Task {
   recurrence: 'none' | 'daily' | 'weekly' | 'monthly';
   recurrence_parent_id: string | null;
   offer_expires_at: string | null;
+  /** Index into job_types — which pipeline stage currently holds the task. job_types.length === 1 behaves exactly as a single-stage task always has. */
+  stage_index: number;
   assignee?: { name: string; avatar: string; email: string } | null;
+}
+
+export interface TaskStageHistoryEntry {
+  id: string;
+  task_id: string;
+  job_type: string;
+  assignee_id: string | null;
+  completed_at: string;
+}
+
+export async function listTaskStageHistory(taskId: string): Promise<TaskStageHistoryEntry[]> {
+  const { data } = await supabase.from('task_stage_history').select('*').eq('task_id', taskId).order('completed_at', { ascending: true });
+  return (data as TaskStageHistoryEntry[]) ?? [];
 }
 
 async function rpc(fn: string, args: Record<string, unknown>): Promise<string | null> {
