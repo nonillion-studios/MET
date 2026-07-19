@@ -85,9 +85,14 @@ body.show-safe #page .safe-ov{display:block}
 #paint{position:absolute;inset:0;width:100%;height:100%;z-index:6;pointer-events:none;border-radius:4px}
 body.painting #paint{pointer-events:auto}
 .bubble{
+  /* z-index:8, not the old 4 — this is the demo's actual visible manga text and it was sitting
+     below #paint(6)/#penSvg/#origOverlay(7) in EVERY mode, not just Show Original, which is the
+     real "text behind the image" bug: the earlier fix only touched #origOverlay/#textLayer and
+     never looked at .bubble, the element that actually holds data-jp/data-ar text. Matched to
+     #textLayer's own tier (8) so bubble text and .txt-item text layers are peers. */
   position:absolute;background:#fff;border:2px solid #16151a;border-radius:50%;
   display:flex;align-items:center;justify-content:center;text-align:center;
-  font-weight:600;color:#1a1922;line-height:1.35;cursor:pointer;transition:box-shadow .15s;z-index:4;
+  font-weight:600;color:#1a1922;line-height:1.35;cursor:pointer;transition:box-shadow .15s;z-index:8;
 }
 body.painting .bubble{pointer-events:none}
 .bubble:hover{box-shadow:0 0 0 3px rgba(124,106,245,.35)}
@@ -101,13 +106,36 @@ body.ws-typeset .ai-box,body.ws-review .ai-box{display:none}
   font-size:9px;font-weight:700;padding:3px 7px;border-radius:6px;letter-spacing:.4px;white-space:nowrap;
   box-shadow:0 4px 10px rgba(106,84,240,.45)}
 .sfx{position:absolute;font-family:'Arial Black',sans-serif;font-weight:900;color:#16151a;
-  transform:rotate(-8deg);-webkit-text-stroke:1px #16151a;letter-spacing:-1px}
+  transform:rotate(-8deg);-webkit-text-stroke:1px #16151a;letter-spacing:-1px;z-index:8}
 
-/* brush cursor */
+/* brush cursor — outer ring = actual brush size (matches the old behavior exactly); a nested
+   .hr inner ring marks where hardness falloff begins (100% hardness = ring flush with the outer
+   edge, low hardness = ring shrinks toward the center, visually showing the soft feathered band —
+   sized/positioned from JS since it's driven by the live #obHard value, not a fixed CSS shape). */
 #brushCursor{position:fixed;z-index:70;border:1.5px solid rgba(255,255,255,.9);border-radius:50%;
   pointer-events:none;display:none;transform:translate(-50%,-50%);
   box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 0 0 1px rgba(0,0,0,.4)}
+#brushCursor .hr{position:absolute;left:50%;top:50%;border:1px dashed rgba(255,255,255,.55);
+  border-radius:50%;transform:translate(-50%,-50%);pointer-events:none}
 body.painting #brushCursor{display:block}
+/* eraser gets its own color so it's never confused with a normal brush stamp at a glance */
+body.erasing #brushCursor{border-color:rgba(255,92,102,.95);
+  box-shadow:0 0 0 1px rgba(0,0,0,.5),inset 0 0 0 1px rgba(0,0,0,.4),0 0 7px rgba(255,92,102,.55)}
+body.erasing #brushCursor .hr{border-color:rgba(255,92,102,.55)}
+
+/* eyedropper: a ring that fills live with the color under the cursor as it moves — the sample
+   itself only actually applies on click, this is a preview so you can see it before committing. */
+#eyeRing{position:fixed;z-index:70;width:22px;height:22px;border-radius:50%;pointer-events:none;
+  display:none;transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.9);
+  box-shadow:0 0 0 1px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.5)}
+body.eyedrop #eyeRing{display:block}
+body.eyedrop #brushCursor{display:none!important}
+
+/* Hand/Zoom: real CSS cursors reflecting tool state, not just default. */
+body.tool-hand #page,body.tool-hand #viewport{cursor:grab}
+body.panning #page,body.panning #viewport{cursor:grabbing!important}
+body.tool-zoom #page{cursor:zoom-in}
+body.tool-zoom.alt-zoom-out #page{cursor:zoom-out}
 
 .ruler{position:absolute;background:rgba(12,12,18,.7);backdrop-filter:blur(10px);z-index:5;
   color:var(--txt3);font-family:var(--mono);font-size:8px;overflow:hidden;display:none}
@@ -223,7 +251,7 @@ kbd{font-family:var(--mono);font-size:9.5px;background:rgba(255,255,255,.07);
 /* ============================================================
    COLOR PANEL — wheel like Photoshop
    ============================================================ */
-#colorPanel{position:fixed;left:60px;bottom:56px;z-index:56;width:214px;padding:12px;
+#colorPanel{position:fixed;right:14px;top:var(--panels-top);z-index:56;width:214px;padding:12px;
   border-radius:16px;display:none;flex-direction:column;gap:10px}
 #colorPanel.open{display:flex;animation:pop .2s cubic-bezier(.2,.9,.3,1.15)}
 .wheel-wrap{position:relative;width:176px;height:176px;margin:0 auto}
@@ -298,7 +326,11 @@ kbd{font-family:var(--mono);font-size:9.5px;background:rgba(255,255,255,.07);
 /* ============================================================
    INSPECTOR
    ============================================================ */
-#inspector{position:fixed;right:10px;top:var(--panels-top);bottom:56px;width:264px;z-index:40;
+/* anchored bottom-right (not the old full-height right edge) so it sits under the color panel,
+   which now takes the top-right corner instead. Layers lives inside this tabbed panel along with
+   Properties/Translate/History — carving Layers out into its own standalone panel would be a much
+   bigger restructure than "move layers to the bottom right" asked for. */
+#inspector{position:fixed;right:10px;bottom:56px;max-height:56vh;width:264px;z-index:40;
   display:flex;flex-direction:column;overflow:hidden;
   transition:transform .28s cubic-bezier(.2,.8,.2,1),opacity .28s}
 #inspector.collapsed{transform:translateX(320px);opacity:0;pointer-events:none}
@@ -359,6 +391,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .layer-name{flex:1;font-size:11px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .layer .lock{color:var(--txt3);opacity:0;transition:opacity .12s;cursor:pointer;font-size:10px}
 .layer:hover .lock,.layer .lock.on{opacity:.8}
+.layer .trash{color:var(--txt3);opacity:0;transition:opacity .12s,color .12s;cursor:pointer;font-size:10px}
+.layer:hover .trash{opacity:.8}
+.layer .trash:hover{color:var(--red);opacity:1}
 .hist-item{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;font-size:11px;
   color:var(--txt2);cursor:pointer}
 .hist-item:hover{background:var(--glass-hover)}
@@ -716,8 +751,15 @@ body.penning .bubble{pointer-events:none}
 #penSvg path.pp.no-fill{fill:none}
 #penSvg .anchor{fill:#fff;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
 #penSvg .anchor.first{fill:var(--accent)}
+/* first anchor grows/glows once the cursor is within the real closing hit-radius (same 20 page-
+   units the pointerdown handler already tests) — the preview for the "click here to close" gesture. */
+#penSvg .anchor.first.closing{fill:var(--green);stroke:var(--green)}
 #penSvg .hline{stroke:rgba(139,123,255,.8);stroke-width:1.2;vector-effect:non-scaling-stroke}
 #penSvg .hdot{fill:#8b7bff}
+/* rubber-band: a dashed preview segment from the last placed anchor to the live cursor, so the
+   next click's result is visible before it's committed — mirrors the marquee's live-drag preview. */
+#penSvg .pen-live{stroke:rgba(139,123,255,.9);stroke-width:1.5;stroke-dasharray:4 3;fill:none;
+  vector-effect:non-scaling-stroke}
 #penBar{position:fixed;z-index:66;display:none;align-items:center;gap:3px;padding:4px 6px;border-radius:12px}
 #penBar.show{display:flex;animation:pop .15s}
 #penBar .btn{height:24px;padding:0 10px;font-size:10px;border-radius:7px}
@@ -770,8 +812,18 @@ body.has-image .panel-box,body.has-image .sfx{display:none}
   background:#b3a6ff;box-shadow:0 0 5px #b3a6ff;opacity:.9}
 body.eyedrop #brushCursor{display:none!important}
 body.eyedrop #paint{cursor:crosshair}
-/* per-page original overlay — original ON TOP of the cleaned page */
-#origOverlay{position:absolute;inset:0;z-index:30;display:none;border-radius:4px;
+/* per-page original overlay — original ON TOP of the base page/paint, but BELOW #textLayer.
+   One explicit stacking order for every child of #page (bottom → top): image (CSS background on
+   #page itself, always paints beneath all of #page's children regardless of z-index — a
+   background-image structurally cannot outrank a positioned child) → #paint(6) → #penSvg(7) →
+   #origOverlay(7, effectively moot since #paint/#penSvg are hidden in show-original mode anyway,
+   see body.show-original below — kept strictly below 8 so it can never cover text even if that
+   changes) → #textLayer(8) → #marqLayer(9)/#marqAnts(10). Previously this was z-index:30 — WAY
+   above text — and paired with body.show-original #textLayer{visibility:hidden} (removed below),
+   so toggling Show Original made every text item vanish. That combination *is* the "text renders
+   behind the image" bug: not a missing position/z-index on #textLayer (it already had one), but
+   #origOverlay outranking it on purpose in the one mode where it's actually shown. */
+#origOverlay{position:absolute;inset:0;z-index:7;display:none;border-radius:4px;
   background-size:100% 100%;background-repeat:no-repeat;pointer-events:none;
   box-shadow:inset 0 0 0 2px rgba(255,160,67,.7)}
 body.show-original #origOverlay[data-avail="1"]{display:block}
@@ -818,11 +870,17 @@ body.real-project .bubble,body.real-project .ai-box,body.real-project .sfx,body.
 .txt-item{position:absolute;pointer-events:auto;min-width:26px;max-width:82%;padding:2px 5px;
   font-weight:700;line-height:1.4;color:#141318;cursor:move;user-select:none;white-space:pre-wrap;
   text-align:center;border-radius:3px;transform:translateX(-50%)}
+/* drag-drawn text box: positioned at its real top-left (no center-anchor transform, unlike point
+   text above), fixed width so text wraps inside it instead of stretching one line, min-height only
+   — no fixed height — so overflowing content grows the box downward for free via normal block
+   layout, no extra JS needed. dir="auto" (set at creation) makes text-align:start resolve to
+   right for Arabic content and left for Latin, dynamically, rather than a hardcoded default. */
+.txt-item.box{transform:none;max-width:none;text-align:start;white-space:pre-wrap;overflow-wrap:break-word}
+.txt-item.box.editing{outline-style:dashed}
 .txt-item.sel{outline:1.5px solid var(--accent);box-shadow:0 0 0 4px rgba(124,106,245,.18)}
 .txt-item.editing{cursor:text;user-select:text;outline:1.5px dashed var(--accent);
   background:rgba(124,106,245,.07);box-shadow:0 0 0 4px rgba(124,106,245,.15)}
 body.painting .txt-item,body.penning .txt-item,body.pinning .txt-item{pointer-events:none}
-body.show-original #textLayer{visibility:hidden}
 body.texting #page{cursor:text}
 .spell-miss{text-decoration:underline wavy #ff5c66 1.5px;text-underline-offset:3px;
   background:rgba(255,92,102,.12);border-radius:2px;cursor:pointer}
@@ -895,29 +953,61 @@ body.mode-studio.painting #viewport{cursor:none}
 body.mode-studio[class*=" "] #page{transition:width .25s cubic-bezier(.2,.8,.2,1)}
 #page{box-shadow:0 0 0 1px rgba(255,255,255,.1),0 50px 110px -24px rgba(0,0,0,.85),0 0 140px rgba(124,106,245,.09)}
 .zoom-ctl .sb-toggle{font-family:var(--mono);font-size:9.5px}
-.tool[data-tool="hand"].active~*{}
 body.typer-arm #brushCursor{display:none!important}
 /* ═══ MARQUEE TOOL + MULTI-BUBBLE ═══ */
 body.marquee #paint{cursor:crosshair}
+body.tool-move #paint{cursor:move}
 body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
 #marqLayer{position:absolute;inset:0;z-index:9;pointer-events:none;overflow:visible}
-.marq{position:absolute;border:1.4px dashed #fff;background:rgba(124,106,245,.1);
-  box-shadow:0 0 0 1px rgba(0,0,0,.5);border-radius:1px;
-  animation:marchAnts .6s linear infinite}
+/* Single Row/Column: before the first click, show where the exact 1-real-pixel line would land —
+   full page width (row) or height (col) — so the user isn't guessing blind like every other tool's
+   crosshair already lets them do for rect/ellipse. Hidden the instant a drag actually starts
+   (#marqGuide and #marqLive never coexist). */
+#marqGuide{position:absolute;background:rgba(124,106,245,.55);pointer-events:none;display:none}
+#marqGuide.row{left:0;right:0;height:1px}
+#marqGuide.col{top:0;bottom:0;width:1px}
+/* The visible box: fill + hit-target + numbering badge. The actual animated dashed outline is a
+   separate SVG overlay (#marqAnts) — a real border/background can't correctly trace an ellipse's
+   curve with animated dashes, but an SVG stroke-dasharray/dashoffset can, uniformly for every
+   marquee shape (rect, ellipse, and the hairline row/column rects). */
+.marq{position:absolute;background:rgba(124,106,245,.1);border-radius:1px;box-sizing:border-box;pointer-events:auto}
+#marqLive{pointer-events:none!important} /* the in-progress drag preview must never intercept its own drag */
 .marq.ell{border-radius:50%}
-.marq.pending{background:rgba(49,209,131,.14);border-color:var(--green)}
+.marq.pending{background:rgba(49,209,131,.14)}
+.marq.xform{background:rgba(255,255,255,.04);cursor:move}
 .marq .marq-idx{position:absolute;top:-9px;left:-9px;width:17px;height:17px;border-radius:50%;
   background:var(--accent-grad);color:#fff;font-size:9px;font-weight:800;display:grid;place-items:center;
   box-shadow:0 2px 6px rgba(0,0,0,.5)}
-@keyframes marchAnts{to{background-position:8px 0}}
+.marq .xh{position:absolute;width:8px;height:8px;background:#fff;border:1.5px solid var(--accent);
+  border-radius:2px;pointer-events:auto;transform:translate(-50%,-50%)}
+.marq .xh.nw{left:0;top:0;cursor:nwse-resize}.marq .xh.ne{left:100%;top:0;cursor:nesw-resize}
+.marq .xh.sw{left:0;top:100%;cursor:nesw-resize}.marq .xh.se{left:100%;top:100%;cursor:nwse-resize}
+.marq .xh.n{left:50%;top:0;cursor:ns-resize}.marq .xh.s{left:50%;top:100%;cursor:ns-resize}
+.marq .xh.w{left:0;top:50%;cursor:ew-resize}.marq .xh.e{left:100%;top:50%;cursor:ew-resize}
+#marqAnts{position:absolute;inset:0;z-index:10;pointer-events:none;width:100%;height:100%}
+#marqAnts .ant{fill:none;stroke:#fff;stroke-width:1.5;stroke-dasharray:6 4;vector-effect:non-scaling-stroke;
+  filter:drop-shadow(0 0 1px rgba(0,0,0,.8));animation:marchAnts .5s linear infinite}
+#marqAnts .ant.pending{stroke:var(--green)}
+@keyframes marchAnts{to{stroke-dashoffset:-10}}
+/* floating pasted/cut selection piece — a movable preview until committed */
+#selFloat{position:absolute;z-index:11;pointer-events:none;outline:1.5px dashed var(--accent);
+  box-shadow:0 4px 20px rgba(0,0,0,.5)}
 #marqSize{position:fixed;z-index:66;pointer-events:none;background:var(--glass-strong);
   backdrop-filter:var(--blur);border:1px solid var(--stroke);border-radius:7px;padding:3px 7px;
   font-family:var(--mono);font-size:9px;color:var(--txt);display:none}
-/* marquee subtype flyout on the tool */
-.tool-flyout{position:absolute;left:44px;top:0;display:none;flex-direction:column;gap:2px;padding:5px;
-  border-radius:12px;z-index:20;background:var(--glass-strong);backdrop-filter:var(--blur);
+/* grouped-tool flyout (Photoshop-style) — opened via right-click/long-press only (JS toggles
+   .open), not hover: hovering the rail must never pop a menu the user didn't ask for.
+   position:fixed (not absolute-relative-to-the-tool-button) and z-index:95, because #toolrail has
+   an unrelated overflow-y:auto (for tall rails on short screens) — and per the CSS spec, setting
+   overflow-y to anything but visible forces overflow-x to also clip, with no way to keep one axis
+   visible while the other scrolls. That silently clipped every flyout that tried to pop out
+   sideways. Fixed by portalling: these get moved to a direct child of <body> in JS (see
+   buildToolGroups()/the #marqFlyout init below) and positioned from getBoundingClientRect() on
+   open, instead of relying on CSS layout relative to their (clipping) ancestor. */
+.tool-flyout{position:fixed;display:none;flex-direction:column;gap:2px;padding:5px;
+  border-radius:12px;z-index:95;background:var(--glass-strong);backdrop-filter:var(--blur);
   border:1px solid var(--stroke);box-shadow:var(--shadow)}
-.tool.has-flyout:hover .tool-flyout,.tool-flyout:hover{display:flex}
+.tool-flyout.open{display:flex}
 .tool-flyout button{display:flex;align-items:center;gap:8px;padding:6px 10px 6px 8px;border-radius:8px;
   font-size:10.5px;color:var(--txt2);white-space:nowrap}
 .tool-flyout button:hover{background:var(--glass-hover);color:var(--txt)}
@@ -1016,6 +1106,8 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
       <svg id="penSvg" viewBox="0 0 1000 1414" preserveAspectRatio="none"></svg>
       <div id="textLayer"></div>
       <div id="marqLayer"></div>
+      <div id="marqGuide"></div>
+      <svg id="marqAnts" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
       <div id="origOverlay"></div>
     </div>
   </div>
@@ -1038,7 +1130,8 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
     <button class="icon-btn danger" title="Delete" data-act="del"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
   </div>
   <div id="marqSize"></div>
-  <div id="brushCursor"></div>
+  <div id="brushCursor"><div class="hr"></div></div>
+  <div id="eyeRing"></div>
 </div>
 
 <!-- ══════════ TOP BAR ══════════ -->
@@ -1096,6 +1189,9 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
     <div class="ob-color" id="obColor" title="Brush color — open color wheel"></div></div>
   <div class="ob-item" data-ob="smooth"><div class="ob-sep"></div>
     <div class="ob-check on" id="obSmooth"><span class="box">✓</span>Smoothing</div></div>
+  <div class="ob-item" data-ob="selmod"><div class="ob-sep"></div>
+    <div class="ob-slider">Feather <input type="number" id="obFeather" min="0" max="500" value="0" style="width:44px"><button class="ob-preset" id="obFeatherGo">Apply</button></div>
+    <div class="ob-slider">Expand/Contract <input type="number" id="obGrow" min="-500" max="500" value="0" style="width:44px"><button class="ob-preset" id="obGrowGo">Apply</button></div></div>
   <div class="ob-item" data-ob="hint"><div class="ob-sep"></div>
     <span class="ob-hint" id="obHint">Click a bubble · double-click to edit its text</span></div>
 </div>
@@ -1105,6 +1201,7 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
 <aside id="toolrail">
   <div class="tool-capsule glass">
     <button class="tool active" data-tool="select"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 3l14 8-6.5 1.5L9 19z"/></svg><span class="kbd-hint">Select <kbd>V</kbd></span></button>
+    <button class="tool" data-tool="move"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="kbd-hint">Move <kbd>K</kbd></span></button>
     <button class="tool has-flyout" data-tool="marquee"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.4"><rect x="3" y="4" width="18" height="16" rx="1"/></svg><span class="corner"></span>
       <div class="tool-flyout" id="marqFlyout">
         <button data-mq="rect" class="on"><svg class="mk" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2"><rect x="4" y="5" width="16" height="14" rx="1"/></svg>Rectangular <kbd>M</kbd></button>
@@ -1253,10 +1350,10 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
     </div>
 
     <div class="insp-pane" id="pane-layers">
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">T</div><div class="layer-name">Typeset — AR text</div><span class="lock">🔒</span></div>
-      <div class="layer sel"><span class="eye">👁</span><div class="layer-ico">◯</div><div class="layer-name">Bubble B-02</div><span class="lock">🔒</span></div>
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">✦</div><div class="layer-name">AI inpaint mask</div><span class="lock">🔒</span></div>
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">▦</div><div class="layer-name">Clean plate</div><span class="lock on">🔒</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">T</div><div class="layer-name">Typeset — AR text</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer sel"><span class="eye">👁</span><div class="layer-ico">◯</div><div class="layer-name">Bubble B-02</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">✦</div><div class="layer-name">AI inpaint mask</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">▦</div><div class="layer-name">Clean plate</div><span class="lock on">🔒</span><span class="trash">🗑</span></div>
       <div class="layer hidden-l"><span class="eye off">👁</span><div class="layer-ico">🖼</div><div class="layer-name">RAW original</div><span class="lock on">🔒</span></div>
       <div class="section" style="margin-top:14px">
         <div class="sec-head"><span class="sec-title">AI task queue</span></div>
@@ -1461,6 +1558,10 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
   <div class="tt-sep"></div>
   <button class="tt-btn on" id="ttBold">B</button>
   <button class="tt-btn" id="ttItalic" style="font-style:italic">I</button>
+  <div class="tt-sep"></div>
+  <button class="tt-btn" id="ttAlignL" title="Align left">◀</button>
+  <button class="tt-btn on" id="ttAlignC" title="Align center">▬</button>
+  <button class="tt-btn" id="ttAlignR" title="Align right">▶</button>
   <div class="tt-color" id="ttColor" title="Apply foreground color to text"></div>
   <div class="tt-sep"></div>
   <button class="tt-btn" id="ttWheel" title="فتح عجلة الألوان">🎨</button>
@@ -1796,14 +1897,15 @@ function swapColors(){const fg=curHex();const tmp=bgColor;bgColor=fg;
 function resetColors(){bgColor='#FFFFFF';$('#bgSw').style.background=bgColor;setRGB(22,21,26);}
 
 /* ═════════ TOOLS + OPTIONS BAR ═════════ */
-const toolMeta={select:['▸','Select'],hand:['✋','Pan'],pin:['📍','Pin'],pen:['✒','Pen'],brush:['🖌','Brush'],erase:['◻','Eraser'],
+const toolMeta={select:['▸','Select'],move:['✥','Move'],hand:['✋','Pan'],pin:['📍','Pin'],pen:['✒','Pen'],brush:['🖌','Brush'],erase:['◻','Eraser'],
   clone:['◎','Clone Stamp'],eyedrop:['💧','Eyedropper'],marquee:['▱','Marquee'],text:['T','Text'],bubble:['◯','Bubble'],shape:['▢','Shape'],
   'ai-detect':['✦','AI Detect'],'ai-clean':['✦','AI Inpaint'],'content-aware':['✚','Content-Aware'],zoom:['⌕','Zoom']};
 const PAINT_TOOLS=['brush','erase','clone','content-aware','eyedrop','marquee'];
 const OB_CFG={brush:['brushes','size','hard','opac','flow','color','smooth'],
   erase:['brushes','size','hard','opac','flow'],clone:['size','hard','opac','flow'],
-  pen:['size','color'],bubble:['color'],shape:['size','color']};
+  pen:['size','color'],bubble:['color'],shape:['size','color'],marquee:['selmod']};
 const OB_HINTS={select:'Click a bubble · double-click to edit its text',
+  move:'Drag pixels trapped inside the active selection',
   hand:'Drag to pan · ⌘+scroll to zoom',pin:'Click the page to drop a note',
   pen:'Click = anchor · drag = curve handles · Enter = stroke path',
   clone:'Alt+Click to set the source point, then paint',
@@ -1812,6 +1914,7 @@ const OB_HINTS={select:'Click a bubble · double-click to edit its text',
   text:'Click a bubble to edit its text in place',
   'ai-detect':'Scans the page for bubbles, SFX and captions',
   'ai-clean':'Inpaints the selected bubble automatically',
+  marquee:'Drag to select · Shift=add Alt=subtract Shift+Alt=intersect · ⌃D deselect · ⌃⇧I invert',
   zoom:'Click to zoom in +25% · Alt+Click to zoom out'};
 let curTool='select';
 function setTool(name){if(!toolMeta[name])return;curTool=name;
@@ -1831,6 +1934,12 @@ function setTool(name){if(!toolMeta[name])return;curTool=name;
   if(name==='ai-detect'){setTimeout(()=>toast('AI detection complete','5 objects found on Page 07 · 1.2s'),700);}
   document.body.classList.toggle('eyedrop',name==='eyedrop');
   document.body.classList.toggle('marquee',name==='marquee');
+  document.body.classList.toggle('tool-move',name==='move');
+  document.body.classList.toggle('erasing',name==='erase');
+  document.body.classList.toggle('tool-hand',name==='hand');
+  document.body.classList.toggle('tool-zoom',name==='zoom');
+  if(name!=='zoom')document.body.classList.remove('alt-zoom-out');
+  if(name!=='marquee'||(marqType!=='row'&&marqType!=='col'))$('#marqGuide').style.display='none';
   /* contextual options bar */
   const vis=OB_CFG[name]||[];
   $$('#optionsbar .ob-item').forEach(it=>{
@@ -1838,7 +1947,89 @@ function setTool(name){if(!toolMeta[name])return;curTool=name;
     it.classList.toggle('hide',!vis.includes(it.dataset.ob));});
   if(OB_HINTS[name])$('#obHint').textContent=OB_HINTS[name];}
 $$('.tool[data-tool]').forEach(t=>t.addEventListener('click',()=>setTool(t.dataset.tool)));
-const toolKeys={v:'select',h:'hand',n:'pin',p:'pen',b:'brush',e:'erase',s:'clone',t:'text',u:'bubble',r:'shape',j:'eyedrop',m:'marquee',a:'ai-detect',i:'ai-clean',w:'content-aware',z:'zoom'};
+const toolKeys={v:'select',k:'move',h:'hand',n:'pin',p:'pen',b:'brush',e:'erase',s:'clone',t:'text',u:'bubble',r:'shape',j:'eyedrop',m:'marquee',a:'ai-detect',i:'ai-clean',w:'content-aware',z:'zoom'};
+
+/* ═════════ TOOL GROUPS — right-click / long-press flyouts, Photoshop-style ═════════
+   Built by taking each group's already-rendered standalone rail buttons, snapshotting their real
+   SVG + label markup (no hand-duplicated icons to keep in sync), folding every member but the
+   first into a flyout nested inside that first (now "head") button, and removing their old
+   standalone buttons from the rail. Groups whose other member(s) don't exist in this build — Lasso
+   has no tools at all yet, Healing's only real tool is Content-Aware, Stamp's only real tool is
+   Clone — collapse to <2 real members and are skipped entirely, leaving that one tool as a plain
+   standalone button: "skip missing ones without breaking." Wired entirely through the existing
+   setTool/toolMeta system (pickGroupTool just repoints data-tool then calls setTool) — no parallel
+   tool-tracking. Marquee's own subtype flyout (#marqFlyout) already existed; it's folded into the
+   same open/close mechanism below rather than kept as a separate hover-only system. */
+const TOOL_GROUP_DEFS=[['brush','erase'],['pen','shape'],['text','bubble']];
+let toolGroupOf={},toolGroupState=[];
+function pickGroupTool(head,snap,id){
+  head.dataset.tool=id;
+  const cur=head.querySelector(':scope > svg');if(cur&&snap[id])cur.replaceWith(snap[id].svg.cloneNode(true));
+  const hint=head.querySelector(':scope > .kbd-hint');if(hint&&snap[id])hint.innerHTML=snap[id].hintHTML;
+  setTool(id);}
+function buildToolGroups(){
+  TOOL_GROUP_DEFS.forEach(ids=>{
+    const real=ids.filter(id=>toolMeta[id]&&document.querySelector(`.tool[data-tool="${id}"]`));
+    if(real.length<2)return; // nothing to group in this build — leave the lone tool standalone
+    real.forEach(id=>toolGroupOf[id]=real);
+    const snap={};
+    real.forEach(id=>{
+      const btn=document.querySelector(`.tool[data-tool="${id}"]`);
+      const svg=btn.querySelector('svg'),hint=btn.querySelector('.kbd-hint');
+      snap[id]={svg:svg.cloneNode(true),hintHTML:hint?hint.innerHTML:toolMeta[id][1]};});
+    const head=document.querySelector(`.tool[data-tool="${real[0]}"]`);
+    if(head.classList.contains('has-flyout'))return;
+    head.classList.add('has-flyout');
+    head.appendChild(Object.assign(document.createElement('span'),{className:'corner'}));
+    const fly=document.createElement('div');fly.className='tool-flyout';
+    real.forEach(id=>{
+      const b=document.createElement('button');b.dataset.tool=id;
+      b.innerHTML='<span class="mk">'+snap[id].svg.outerHTML+'</span>'+snap[id].hintHTML;
+      b.addEventListener('click',e=>{e.stopPropagation();pickGroupTool(head,snap,id);closeAllToolFlyouts();});
+      fly.appendChild(b);});
+    real.slice(1).forEach(id=>{const b=document.querySelector(`.tool[data-tool="${id}"]`);if(b)b.remove();});
+    /* portal: append to <body>, not head, so #toolrail's overflow-y:auto can never clip it (see
+       the .tool-flyout CSS comment). head._flyout keeps a direct reference since fly is no longer
+       a DOM descendant of head, so head.querySelector('.tool-flyout') would otherwise go stale
+       after this first open. */
+    document.body.appendChild(fly);head._flyout=fly;
+    toolGroupState.push({ids:real,head,snap,fly});});}
+function cycleToolGroup(anchorId){
+  const grp=toolGroupOf[anchorId];if(!grp)return;
+  const st=toolGroupState.find(g=>g.ids===grp);if(!st)return;
+  const i=grp.indexOf(curTool);const next=grp[(i>-1?i+1:0)%grp.length];
+  pickGroupTool(st.head,st.snap,next);
+  toast('Tool','↔ '+toolMeta[next][1]);}
+
+/* ---- open/close: right-click (contextmenu) or ~350ms long-press on touch; outside click or
+   Esc closes; clicking any flyout item also closes. One delegated listener set covers every
+   grouped head (including marquee's pre-existing #marqFlyout) uniformly. ---- */
+function closeAllToolFlyouts(){$$('.tool-flyout.open').forEach(f=>f.classList.remove('open'));}
+/* positions a (now body-portalled) flyout next to its head button, clamped so it can't render
+   off the right/bottom edge of a narrow viewport. */
+function openFlyoutFor(head,fly){
+  const r=head.getBoundingClientRect();
+  fly.style.left=Math.min(window.innerWidth-220,r.right+8)+'px';
+  fly.style.top=Math.min(window.innerHeight-200,r.top)+'px';
+  closeAllToolFlyouts();fly.classList.add('open');}
+document.addEventListener('contextmenu',e=>{
+  if(!e.target.closest('#toolrail'))return;
+  e.preventDefault();
+  const head=e.target.closest('.tool.has-flyout');
+  if(!head)return;
+  const fly=head._flyout;
+  if(!fly)return;
+  openFlyoutFor(head,fly);});
+let toolLongPress=null;
+$('#toolrail').addEventListener('touchstart',e=>{
+  const head=e.target.closest('.tool.has-flyout');if(!head)return;
+  const fly=head._flyout;if(!fly)return;
+  toolLongPress=setTimeout(()=>openFlyoutFor(head,fly),350);},{passive:true});
+$('#toolrail').addEventListener('touchend',()=>clearTimeout(toolLongPress));
+$('#toolrail').addEventListener('touchmove',()=>clearTimeout(toolLongPress));
+document.addEventListener('click',e=>{if(e.target.closest('.tool-flyout button'))closeAllToolFlyouts();});
+document.addEventListener('pointerdown',e=>{
+  if(!e.target.closest('.tool-flyout')&&!e.target.closest('.tool.has-flyout'))closeAllToolFlyouts();});
 
 /* options bar sliders live */
 $('#obSize').addEventListener('input',e=>{$('#obSizeV').textContent=e.target.value;drawBrushPreview();});
@@ -1968,19 +2159,48 @@ function drawBubbleText(c,W,Hh){$$('.bubble').forEach(b=>{if(!b.offsetWidth)retu
     if(line)lines.push(line);
     const y0=g.cy-(lines.length-1)/2*fs*1.15;
     lines.forEach((l,i)=>c.fillText(l,g.cx,y0+i*fs*1.15));}});}
+/* Greedy word-wrap against a real canvas measureText — same technique used to make wrapping match
+   the screen exactly regardless of font metrics quirks between browsers. Each existing explicit
+   newline is wrapped independently, so a user's own paragraph breaks are preserved. */
+function wrapTextToWidth(c,text,maxWidth){
+  const out=[];
+  text.split('\n').forEach(para=>{
+    if(!para){out.push('');return;}
+    const words=para.split(' ');let line='';
+    words.forEach(word=>{
+      const test=line?line+' '+word:word;
+      if(line&&c.measureText(test).width>maxWidth){out.push(line);line=word;}
+      else line=test;});
+    out.push(line);});
+  return out;}
 function drawTextItems(c,W,Hh){$$('#textLayer .txt-item').forEach(t=>{
   if(!t.offsetWidth)return;
   const pw=page.offsetWidth,ph=page.offsetHeight;
-  const x=(t.offsetLeft)/pw*W,y=t.offsetTop/ph*Hh;
   const fs=parseFloat(getComputedStyle(t).fontSize)/pw*W;
   c.fillStyle=t.style.color||'#141318';
   c.font=(t.style.fontStyle==='italic'?'italic ':'')+(t.style.fontWeight||'700')+' '+fs+'px '+(t.style.fontFamily||'Arial,sans-serif');
-  c.textAlign='center';c.textBaseline='top';
+  c.textBaseline='top';
   const sw=+t.dataset.strokeW||0;
-  t.innerText.split('\n').forEach((ln,i)=>{
-    if(sw>0){c.lineJoin='round';c.lineWidth=sw/pw*W*2;c.strokeStyle=t.dataset.strokeC||'#141318';
-      c.strokeText(ln,x,y+i*fs*1.4);}
-    c.fillText(ln,x,y+i*fs*1.4);});});}
+  const strokeIt=(ln,ax,ay)=>{if(sw>0){c.lineJoin='round';c.lineWidth=sw/pw*W*2;c.strokeStyle=t.dataset.strokeC||'#141318';c.strokeText(ln,ax,ay);}c.fillText(ln,ax,ay);};
+  if(t.classList.contains('box')){
+    /* box text: real word-wrap honoring the drawn box's actual width, matching what's on screen —
+       point text below never wraps on screen either, so it isn't wrapped here. */
+    const cs=getComputedStyle(t);
+    const dir=t.dir==='rtl'||cs.direction==='rtl'?'rtl':'ltr';
+    let align=t.style.textAlign||cs.textAlign;
+    if(align==='start'||!align)align=dir==='rtl'?'right':'left';
+    if(align==='end')align=dir==='rtl'?'left':'right';
+    const x0=t.offsetLeft/pw*W,boxW=t.offsetWidth/pw*W,padX=5/pw*W;
+    const innerW=Math.max(10,boxW-padX*2);
+    c.textAlign=align==='right'?'right':align==='left'?'left':'center';
+    const ax=align==='right'?x0+boxW-padX:align==='left'?x0+padX:x0+boxW/2;
+    let ay=t.offsetTop/ph*Hh+2/ph*Hh;
+    wrapTextToWidth(c,t.innerText,innerW).forEach(ln=>{strokeIt(ln,ax,ay);ay+=fs*1.4;});
+  }else{
+    const x=t.offsetLeft/pw*W,y=t.offsetTop/ph*Hh;
+    c.textAlign='center';
+    t.innerText.split('\n').forEach((ln,i)=>strokeIt(ln,x,y+i*fs*1.4));
+  }});}
 function buildArt(){art.width=paint.width;art.height=paint.height;const c=art.getContext('2d');
   drawBase(c,art.width,art.height);
   if(!pageImg)drawBubbleShapes(c,art.width,art.height);}
@@ -1997,6 +2217,50 @@ const brushPxSize=()=>(+$('#obSize').value)*(paint.width/page.offsetWidth)/2;
 
 function buildComp(){comp=document.createElement('canvas');comp.width=paint.width;comp.height=paint.height;
   const c=comp.getContext('2d');c.drawImage(art,0,0);c.drawImage(paint,0,0);}
+
+/* ─── selection-as-mask clipping, applied centrally to every raster gesture (brush/erase/clone/
+   content-aware) instead of per-tool — "digital cookie cutter": whatever a tool just drew gets
+   blended back toward its pre-stroke pixels wherever the selection mask's alpha is low, which is
+   what makes feathered edges fall out for free (a hard Path2D clip() can't represent a soft edge,
+   a mask-blend can). Scoped to a growing dirty rect (not the whole canvas) so it stays cheap during
+   a drag. */
+let selStrokeBeforeCanvas=null,selStrokeDirty=null;
+function beginSelStroke(){if(!hasSelection())return;
+  const c=document.createElement('canvas');c.width=paint.width;c.height=paint.height;
+  c.getContext('2d').drawImage(paint,0,0);selStrokeBeforeCanvas=c;selStrokeDirty=null;}
+function growSelDirty(x,y,r){
+  if(!selStrokeDirty)selStrokeDirty={x0:x-r,y0:y-r,x1:x+r,y1:y+r};
+  else{selStrokeDirty.x0=Math.min(selStrokeDirty.x0,x-r);selStrokeDirty.y0=Math.min(selStrokeDirty.y0,y-r);
+    selStrokeDirty.x1=Math.max(selStrokeDirty.x1,x+r);selStrokeDirty.y1=Math.max(selStrokeDirty.y1,y+r);}}
+function applySelMaskToStroke(ctx){
+  if(!hasSelection()||!selStrokeBeforeCanvas||!selStrokeDirty)return;
+  const W=paint.width,H=paint.height;
+  const x0=Math.max(0,Math.floor(selStrokeDirty.x0)),y0=Math.max(0,Math.floor(selStrokeDirty.y0));
+  const x1=Math.min(W,Math.ceil(selStrokeDirty.x1)),y1=Math.min(H,Math.ceil(selStrokeDirty.y1));
+  const w=x1-x0,h=y1-y0;if(w<=0||h<=0)return;
+  const now=ctx.getImageData(x0,y0,w,h);
+  const bef=selStrokeBeforeCanvas.getContext('2d').getImageData(x0,y0,w,h);
+  const mask=selMaskCtx.getImageData(x0,y0,w,h).data;
+  const nd=now.data,bd=bef.data;
+  for(let i=0;i<nd.length;i+=4){const a=mask[i+3]/255;if(a>=1)continue;
+    nd[i]=bd[i]*(1-a)+nd[i]*a;nd[i+1]=bd[i+1]*(1-a)+nd[i+1]*a;
+    nd[i+2]=bd[i+2]*(1-a)+nd[i+2]*a;nd[i+3]=bd[i+3]*(1-a)+nd[i+3]*a;}
+  ctx.putImageData(now,x0,y0);}
+function endSelStroke(){selStrokeBeforeCanvas=null;selStrokeDirty=null;}
+/* one-shot version for single-fill ops (content-aware) that don't go through handleMove */
+function applySelMaskToRect(ctx,beforeCanvas,rx,ry,rw,rh){
+  if(!hasSelection())return;
+  const x0=Math.max(0,Math.floor(rx)),y0=Math.max(0,Math.floor(ry));
+  const x1=Math.min(paint.width,Math.ceil(rx+rw)),y1=Math.min(paint.height,Math.ceil(ry+rh));
+  const w=x1-x0,h=y1-y0;if(w<=0||h<=0)return;
+  const now=ctx.getImageData(x0,y0,w,h);
+  const bef=beforeCanvas.getContext('2d').getImageData(x0,y0,w,h);
+  const mask=selMaskCtx.getImageData(x0,y0,w,h).data;
+  const nd=now.data,bd=bef.data;
+  for(let i=0;i<nd.length;i+=4){const a=mask[i+3]/255;if(a>=1)continue;
+    nd[i]=bd[i]*(1-a)+nd[i]*a;nd[i+1]=bd[i+1]*(1-a)+nd[i+1]*a;
+    nd[i+2]=bd[i+2]*(1-a)+nd[i+2]*a;nd[i+3]=bd[i+3]*(1-a)+nd[i+3]*a;}
+  ctx.putImageData(now,x0,y0);}
 
 function paintSegment(c,x0,y0,x1,y1,size,rgb,hard,flow){
   const dist=Math.hypot(x1-x0,y1-y0),step=Math.max(1,size*Math.max(.02,brush.spacing));
@@ -2036,6 +2300,7 @@ paint.addEventListener('pointerdown',e=>{
   drawing=true;last=[x,y];
   c.globalCompositeOperation=curTool==='erase'?'destination-out':'source-over';
   paint.setPointerCapture(e.pointerId);markUnsaved();
+  beginSelStroke();
   /* dot on click */
   handleMove(e,true);});
 
@@ -2055,6 +2320,7 @@ function handleMove(e,force){
     m.style.left=(rct.left+(x-cloneState.off[0])/paint.width*rct.width)+'px';
     m.style.top=(rct.top+(y-cloneState.off[1])/paint.height*rct.height)+'px';}
   else paintSegment(c,last[0],last[1],x,y,size,rgb,hard,flow);
+  if(hasSelection()){growSelDirty(last[0],last[1],size/2+3);growSelDirty(x,y,size/2+3);applySelMaskToStroke(c);}
   c.globalAlpha=1;last=[x,y];}
 paint.addEventListener('pointermove',e=>handleMove(e));
 
@@ -2066,6 +2332,9 @@ paint.addEventListener('pointerup',e=>{
     const r=paint.getBoundingClientRect(),sr=s.getBoundingClientRect();
     const rx=(sr.left-r.left)/r.width*paint.width, ry=(sr.top-r.top)/r.height*paint.height;
     const rw=sr.width/r.width*paint.width, rh=sr.height/r.height*paint.height;
+    let caBefore=null;
+    if(hasSelection()){caBefore=document.createElement('canvas');caBefore.width=paint.width;caBefore.height=paint.height;
+      caBefore.getContext('2d').drawImage(paint,0,0);}
     setTimeout(()=>{
       buildComp();const cc=comp.getContext('2d');
       /* sample border colors around the selection and average them */
@@ -2081,21 +2350,44 @@ paint.addEventListener('pointerup',e=>{
         c.fillStyle=Math.random()>.5?'#000':'#fff';
         c.beginPath();c.arc(rx+Math.random()*rw,ry+Math.random()*rh,1+Math.random()*3,0,7);c.fill();}
       c.globalAlpha=1;
+      if(caBefore)applySelMaskToRect(c,caBefore,rx,ry,rw,rh);
       strokes.push(c.getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
       addHistory('Content-aware fill');
       s.classList.remove('working');s.style.display='none';
       toast('Content-aware fill complete','Region reconstructed from surroundings · 0.9s');},900);
     return;}
-  if(drawing){drawing=false;
+  if(drawing){drawing=false;endSelStroke();
     strokes.push(paint.getContext('2d').getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
     addHistory(curTool==='erase'?'Eraser stroke':curTool==='clone'?'Clone stamp':'Brush · '+brushDefs[brush.preset].name);}});
 
 /* brush cursor circle (not for content-aware) */
-const bc=$('#brushCursor');
+const bc=$('#brushCursor'),bcHard=bc.querySelector('.hr');
 document.addEventListener('mousemove',e=>{
   if(!document.body.classList.contains('painting')||curTool==='content-aware'||curTool==='eyedrop')return;
   const size=(+$('#obSize').value)*(+$('#zoomSlider').value/100);
-  bc.style.width=bc.style.height=size+'px';bc.style.left=e.clientX+'px';bc.style.top=e.clientY+'px';});
+  bc.style.width=bc.style.height=size+'px';bc.style.left=e.clientX+'px';bc.style.top=e.clientY+'px';
+  /* hardness ring: 100% hardness sits flush with the outer edge (no visible falloff band), lower
+     hardness shrinks it toward the center to show where the soft edge actually starts. */
+  const hard=(+$('#obHard').value)/100,hSize=size*hard;
+  bcHard.style.width=bcHard.style.height=hSize+'px';
+  bcHard.style.display=hard>=0.98?'none':'block';});
+
+/* eyedropper live color ring — samples the page composite as the cursor moves (throttled to one
+   sample per animation frame; rebuilding the composite is real canvas work and mousemove can fire
+   far faster than that), so the ring shows the color a click would actually pick before it lands. */
+const eyeRing=$('#eyeRing');let eyeRingPending=false;
+document.addEventListener('mousemove',e=>{
+  if(curTool!=='eyedrop'||!(page.contains(e.target)||e.target===page))return;
+  eyeRing.style.left=e.clientX+'px';eyeRing.style.top=e.clientY+'px';
+  if(eyeRingPending)return;eyeRingPending=true;
+  requestAnimationFrame(()=>{eyeRingPending=false;
+    if(curTool!=='eyedrop')return;
+    const r=paint.getBoundingClientRect();
+    if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)return;
+    const x=Math.max(0,Math.min(paint.width-1,Math.round((e.clientX-r.left)/r.width*paint.width)));
+    const y=Math.max(0,Math.min(paint.height-1,Math.round((e.clientY-r.top)/r.height*paint.height)));
+    buildComp();const d=comp.getContext('2d').getImageData(x,y,1,1).data;
+    eyeRing.style.background=`rgb(${d[0]},${d[1]},${d[2]})`;});});
 
 /* ═════════ UNDO / REDO + HISTORY ═════════ */
 function addHistory(label){const list=$('#histList');
@@ -2135,12 +2427,13 @@ $$('input[type=range].live').forEach(r=>r.addEventListener('input',()=>{r.parent
 $('#aiApply').onclick=()=>toast('Suggestion applied','Bubble B-02 → jagged style · 24pt bold');
 $('#aiDismiss').onclick=e=>{e.target.closest('.ai-suggest').style.display='none';};
 
-/* layers: eye + lock toggles */
+/* layers: eye + lock + trash */
 $$('.layer').forEach(l=>{
   l.addEventListener('click',e=>{
     if(e.target.classList.contains('eye')){e.target.classList.toggle('off');
       l.classList.toggle('hidden-l');return;}
     if(e.target.classList.contains('lock')){e.target.classList.toggle('on');return;}
+    if(e.target.classList.contains('trash')){l.remove();return;}
     $$('.layer').forEach(x=>x.classList.remove('sel'));l.classList.add('sel');});});
 
 /* translate cards select bubble */
@@ -2305,11 +2598,12 @@ $('#viewport').addEventListener('wheel',e=>{
 $('#viewport').addEventListener('pointerdown',e=>{
   if(curTool==='hand'||e.button===1||spacePan){e.preventDefault();
     panDrag={x:e.clientX,y:e.clientY,px:panX,py:panY};
-    $('#viewport').style.cursor='grabbing';
+    $('#viewport').style.cursor='grabbing';document.body.classList.add('panning');
     try{$('#viewport').setPointerCapture(e.pointerId);}catch(_){}}});
 $('#viewport').addEventListener('pointermove',e=>{if(!panDrag)return;
   panX=panDrag.px+(e.clientX-panDrag.x);panY=panDrag.py+(e.clientY-panDrag.y);applyPan();});
-$('#viewport').addEventListener('pointerup',()=>{panDrag=null;$('#viewport').style.cursor='';});
+$('#viewport').addEventListener('pointerup',()=>{panDrag=null;$('#viewport').style.cursor='';
+  document.body.classList.remove('panning');});
 
 /* ═════════ PANELS TOGGLE ═════════ */
 const pages=$('#pages'),insp=$('#inspector');let hidden=false;
@@ -2330,7 +2624,11 @@ $$('.bubble').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();sele
 $('#viewport').addEventListener('click',e=>{
   if(curTool==='zoom'){setZoom(+slider.value+(e.altKey?-25:25));return;}
   if(e.target.id==='viewport'||e.target.id==='stage'){ctx.classList.remove('show');
-    $$('.bubble').forEach(x=>x.classList.remove('selected'));deselectTxt&&deselectTxt();}});
+    $$('.bubble').forEach(x=>x.classList.remove('selected'));deselectTxt&&deselectTxt();
+    /* clicking empty canvas also cancels the real marquee selection — otherwise every raster tool
+       stays clipped to whatever selection was last made, with no mouse-driven way out (Ctrl+D was
+       the only escape hatch, and it's not discoverable). */
+    if(typeof hasSelection==='function'&&hasSelection()&&!mbMode)deselectAll();}});
 ctx.addEventListener('click',e=>{const a=e.target.closest('[data-act]');if(!a)return;
   const sel=document.querySelector('.txt-item.sel')||document.querySelector('.bubble.selected');
   if(a.dataset.act==='color'){if(sel){sel.style.color=curHex();
@@ -2511,10 +2809,16 @@ async function exportPSD(EW,EH){
     const fs=parseFloat(getComputedStyle(t).fontSize)/pw*EW;
     const col=cssColorToRgb(getComputedStyle(t).color);
     const fam=(t.style.fontFamily||'Arial').replace(/['"]/g,'').split(',')[0].trim();
+    const isBox=t.classList.contains('box');
+    /* a drawn box becomes a real paragraph/box text frame in the PSD (left/top/right/bottom
+       bounds tell Photoshop it's box text, not point text) — point text keeps the exact original
+       point-transform-only shape. */
+    const boxBounds=isBox?{left:x,top:y,right:x+t.offsetWidth/pw*EW,bottom:y+t.offsetHeight/ph*EH}:{};
     try{ /* editable Photoshop text layer */
       children.push({name:'T · '+t.innerText.slice(0,18),
         text:{text:t.innerText,
           transform:[1,0,0,1,x,y+fs],
+          ...boxBounds,
           style:{font:{name:fam},fontSize:fs,fillColor:col,
             fauxBold:(t.style.fontWeight|0)>=800,fauxItalic:t.style.fontStyle==='italic'}}});
     }catch(_){ /* raster fallback */
@@ -2598,6 +2902,8 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){closeK();closeImport();toggleColor(false);
     if(typeof trDisarm==='function')trDisarm();
     if(typeof clearMarquees==='function')clearMarquees();
+    if(typeof floatPiece!=='undefined'&&floatPiece){$('#selFloat')&&$('#selFloat').remove();floatPiece=null;}
+    if(typeof closeAllToolFlyouts==='function')closeAllToolFlyouts();
     toggleBrushes(false);closePinPop();commitTextEdit();penClearAll();
     exportOv.classList.remove('open');
     $('#selRect').style.display='none';caState=null;return;}
@@ -2609,15 +2915,35 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&e.shiftKey&&(e.key==='+'||e.key==='=')){trSize(1);return;}
   if((e.ctrlKey||e.metaKey)&&e.shiftKey&&(e.key==='-'||e.key==='_')){trSize(-1);return;}
   if(e.shiftKey&&e.key.toLowerCase()==='m'){cycleMarquee();return;}
+  if(e.shiftKey&&toolGroupOf[toolKeys[e.key.toLowerCase()]]){cycleToolGroup(toolKeys[e.key.toLowerCase()]);return;}
   if(e.shiftKey&&e.key.toLowerCase()==='x'){ /* nextPage — TypeR shortcut */
     const ks=Object.keys(pageStore).sort((a,b)=>+a.replace('Page ','')-+b.replace('Page ',''));
     const i=ks.indexOf(currentPage);if(i>-1&&ks[i+1]){selectPage(ks[i+1]);}return;}
   if(e.key==='0'){zoomFit();return;}
   if(e.key==='1'){resetPan();setZoom(100);return;}
+  /* ---- selection: deselect / invert / delete / copy / cut / paste / nudge ----
+     Inserted ahead of the plain d/c/x/v/i bindings below (and toolKeys' 'v'/'i' tool-switch
+     fallback) since those don't guard against Ctrl/Cmd being held — without returning early here
+     first, Ctrl+D/C/X/V/Shift+I would silently also trigger resetColors/color-wheel/swap/tool-switch. */
+  if(floatPiece&&(e.key==='Enter')){e.preventDefault();commitFloatPiece();return;}
+  if(floatPiece&&e.key.startsWith('Arrow')){e.preventDefault();
+    const step=e.shiftKey?10:1;
+    if(e.key==='ArrowLeft')nudgeFloatPiece(-step,0);
+    if(e.key==='ArrowRight')nudgeFloatPiece(step,0);
+    if(e.key==='ArrowUp')nudgeFloatPiece(0,-step);
+    if(e.key==='ArrowDown')nudgeFloatPiece(0,step);
+    return;}
+  if((e.ctrlKey||e.metaKey)&&e.shiftKey&&e.key.toLowerCase()==='i'){e.preventDefault();invertSelection();return;}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='d'){e.preventDefault();deselectAll();toast('Deselected','');return;}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='c'){e.preventDefault();copySelection(false);return;}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='x'&&hasSelection()){e.preventDefault();copySelection(true);return;}
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v'){e.preventDefault();pasteSelection();return;}
   if((e.key==='Delete'||e.key==='Backspace')){const st=document.querySelector('.txt-item.sel');
     if(st&&!st.classList.contains('editing')){e.preventDefault();st.remove();
-      if(typeof saveTexts==='function')saveTexts();toast('Text box deleted','');return;}}
+      if(typeof saveTexts==='function')saveTexts();toast('Text box deleted','');return;}
+    if(hasSelection()){e.preventDefault();deleteSelection();return;}}
   if(e.key===' '){e.preventDefault();spacePan=true;$('#viewport').style.cursor='grab';return;}
+  if(e.key==='Alt'&&curTool==='zoom'){document.body.classList.add('alt-zoom-out');}
   if(e.key==='Tab'){e.preventDefault();togglePanels();return;}
   if(!e.shiftKey&&e.key.toLowerCase()==='x'){swapColors();return;}
   if(e.key.toLowerCase()==='d'){resetColors();return;}
@@ -2627,7 +2953,8 @@ document.addEventListener('keydown',e=>{
   const t=toolKeys[e.key.toLowerCase()];
   if(t)setTool(t);});
 document.addEventListener('keyup',e=>{if(e.key===' '){spacePan=false;
-  if(!panDrag)$('#viewport').style.cursor='';}});
+  if(!panDrag)$('#viewport').style.cursor='';}
+  if(e.key==='Alt')document.body.classList.remove('alt-zoom-out');});
 
 /* ═════════ LIVE METERS + QUEUE ═════════ */
 setInterval(()=>{
@@ -2720,6 +3047,17 @@ $('#ttBold').onclick=()=>{if(!editingBubble)return;$('#ttBold').classList.toggle
   editingBubble.style.fontWeight=$('#ttBold').classList.contains('on')?'800':'400';};
 $('#ttItalic').onclick=()=>{if(!editingBubble)return;$('#ttItalic').classList.toggle('on');
   editingBubble.style.fontStyle=$('#ttItalic').classList.contains('on')?'italic':'normal';};
+/* alignment only makes real sense within a box's fixed width — point text is always centered by
+   its translateX(-50%) anchor regardless, so this is a no-op there (buttons stay visually inert,
+   matching "alignment applies within the box width"). */
+function setTtAlign(v){if(!editingBubble||!editingBubble.classList.contains('box'))return;
+  editingBubble.style.textAlign=v;
+  $$('#ttAlignL,#ttAlignC,#ttAlignR').forEach(b=>b.classList.remove('on'));
+  const btnId={left:'ttAlignL',center:'ttAlignC',right:'ttAlignR'}[v];
+  if(btnId)$('#'+btnId).classList.add('on');}
+$('#ttAlignL').onclick=()=>setTtAlign('left');
+$('#ttAlignC').onclick=()=>setTtAlign('center');
+$('#ttAlignR').onclick=()=>setTtAlign('right');
 $('#ttColor').onclick=()=>{if(!editingBubble)return;
   $('#ttColor').style.background=curHex();
   const sl=getSelection();
@@ -2784,18 +3122,27 @@ function penSeg(p0,p1){
   if(p0.hx||p0.hy||p1.hx||p1.hy)
     return`C ${p0.x+p0.hx} ${p0.y+p0.hy}, ${p1.x-p1.hx} ${p1.y-p1.hy}, ${p1.x} ${p1.y}`;
   return`L ${p1.x} ${p1.y}`;}
+let penHoverPt=null;
 function penRender(){const A=pen.a;
   if(!A.length){penSvg.innerHTML='';return;}
   let d=`M ${A[0].x} ${A[0].y}`;
   for(let i=1;i<A.length;i++)d+=' '+penSeg(A[i-1],A[i]);
   if(pen.closed&&A.length>2)d+=' '+penSeg(A[A.length-1],A[0])+' Z';
   let h=`<path class="pp${pen.closed?'':' no-fill'}" d="${d}"/>`;
+  /* closing indicator: highlight the first anchor once the live cursor is within the same 20
+     page-unit hit-radius the pointerdown handler already uses to detect "click here to close". */
+  const closing=!pen.closed&&A.length>2&&penHoverPt&&Math.hypot(penHoverPt[0]-A[0].x,penHoverPt[1]-A[0].y)<20;
   A.forEach((a,i)=>{
     if(a.hx||a.hy){
       h+=`<line class="hline" x1="${a.x-a.hx}" y1="${a.y-a.hy}" x2="${a.x+a.hx}" y2="${a.y+a.hy}"/>`;
       h+=`<circle class="hdot" cx="${a.x+a.hx}" cy="${a.y+a.hy}" r="5"/>`;
       h+=`<circle class="hdot" cx="${a.x-a.hx}" cy="${a.y-a.hy}" r="5"/>`;}
-    h+=`<rect class="anchor${i===0?' first':''}" x="${a.x-6}" y="${a.y-6}" width="12" height="12"/>`;});
+    h+=`<rect class="anchor${i===0?' first':''}${i===0&&closing?' closing':''}" x="${a.x-6}" y="${a.y-6}" width="12" height="12"/>`;});
+  /* rubber-band: dashed preview segment from the last placed anchor to the live cursor, so the
+     next click's result is visible before it's committed — skipped while dragging a handle (that
+     already has its own live preview) or once the path is closed. */
+  if(!pen.closed&&!pen.drag&&penHoverPt&&!closing)
+    h+=`<line class="pen-live" x1="${A[A.length-1].x}" y1="${A[A.length-1].y}" x2="${penHoverPt[0]}" y2="${penHoverPt[1]}"/>`;
   penSvg.innerHTML=h;}
 function penShowBar(){if(pen.a.length<2){penBar.classList.remove('show');return;}
   const a=pen.a[pen.a.length-1],r=page.getBoundingClientRect();
@@ -2813,8 +3160,12 @@ page.addEventListener('pointerdown',e=>{
   const a={x,y,hx:0,hy:0};pen.a.push(a);pen.drag=a;penRender();
   try{page.setPointerCapture(e.pointerId);}catch(_){}});
 page.addEventListener('pointermove',e=>{
-  if(curTool!=='pen'||!pen.drag)return;
-  const[x,y]=penPt(e);pen.drag.hx=x-pen.drag.x;pen.drag.hy=y-pen.drag.y;penRender();});
+  if(curTool!=='pen')return;
+  const[x,y]=penPt(e);
+  if(pen.drag){pen.drag.hx=x-pen.drag.x;pen.drag.hy=y-pen.drag.y;penRender();return;}
+  if(!pen.a.length)return; // nothing placed yet — no rubber band to draw
+  penHoverPt=[x,y];penRender();});
+page.addEventListener('pointerleave',()=>{penHoverPt=null;if(curTool==='pen')penRender();});
 page.addEventListener('pointerup',()=>{
   if(curTool==='pen'){pen.drag=null;if(pen.a.length>1)penShowBar();}});
 function penPath2D(){const p=new Path2D(),sx=paint.width/1000,sy=paint.height/1414,A=pen.a;
@@ -3111,19 +3462,83 @@ function saveTexts(){if(currentPage){(pageStore[currentPage]=pageStore[currentPa
 function deselectTxt(){$$('.txt-item.sel').forEach(t=>t.classList.remove('sel'));}
 function startTxtEdit(t){deselectTxt();editingBubble=t;
   t.classList.add('editing');t.contentEditable='true';t.focus();
+  /* alignment buttons only mean anything for a box item (point text is always centered by its
+     own translateX(-50%) anchor) — reflect the item's current alignment, or just clear the
+     on-state for point text so the buttons don't lie about what they'd do. */
+  $$('#ttAlignL,#ttAlignC,#ttAlignR').forEach(b=>b.classList.remove('on'));
+  if(t.classList.contains('box')){
+    const cs=getComputedStyle(t);
+    let a=t.style.textAlign||cs.textAlign;
+    if(a==='start')a=cs.direction==='rtl'?'right':'left';
+    if(a==='end')a=cs.direction==='rtl'?'left':'right';
+    const btnId={left:'ttAlignL',center:'ttAlignC',right:'ttAlignR'}[a];
+    if(btnId)$('#'+btnId).classList.add('on');}
   placeTT(t);placeCaretEnd(t);}
-page.addEventListener('click',e=>{
-  if(curTool!=='text')return;
-  if(e.target.closest('.txt-item')||e.target.closest('.bubble'))return;
-  if(editingBubble){commitTextEdit();return;}
-  const r=page.getBoundingClientRect();
-  const t=document.createElement('div');t.className='txt-item';
-  t.style.left=((e.clientX-r.left)/r.width*100)+'%';
-  t.style.top=((e.clientY-r.top)/r.height*100)+'%';
+
+/* ---- Text tool: click-drag draws a box (live preview, same visual language as the marquee —
+   reuses #marqLayer/.marq/#marqSize directly rather than a second set of preview elements);
+   a plain click (no meaningful drag) still creates point text exactly as before. One pointerdown/
+   move/up gesture decides which, so there's only one creation code path, not two that could
+   double-fire on the same gesture's trailing native 'click' event. ---- */
+let txtBoxDraw=null;
+function styleNewTextItem(t){
   t.style.fontSize=Math.max(12,Math.round(page.offsetWidth*0.042))+'px';
   t.style.color=curHex();t.innerHTML='';
+  t.dir='auto'; /* Arabic types RTL+right-align, Latin types LTR+left-align — dynamically, not a hardcoded guess */
+}
+function createPointText(x,y,r){
+  const t=document.createElement('div');t.className='txt-item';
+  t.style.left=(x/r.width*100)+'%';t.style.top=(y/r.height*100)+'%';
+  styleNewTextItem(t);
   textLayer.appendChild(t);startTxtEdit(t);
-  addHistory('Text box added');markUnsaved();});
+  addHistory('Text box added');markUnsaved();}
+function createBoxText(l,t0,w,h,r){
+  if(w<8||h<8){createPointText(l,t0,r);return;} // too small a drag to be intentional — treat as a click
+  const t=document.createElement('div');t.className='txt-item box';
+  t.style.left=(l/r.width*100)+'%';t.style.top=(t0/r.height*100)+'%';
+  t.style.width=(w/r.width*100)+'%';t.style.minHeight=(h/r.height*100)+'%';
+  styleNewTextItem(t);
+  textLayer.appendChild(t);startTxtEdit(t);
+  addHistory('Text box added (drawn)');markUnsaved();}
+page.addEventListener('click',e=>{
+  /* creation itself lives in the pointerdown/move/up flow below — this only handles the
+     click-away-commits-edit behavior, and guards clicking an existing item (unchanged). */
+  if(curTool!=='text')return;
+  if(e.target.closest('.txt-item')||e.target.closest('.bubble'))return;
+  if(editingBubble)commitTextEdit();});
+page.addEventListener('pointerdown',e=>{
+  if(curTool!=='text')return;
+  /* TypeR's own armed-placement click (capture-phase, stopImmediatePropagation) takes priority
+     when both are active — it fires on 'click', a separate event from 'pointerdown', so it can't
+     shield this handler the way it shields the plain click listener above; guard explicitly
+     instead of letting both systems race to create a text item for the same gesture. */
+  if(typeof TR!=='undefined'&&TR.armed)return;
+  if(e.target.closest('.txt-item')||e.target.closest('.bubble'))return;
+  const r=page.getBoundingClientRect();
+  txtBoxDraw={x0:e.clientX-r.left,y0:e.clientY-r.top,r};});
+window.addEventListener('pointermove',e=>{
+  if(!txtBoxDraw)return;
+  const r=txtBoxDraw.r;
+  const x1=e.clientX-r.left,y1=e.clientY-r.top;
+  const l=Math.min(txtBoxDraw.x0,x1),t=Math.min(txtBoxDraw.y0,y1),w=Math.abs(x1-txtBoxDraw.x0),h=Math.abs(y1-txtBoxDraw.y0);
+  let el=$('#txtBoxLive');
+  if(!el){el=document.createElement('div');el.id='txtBoxLive';el.className='marq';marqLayer.appendChild(el);}
+  el.style.left=(l/r.width*100)+'%';el.style.top=(t/r.height*100)+'%';
+  el.style.width=(w/r.width*100)+'%';el.style.height=(h/r.height*100)+'%';
+  marqSize.style.display='block';marqSize.style.left=(e.clientX+14)+'px';marqSize.style.top=(e.clientY+14)+'px';
+  const RW=pageImg?pageImg.naturalWidth:1414,RH=pageImg?pageImg.naturalHeight:2000;
+  marqSize.textContent='W '+Math.round(w/r.width*RW)+' · H '+Math.round(h/r.height*RH);});
+window.addEventListener('pointerup',e=>{
+  if(!txtBoxDraw)return;
+  const r=txtBoxDraw.r;
+  const x1=e.clientX-r.left,y1=e.clientY-r.top;
+  const dist=Math.hypot(x1-txtBoxDraw.x0,y1-txtBoxDraw.y0);
+  const l=Math.min(txtBoxDraw.x0,x1),t=Math.min(txtBoxDraw.y0,y1),w=Math.abs(x1-txtBoxDraw.x0),h=Math.abs(y1-txtBoxDraw.y0);
+  $('#txtBoxLive')&&$('#txtBoxLive').remove();marqSize.style.display='none';
+  const draw=txtBoxDraw;txtBoxDraw=null;
+  if(curTool!=='text')return; // tool may have changed mid-drag — don't create anything then
+  if(dist<6)createPointText(draw.x0,draw.y0,r);
+  else createBoxText(l,t,w,h,r);});
 let txtDrag=null;
 textLayer.addEventListener('pointerdown',e=>{
   const t=e.target.closest('.txt-item');if(!t)return;
@@ -3423,29 +3838,119 @@ $('#trImportFile').addEventListener('change',e=>{const f=e.target.files[0];if(!f
     trParse();toast('استُوردت الأنماط',TR.styles.length+' نمطاً · '+TR.folders.length+' مجلد');
   }catch(_){toast('ملف غير صالح','JSON من TypeR فقط');}});e.target.value='';});
 
-/* ═════════ MARQUEE TOOL (4 subtypes) + MULTI-BUBBLE ═════════ */
+/* ═════════ MARQUEE TOOL — real Photoshop-style selection engine + Multi-Bubble ═════════
+   Selections are a real pixel MASK (selMaskCanvas, same resolution as #paint) — "digital cookie
+   cutter": every raster tool clips against it centrally (see applySelMaskToStroke/Rect above,
+   wired into the brush/erase/clone/content-aware pipeline). selOps[] is the ordered list of
+   boolean-combined shapes (page-% geometry, resolution-independent — reusable at ANY target pixel
+   size) that built that mask. marqSels[] keeps its EXACT original meaning — Multi-Bubble's
+   independent accumulated target boxes — untouched, so TypeR/mbFill/placeInSel are unaffected;
+   the new boolean-selection system only activates when NOT in Multi-Bubble mode. */
 let marqType='rect',marqDraw=null,marqSels=[],mbMode=false;
-const marqLayer=$('#marqLayer'),marqSize=$('#marqSize');
+let selOps=[];
+const selMaskCanvas=document.createElement('canvas'),selMaskCtx=selMaskCanvas.getContext('2d');
+const marqLayer=$('#marqLayer'),marqSize=$('#marqSize'),marqAnts=$('#marqAnts');
 $$('#marqFlyout button').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();
-  setMarquee(b.dataset.mq);setTool('marquee');}));
+  setMarquee(b.dataset.mq);setTool('marquee');
+  if(typeof closeAllToolFlyouts==='function')closeAllToolFlyouts();}));
 function setMarquee(t){marqType=t;
   $$('#marqFlyout button').forEach(x=>x.classList.toggle('on',x.dataset.mq===t));
   const names={rect:'Rectangular',ell:'Elliptical',col:'Single Column',row:'Single Row'};
-  if($('#obName')&&curTool==='marquee')$('#obName').textContent='Marquee · '+names[t];}
+  if($('#obName')&&curTool==='marquee')$('#obName').textContent='Marquee · '+names[t];
+  /* picking a subtype from the flyout also becomes the rail's visible icon, same as every other
+     grouped tool — reuses the flyout's own small .mk icon rather than a second icon registry. */
+  const head=document.querySelector('.tool[data-tool="marquee"]');
+  /* by stable id, not head.querySelector — #marqFlyout is portalled to <body> now, no longer a
+     DOM descendant of head, so a nesting-relative lookup here would silently start failing. */
+  const mk=document.querySelector(`#marqFlyout button[data-mq="${t}"] svg`);
+  const cur=head&&head.querySelector(':scope > svg');
+  if(head&&mk&&cur)cur.replaceWith(mk.cloneNode(true));}
 function cycleMarquee(){const o=['rect','ell','col','row'],i=o.indexOf(marqType);
   setMarquee(o[(i+1)%4]);setTool('marquee');toast('Marquee','↔ '+marqType);}
-/* geometry of a selection in page-% */
+
+function hasSelection(){return selOps.length>0;}
+function combineModeFromKeys(shift,alt){if(shift&&alt)return'intersect';if(shift)return'add';if(alt)return'subtract';return'replace';}
+
+/* geometry of a selection in page-% (l,t,w,h,ell), given a drag in page-rect px.
+   Single Row/Column are exactly 1 REAL image pixel — expressed as a page-% fraction (100/RW or
+   100/RH), not a fixed CSS-px minimum, so it stays exact at any zoom and maps to true image
+   resolution wherever the geometry is later rasterized. */
 function marqRect(x0,y0,x1,y1,pw,ph){
   let l=Math.min(x0,x1),t=Math.min(y0,y1),w=Math.abs(x1-x0),h=Math.abs(y1-y0);
-  if(marqType==='col'){l=x1;w=Math.max(2,pw*0.004);t=0;h=ph;}
-  if(marqType==='row'){t=y1;h=Math.max(2,ph*0.004);l=0;w=pw;}
+  const RW=pageImg?pageImg.naturalWidth:1414,RH=pageImg?pageImg.naturalHeight:2000;
+  if(marqType==='col'){l=x1;w=pw/RW;t=0;h=ph;}
+  if(marqType==='row'){t=y1;h=ph/RH;l=0;w=pw;}
   return{l,t,w,h};}
+
+/* --- mask rasterization: replays selOps onto a canvas at any target pixel size (geometry is
+   page-%-based, so this is resolution-independent) — currently always called at #paint's own
+   resolution, the live editing buffer. --- */
+function paintOpShape(ctx,shape,W,H){
+  const l=shape.l/100*W,t=shape.t/100*H,w=shape.w/100*W,h=shape.h/100*H;
+  ctx.beginPath();
+  if(shape.ell)ctx.ellipse(l+w/2,t+h/2,Math.max(.01,w/2),Math.max(.01,h/2),0,0,Math.PI*2);
+  else ctx.rect(l,t,w,h);
+  ctx.fill();}
+function rasterizeSelMaskAt(ctx,W,H,ops){
+  ctx.canvas.width=W;ctx.canvas.height=H;ctx.fillStyle='#fff';
+  ops.forEach(op=>{
+    if(op.mode==='replace'||op.mode==='add'){ctx.globalCompositeOperation='source-over';paintOpShape(ctx,op.shape,W,H);}
+    else if(op.mode==='subtract'){ctx.globalCompositeOperation='destination-out';paintOpShape(ctx,op.shape,W,H);}
+    else if(op.mode==='intersect'){
+      const tmp=document.createElement('canvas');tmp.width=W;tmp.height=H;
+      const tc=tmp.getContext('2d');tc.fillStyle='#fff';paintOpShape(tc,op.shape,W,H);
+      ctx.globalCompositeOperation='destination-in';ctx.drawImage(tmp,0,0);}
+  });
+  ctx.globalCompositeOperation='source-over';}
+function rebuildSelMask(){rasterizeSelMaskAt(selMaskCtx,Math.max(1,paint.width||1),Math.max(1,paint.height||1),selOps);}
+
+/* ---- Modify: Feather / Expand / Contract, in real image pixels regardless of live editing
+   resolution (converted via the RW/paint.width ratio so the same numeric input means the same
+   real-world distance no matter the internal buffer size). ---- */
+function selPxScale(){const RW=pageImg?pageImg.naturalWidth:1414;return(paint.width||RW)/RW;}
+function featherSelectionPx(px){if(!hasSelection()||!px)return;
+  const amt=px*selPxScale();
+  const tmp=document.createElement('canvas');tmp.width=selMaskCanvas.width;tmp.height=selMaskCanvas.height;
+  const tc=tmp.getContext('2d');tc.filter=`blur(${amt}px)`;tc.drawImage(selMaskCanvas,0,0);
+  selMaskCtx.clearRect(0,0,selMaskCanvas.width,selMaskCanvas.height);selMaskCtx.drawImage(tmp,0,0);
+  addHistory('Feather selection '+px+'px');markUnsaved();toast('Feather','+'+px+'px soft edge applied');}
+function growSelectionPx(px){if(!hasSelection()||!px)return;
+  const amt=Math.round(px*selPxScale());if(!amt)return;
+  const grow=amt>0,n=Math.min(60,Math.abs(amt)),dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+  for(let i=0;i<n;i++){
+    const src=document.createElement('canvas');src.width=selMaskCanvas.width;src.height=selMaskCanvas.height;
+    src.getContext('2d').drawImage(selMaskCanvas,0,0);
+    if(grow){selMaskCtx.globalCompositeOperation='source-over';dirs.forEach(([dx,dy])=>selMaskCtx.drawImage(src,dx,dy));}
+    else{selMaskCtx.clearRect(0,0,selMaskCanvas.width,selMaskCanvas.height);
+      selMaskCtx.globalCompositeOperation='source-over';selMaskCtx.drawImage(src,0,0);
+      dirs.forEach(([dx,dy])=>{selMaskCtx.globalCompositeOperation='destination-in';selMaskCtx.drawImage(src,dx,dy);});
+      selMaskCtx.globalCompositeOperation='source-over';}}
+  addHistory((grow?'Expand':'Contract')+' selection '+Math.abs(px)+'px');markUnsaved();
+  toast(grow?'Expand':'Contract',Math.abs(px)+'px applied');}
+function invertSelection(){if(!hasSelection())return;
+  const W=selMaskCanvas.width,H=selMaskCanvas.height;
+  const img=selMaskCtx.getImageData(0,0,W,H);
+  for(let i=3;i<img.data.length;i+=4)img.data[i]=255-img.data[i];
+  selMaskCtx.putImageData(img,0,0);
+  /* an inverted mask has no single rect/ellipse geometry — the mask stays the real clipping
+     source of truth; the visible outline becomes an honest full-page approximation rather than a
+     fabricated exact contour (real marching-squares contour tracing of an arbitrary mask is out
+     of scope here). */
+  selOps=[{shape:{l:0,t:0,w:100,h:100,ell:false},mode:'replace',_maskOnly:true}];
+  renderMarquees();markUnsaved();addHistory('Invert selection');toast('Invert','Selection inverted');}
+function deselectAll(){selOps=[];selMaskCtx.clearRect(0,0,selMaskCanvas.width,selMaskCanvas.height);renderMarquees();}
+
+function startMarqDraw(e){
+  const r=page.getBoundingClientRect();
+  marqDraw={x0:e.clientX-r.left,y0:e.clientY-r.top,shift:e.shiftKey,alt:e.altKey,r};
+  /* deselectAll() also clears selMaskCtx and re-renders — a bare selOps=[] here used to leave the
+     mask and the marching-ants DOM stale, so a plain click (no real drag follows) looked like it
+     hadn't cancelled anything even though the logical selection was already gone. */
+  if(!mbMode&&!e.shiftKey&&!e.altKey)deselectAll();
+  try{paint.setPointerCapture(e.pointerId);}catch(_){}}
 paint.addEventListener('pointerdown',e=>{
   if(curTool!=='marquee')return;
-  const r=page.getBoundingClientRect();
-  marqDraw={x0:e.clientX-r.left,y0:e.clientY-r.top,shift:e.shiftKey,r};
-  if(!mbMode)clearMarquees();
-  try{paint.setPointerCapture(e.pointerId);}catch(_){}
+  startMarqDraw(e);
   e.stopPropagation();},true);
 window.addEventListener('pointermove',e=>{if(!marqDraw)return;
   const r=marqDraw.r;let x1=e.clientX-r.left,y1=e.clientY-r.top;
@@ -3465,32 +3970,131 @@ window.addEventListener('pointerup',e=>{if(!marqDraw)return;
     const sel={l:parseFloat(live.style.left),t:parseFloat(live.style.top),
       w:parseFloat(live.style.width),h:parseFloat(live.style.height),ell:marqType==='ell'};
     live.remove();
-    if(sel.w>0.6&&sel.h>0.6)commitMarquee(sel);
+    if(sel.w>0.6&&sel.h>0.6)commitMarquee(sel,marqDraw.shift,marqDraw.alt);
   }
   marqDraw=null;});
+
+/* Single Row/Column: hover guide showing exactly where the 1-real-pixel line would land, before
+   any click — only while idle (not mid-drag, and not for rect/ellipse which already have their own
+   live-rect preview). Reuses marqRect's own page-% math so the guide and the eventual real
+   selection are pixel-identical, not two independent approximations. */
+const marqGuide=$('#marqGuide');
+paint.addEventListener('pointermove',e=>{
+  if(curTool!=='marquee'||marqDraw||(marqType!=='row'&&marqType!=='col')){marqGuide.style.display='none';return;}
+  const r=page.getBoundingClientRect();
+  const g=marqRect(e.clientX-r.left,e.clientY-r.top,e.clientX-r.left,e.clientY-r.top,r.width,r.height);
+  marqGuide.className=marqType;marqGuide.style.display='block';
+  if(marqType==='row')marqGuide.style.top=(g.t/r.height*100)+'%';
+  else marqGuide.style.left=(g.l/r.width*100)+'%';});
+paint.addEventListener('pointerleave',()=>{marqGuide.style.display='none';});
 function drawLiveMarq(g,r){let el=$('#marqLive');
   if(!el){el=document.createElement('div');el.id='marqLive';el.className='marq'+(marqType==='ell'?' ell':'');
     marqLayer.appendChild(el);}
   el.style.left=(g.l/r.width*100)+'%';el.style.top=(g.t/r.height*100)+'%';
   el.style.width=(g.w/r.width*100)+'%';el.style.height=(g.h/r.height*100)+'%';}
-function commitMarquee(g){ /* g in px relative to page rect */
+
+function commitMarquee(g,shift,alt){ /* g in px relative to page rect */
   const r=page.getBoundingClientRect();
   const sel={l:g.l/r.width*100,t:g.t/r.height*100,w:g.w/r.width*100,h:g.h/r.height*100,ell:marqType==='ell'};
   if(mbMode){marqSels.push(sel);renderMarquees();updateMB();
     toast('Multi-Bubble','تحديد '+marqSels.length+' — أضف المزيد ثم "ملء بالتتابع"');
     return;}
-  marqSels=[sel];renderMarquees();
-  onMarqueeSelected(sel);}
-function renderMarquees(){[...marqLayer.querySelectorAll('.marq:not(#marqLive)')].forEach(x=>x.remove());
-  marqSels.forEach((s,i)=>{const el=document.createElement('div');
-    el.className='marq'+(s.ell?' ell':'')+(mbMode?' pending':'');
+  const typerOpen=typerPanel.classList.contains('open');
+  if(typerOpen){ /* keep the exact original single-shape immediate-fire behavior */
+    selOps=[{shape:sel,mode:'replace'}];rebuildSelMask();
+    onMarqueeSelected(sel);return;}
+  const mode=combineModeFromKeys(shift,alt);
+  if(mode==='replace')selOps=[{shape:sel,mode:'replace'}];
+  else selOps.push({shape:sel,mode});
+  rebuildSelMask();renderMarquees();
+  addHistory('Selection: '+mode);}
+
+/* ---- rendering: fill/hit-target divs (+ numbering in MB mode, + resize handles on the topmost
+   shape otherwise) plus the real animated marching-ants SVG outline — one mechanism for rect,
+   ellipse and the hairline row/column shapes alike. ---- */
+function renderMarquees(){
+  [...marqLayer.querySelectorAll('.marq:not(#marqLive)')].forEach(x=>x.remove());
+  marqAnts.innerHTML='';
+  const shapes=mbMode?marqSels:selOps.map(o=>o.shape);
+  shapes.forEach((s,i)=>{
+    const el=document.createElement('div');
+    el.className='marq'+(s.ell?' ell':'')+(mbMode?' pending':' xform');
     el.style.left=s.l+'%';el.style.top=s.t+'%';el.style.width=s.w+'%';el.style.height=s.h+'%';
     if(mbMode)el.innerHTML=`<span class="marq-idx">${i+1}</span>`;
-    marqLayer.appendChild(el);});}
-function clearMarquees(){marqSels=[];renderMarquees();}
+    if(!mbMode&&i===shapes.length-1&&selOps[i]&&!selOps[i]._maskOnly)
+      ['nw','n','ne','w','e','sw','s','se'].forEach(pos=>{
+        const h=document.createElement('div');h.className='xh '+pos;h.dataset.pos=pos;el.appendChild(h);});
+    marqLayer.appendChild(el);
+    wireMarqInteraction(el,i);
+    const svgNS='http://www.w3.org/2000/svg';
+    const shapeEl=document.createElementNS(svgNS,s.ell?'ellipse':'rect');
+    shapeEl.setAttribute('class','ant'+(mbMode?' pending':''));
+    if(s.ell){shapeEl.setAttribute('cx',s.l+s.w/2);shapeEl.setAttribute('cy',s.t+s.h/2);
+      shapeEl.setAttribute('rx',Math.max(.05,s.w/2));shapeEl.setAttribute('ry',Math.max(.05,s.h/2));}
+    else{shapeEl.setAttribute('x',s.l);shapeEl.setAttribute('y',s.t);
+      shapeEl.setAttribute('width',Math.max(.05,s.w));shapeEl.setAttribute('height',Math.max(.05,s.h));}
+    marqAnts.appendChild(shapeEl);});}
+function clearMarquees(){marqSels=[];selOps=[];selMaskCtx.clearRect(0,0,selMaskCanvas.width,selMaskCanvas.height);renderMarquees();}
+
+/* ---- Transform Selection: with the marquee tool active, a plain drag starting INSIDE an
+   existing (already-committed, non-live) selection moves the whole outline; a Shift/Alt-drag
+   starting there instead begins a normal new boolean-op draw (add/subtract/intersect), matching
+   Photoshop's own disambiguation. Corner/edge handles on the topmost shape resize just that shape.
+   Selection geometry only — pixels are never touched. ---- */
+let xformDrag=null;
+function wireMarqInteraction(el,idx){
+  el.addEventListener('pointerdown',e=>{
+    if(curTool!=='marquee'||marqDraw)return;
+    if(e.target.classList.contains('xh')){
+      e.stopPropagation();e.preventDefault();
+      const r=page.getBoundingClientRect();
+      const shape=mbMode?marqSels[idx]:selOps[idx].shape;
+      xformDrag={type:'resize',pos:e.target.dataset.pos,idx,mbMode,r,start:{...shape}};
+      try{el.setPointerCapture(e.pointerId);}catch(_){}
+      return;}
+    if(e.shiftKey||e.altKey){e.stopPropagation();e.preventDefault();startMarqDraw(e);return;}
+    e.stopPropagation();e.preventDefault();
+    const r=page.getBoundingClientRect();
+    xformDrag={type:'move',idx,mbMode,r,x0:e.clientX,y0:e.clientY,
+      shapes:mbMode?[{...marqSels[idx]}]:selOps.map(o=>({...o.shape}))};
+    try{el.setPointerCapture(e.pointerId);}catch(_){}
+  });}
+window.addEventListener('pointermove',e=>{
+  if(!xformDrag)return;
+  const r=xformDrag.r;
+  if(xformDrag.type==='move'){
+    const dx=(e.clientX-xformDrag.x0)/r.width*100,dy=(e.clientY-xformDrag.y0)/r.height*100;
+    if(xformDrag.mbMode){const s=marqSels[xformDrag.idx];if(!s)return;
+      s.l=xformDrag.shapes[0].l+dx;s.t=xformDrag.shapes[0].t+dy;}
+    else{selOps.forEach((op,i)=>{if(!xformDrag.shapes[i])return;
+      op.shape.l=xformDrag.shapes[i].l+dx;op.shape.t=xformDrag.shapes[i].t+dy;});rebuildSelMask();}
+    renderMarquees();return;}
+  if(xformDrag.type==='resize'){
+    const shape=xformDrag.mbMode?marqSels[xformDrag.idx]:selOps[xformDrag.idx]&&selOps[xformDrag.idx].shape;
+    if(!shape)return;
+    const px=(e.clientX-r.left)/r.width*100,py=(e.clientY-r.top)/r.height*100;
+    const s0=xformDrag.start;let l=s0.l,t=s0.t,w=s0.w,h=s0.h;
+    const pos=xformDrag.pos;
+    if(pos.includes('w')){w=s0.l+s0.w-px;l=px;}
+    if(pos.includes('e')){w=px-s0.l;}
+    if(pos.includes('n')){h=s0.t+s0.h-py;t=py;}
+    if(pos.includes('s')){h=py-s0.t;}
+    if(w>0.3){shape.l=l;shape.w=w;}
+    if(h>0.3){shape.t=t;shape.h=h;}
+    if(!xformDrag.mbMode)rebuildSelMask();
+    renderMarquees();}});
+window.addEventListener('pointerup',()=>{
+  if(!xformDrag)return;
+  if(!xformDrag.mbMode)addHistory('Transform selection');
+  xformDrag=null;});
+
 /* single-selection behavior when TypeR is open (auto place / manual edit via toolbar) */
-function placeInSel(sel,text,style){const t=document.createElement('div');t.className='txt-item';
-  t.style.left=(sel.l+sel.w/2)+'%';t.style.top=(sel.t+sel.h/2*0.55)+'%';
+function placeInSel(sel,text,style){const t=document.createElement('div');t.className='txt-item box';
+  /* a bounded box sized to the whole selection, not a point anchor — long TypeR lines now wrap
+     inside the bubble's own width instead of overflowing past it. */
+  t.style.left=sel.l+'%';t.style.top=sel.t+'%';
+  t.style.width=sel.w+'%';t.style.minHeight=sel.h+'%';
+  t.style.textAlign='center';t.dir='auto';
   t.textContent=text||'';textLayer.appendChild(t);
   if(style)applyStyleTo(t,style);
   else{t.style.fontSize=Math.max(12,Math.round(page.offsetWidth*0.04))+'px';t.style.color=curHex();}
@@ -3528,11 +4132,128 @@ function toggleMB(v){mbMode=v??!mbMode;
   updateMB();
   toast('Multi-Bubble Mode '+(mbMode?'ON':'OFF'),mbMode?'حدّد عدة فقاعات ثم "ملء بالتتابع"':'');}
 function updateMB(){const b=$('#mbCount');if(b)b.textContent=marqSels.length;}
-/* Esc clears selections */
+
+/* ---- Delete / Copy / Cut / Paste on the selected pixels (active raster layer = #paint, the
+   only raster layer this build has). ---- */
+let clipPiece=null; // {canvas,x,y,w,h} in #paint px — clipboard
+let floatPiece=null; // {canvas,x,y,w,h} — a movable, uncommitted paste/cut piece
+function selBoundsPx(){ /* bounding box of the current mask, in #paint px, or null if empty */
+  if(!hasSelection())return null;
+  const W=selMaskCanvas.width,H=selMaskCanvas.height;
+  const d=selMaskCtx.getImageData(0,0,W,H).data;
+  let x0=W,y0=H,x1=0,y1=0,any=false;
+  const step=Math.max(1,Math.floor(Math.min(W,H)/400)); // coarse scan — plenty for a bbox, keeps this cheap
+  for(let y=0;y<H;y+=step)for(let x=0;x<W;x+=step){
+    if(d[(y*W+x)*4+3]>4){any=true;if(x<x0)x0=x;if(y<y0)y0=y;if(x>x1)x1=x;if(y>y1)y1=y;}}
+  if(!any)return null;
+  x0=Math.max(0,x0-step);y0=Math.max(0,y0-step);x1=Math.min(W,x1+step);y1=Math.min(H,y1+step);
+  return{x:x0,y:y0,w:x1-x0,h:y1-y0};}
+function deleteSelection(){if(!hasSelection())return;
+  const b=selBoundsPx();if(!b)return;
+  const c=paint.getContext('2d');
+  const before=document.createElement('canvas');before.width=paint.width;before.height=paint.height;
+  before.getContext('2d').drawImage(paint,0,0);
+  c.clearRect(b.x,b.y,b.w,b.h);
+  applySelMaskToRect(c,before,b.x,b.y,b.w,b.h); // re-blend: only the masked pixels stay cleared
+  strokes.push(c.getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
+  addHistory('Delete selection');markUnsaved();}
+function copySelection(cut){const b=selBoundsPx();if(!b)return toast('لا تحديد','حدد منطقة أولاً');
+  const c=document.createElement('canvas');c.width=b.w;c.height=b.h;
+  const cc=c.getContext('2d');cc.drawImage(paint,b.x,b.y,b.w,b.h,0,0,b.w,b.h);
+  /* punch the piece down to the mask's own silhouette, not just its bounding box */
+  const mimg=selMaskCtx.getImageData(b.x,b.y,b.w,b.h);
+  const pimg=cc.getImageData(0,0,b.w,b.h);
+  for(let i=0;i<pimg.data.length;i+=4)pimg.data[i+3]=Math.min(pimg.data[i+3],mimg.data[i+3]);
+  cc.putImageData(pimg,0,0);
+  clipPiece={canvas:c,x:b.x,y:b.y,w:b.w,h:b.h};
+  if(cut)deleteSelection();
+  toast(cut?'Cut':'Copied',b.w+'×'+b.h+' px');}
+function pasteSelection(){if(!clipPiece)return toast('لا شيء للصق','انسخ أو قص أولاً');
+  floatPiece={canvas:clipPiece.canvas,x:clipPiece.x,y:clipPiece.y,w:clipPiece.w,h:clipPiece.h};
+  renderFloatPiece();setTool('select');
+  toast('Pasted','Arrow keys to nudge · Enter to commit · Esc to cancel');}
+function renderFloatPiece(){
+  let el=$('#selFloat');if(!el){el=document.createElement('div');el.id='selFloat';page.appendChild(el);}
+  el.style.backgroundImage=`url(${floatPiece.canvas.toDataURL()})`;
+  el.style.backgroundSize='100% 100%';
+  el.style.left=(floatPiece.x/paint.width*100)+'%';el.style.top=(floatPiece.y/paint.height*100)+'%';
+  el.style.width=(floatPiece.w/paint.width*100)+'%';el.style.height=(floatPiece.h/paint.height*100)+'%';}
+function commitFloatPiece(){if(!floatPiece)return;
+  const c=paint.getContext('2d');c.globalCompositeOperation='source-over';c.globalAlpha=1;
+  c.drawImage(floatPiece.canvas,floatPiece.x,floatPiece.y);
+  strokes.push(c.getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
+  addHistory('Commit pasted piece');markUnsaved();
+  $('#selFloat')&&$('#selFloat').remove();floatPiece=null;}
+function nudgeFloatPiece(dx,dy){if(!floatPiece)return;floatPiece.x+=dx;floatPiece.y+=dy;renderFloatPiece();}
+
+/* ---- Move tool: drags the pixel content trapped inside the active selection. Reuses the same
+   cut-piece-and-redraw-at-offset machinery the paste flow already built (#selFloat/floatPiece/
+   renderFloatPiece) instead of a second scratch-canvas system — a live move IS "cut, drag, commit"
+   with the selection's own geometry translated to match, just without the clipboard in between. */
+let moveDrag=null;
+paint.addEventListener('pointerdown',e=>{
+  if(curTool!=='move')return;
+  if(!hasSelection()){toast('No selection','Make a selection first, then switch to Move');return;}
+  const b=selBoundsPx();if(!b)return;
+  const before=document.createElement('canvas');before.width=paint.width;before.height=paint.height;
+  before.getContext('2d').drawImage(paint,0,0);
+  const piece=document.createElement('canvas');piece.width=b.w;piece.height=b.h;
+  const pc=piece.getContext('2d');pc.drawImage(paint,b.x,b.y,b.w,b.h,0,0,b.w,b.h);
+  /* punch the lifted piece down to the mask's own silhouette, not just its bounding box —
+     matches copySelection()'s identical technique above. */
+  const mimg=selMaskCtx.getImageData(b.x,b.y,b.w,b.h);
+  const pimg=pc.getImageData(0,0,b.w,b.h);
+  for(let i=0;i<pimg.data.length;i+=4)pimg.data[i+3]=Math.min(pimg.data[i+3],mimg.data[i+3]);
+  pc.putImageData(pimg,0,0);
+  const c=paint.getContext('2d');c.clearRect(b.x,b.y,b.w,b.h);
+  applySelMaskToRect(c,before,b.x,b.y,b.w,b.h); // re-blend: only the masked pixels stay cleared
+  const[sx,sy]=px(e);
+  moveDrag={before,origX:b.x,origY:b.y,sx,sy,moved:false,
+    opsBefore:selOps.map(o=>({...o,shape:{...o.shape}}))};
+  floatPiece={canvas:piece,x:b.x,y:b.y,w:b.w,h:b.h};renderFloatPiece();
+  try{paint.setPointerCapture(e.pointerId);}catch(_){}});
+paint.addEventListener('pointermove',e=>{
+  if(!moveDrag||!floatPiece)return;
+  const[x,y]=px(e);const dx=x-moveDrag.sx,dy=y-moveDrag.sy;
+  if(Math.hypot(dx,dy)>0.5)moveDrag.moved=true;
+  floatPiece.x=moveDrag.origX+dx;floatPiece.y=moveDrag.origY+dy;renderFloatPiece();
+  /* live-translate the selection geometry too, so the marching ants track the moved content the
+     same way every other selection operation this session keeps visuals in sync with state. */
+  const dxPct=dx/paint.width*100,dyPct=dy/paint.height*100;
+  selOps=moveDrag.opsBefore.map(o=>({...o,shape:{...o.shape,l:o.shape.l+dxPct,t:o.shape.t+dyPct}}));
+  renderMarquees();});
+paint.addEventListener('pointerup',()=>{
+  if(!moveDrag)return;
+  const d=moveDrag;moveDrag=null;
+  const c=paint.getContext('2d');
+  if(!d.moved){ /* press-and-release with no real drag — put everything back, no undo entry */
+    c.clearRect(0,0,paint.width,paint.height);c.drawImage(d.before,0,0);
+    selOps=d.opsBefore;renderMarquees();
+    $('#selFloat')&&$('#selFloat').remove();floatPiece=null;return;}
+  c.globalCompositeOperation='source-over';c.globalAlpha=1;
+  c.drawImage(floatPiece.canvas,floatPiece.x,floatPiece.y);
+  rebuildSelMask();renderMarquees(); // resync the real mask to the selection's new position
+  strokes.push(c.getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
+  addHistory('Move selection');markUnsaved();
+  $('#selFloat')&&$('#selFloat').remove();floatPiece=null;});
+
+/* ---- options-bar Feather / Expand-Contract controls ---- */
+$('#obFeatherGo')&&$('#obFeatherGo').addEventListener('click',()=>{
+  const v=+$('#obFeather').value;if(v>0)featherSelectionPx(v);else toast('Feather','Enter a value above 0px first');});
+$('#obGrowGo')&&$('#obGrowGo').addEventListener('click',()=>{
+  const v=+$('#obGrow').value;if(v)growSelectionPx(v);else toast('Expand/Contract','Positive = expand, negative = contract');});
+
+/* Esc clears selections (handled centrally in the keydown listener above, which also cancels a
+   pending floating paste) */
 const _escMarq=()=>{clearMarquees();};
 
 /* apply default brush preset on load */
-applyPreset('soft');setTool('select');setMarquee('rect');
+applyPreset('soft');setTool('select');setMarquee('rect');buildToolGroups();
+/* #marqFlyout is static HTML, not JS-built like the other flyouts, so buildToolGroups() never
+   touches it — portal it the same way by hand: move it to <body> and give its head button the
+   same ._flyout reference the generic open/close handlers rely on for every other grouped tool. */
+(function(){const mHead=document.querySelector('.tool[data-tool="marquee"]'),mFly=$('#marqFlyout');
+  if(mHead&&mFly){document.body.appendChild(mFly);mHead._flyout=mFly;}})();
 
 /* welcome toast */
 

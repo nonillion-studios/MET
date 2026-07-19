@@ -57,6 +57,56 @@ pageImg    // HTMLImage للنسخة المعروضة (clean ?? orig) — تست
 - **إرسال المحرر → TypeR**: `#trFromEditor` (وزر `#teToTyper` داخل المحرر) يرسل **كل نص** المحرر (كل صفحات كل التبويبات، مع تجريد علامات spell-miss) إلى `#trPaste` ويشغّل `trParse()`.
 - **تلوين نص عام**: زر لون في `#ctxbar` (يظهر الآن فوق صناديق `.txt-item` المحددة أيضاً) يلوّن الصندوق كامل الحالي بلون الـ FG؛ داخل التحرير `ttColor` يلوّن التحديد فقط عبر `execCommand`.
 
+## Selection-as-mask pipeline (real pixel clipping, added this session)
+
+قبل هذه الجلسة كان `marqSels[]` **بصرياً فقط** — يُستخدم حصراً لوضع نص TypeR، بلا أي تقييد فعلي على الرسم. الآن التحديد قناع حقيقي يقيّد كل عملية raster:
+
+- **مصدر الحقيقة**: `selOps[]` (هندسة بنسبة % من الصفحة: `{shape:{l,t,w,h,ell},mode}`) + `selMaskCanvas`/`selMaskCtx` (canvas ألفا فعلي يُعاد بناؤه من `selOps` عبر `rebuildSelMask()`/`rasterizeSelMaskAt()`). الهندسة بالنسبة المئوية تجعل Single Row/Column **بكسل صورة حقيقي واحد بالضبط** عند أي تكبير (`100/RW` أو `100/RH`، وليس حد أدنى ثابت بالبكسل CSS).
+- **التقييد مركزي وليس لكل أداة**: `beginSelStroke()`/`endSelStroke()`/`applySelMaskToStroke()`/`applySelMaskToRect()` (بعد `buildComp()` مباشرة) تُستدعى من نقاط واحدة فقط: `pointerdown/pointerup` على `#paint` و`handleMove()` — أي فرشاة/ممحاة/clone/content-aware تُقيَّد تلقائياً بلا تعديل كل أداة على حدة. القص يعيد المزج نحو البكسلات السابقة حيث ألفا القناع منخفضة (وليس `clip()` صلباً)، وهذا ما يمنح Feather حوافاً ناعمة مجاناً.
+- **العمليات المنطقية**: `combineModeFromKeys(shift,alt)` → replace/add/subtract/intersect، مركّبة عبر `source-over`/`destination-out`/`destination-in` على القناع.
+- **اختصارات حقيقية**: Ctrl/Cmd+D إلغاء التحديد، Ctrl+Shift+I عكس (`invertSelection()`)، Delete يمسح الداخل، Ctrl+C/X نسخ/قص (`copySelection`)، Ctrl+V لصق كقطعة عائمة قابلة للنقل بالماوس أو الأسهم (`pasteSelection`/`renderFloatPiece`/`commitFloatPiece`/`nudgeFloatPiece`)، Enter يثبّت القطعة العائمة.
+- **Transform Selection**: سحب مقابض `.xh` على الشكل الأخير في `selOps` (`wireMarqInteraction`/`xformDrag`) — نقل وتحجيم للتحديد نفسه فقط، لا يمس البكسلات.
+- **Feather/Expand/Contract**: حقول رقمية في شريط الخيارات (`#obFeather`/`#obGrow`) → `featherSelectionPx()`/`growSelectionPx()`.
+- **توافق TypeR/Multi-Bubble محفوظ بالكامل**: نظام القناع الجديد لا يتفعّل أثناء Multi-Bubble Mode أو أثناء وضع TypeR المسلَّح — `marqSels[]`/`mbFill()`/`placeInSel()`/`onMarqueeSelected()` بقيت كما هي تماماً.
+
+## Tool group flyouts (Photoshop-style, added this session)
+
+الأدوات المتشابهة الآن مجمّعة خلف أيقونة واحدة ظاهرة على الرف، بدل عرض كل أداة بشكل منفصل دائماً:
+
+- `TOOL_GROUP_DEFS=[['brush','erase'],['pen','shape'],['text','bubble']]` — تعريف المجموعات فقط، `setTool`/`toolMeta` بلا تغيير بنيوي (لا نظام أدوات مواز).
+- **Right-click** (أو **long-press ~350ms** باللمس) على أيقونة المجموعة يفتح flyout: أيقونة + اسم + اختصار لكل أداة. نقرة على عنصر تُفعّله **وتصبح الأيقونة الظاهرة** على الرف (`pickGroupTool`، عبر استنساخ SVG الموجود فعلاً — لا تكرار يدوي لأي أيقونة). **نقرة عادية على الأيقونة الظاهرة تُفعّل الأداة الحالية للمجموعة**، لا تفتح flyout.
+- **Shift+الاختصار** يُدوِّر داخل المجموعة (`cycleToolGroup`) — يحافظ على Shift+M الحالي لتدوير أنواع Marquee.
+- مثلث صغير في الزاوية يشير لوجود flyout. إغلاق عند نقرة خارجية أو Esc (`closeAllToolFlyouts`). الأيقونة المتذكَّرة تبقى طوال الجلسة (متغير JS، لا تخزين دائم).
+- أزرار الـ flyout **بلا** class `.tool` (بخلاف أزرار الرف) — تفادياً لتضارب `.tool[data-tool="X"]` مع أزرار الـ flyout بعد التجميع.
+
+## Text box model (added this session)
+
+أداة Text أصبحت تدعم رسماً بالسحب، بجانب النقرة البسيطة القديمة:
+
+- **نقرة بسيطة** = نص نقطي (`createPointText`) كالسابق تماماً — بلا عرض ثابت، بلا التفاف.
+- **سحب** (عتبة 6px تفصل بين نقرة وسحب) = صندوق نص (`createBoxText`, class إضافي `.txt-item.box`): عرض ثابت فيلتف النص داخله بدل التمدد أفقياً، `min-height` بلا ارتفاع ثابت فيكبر الصندوق نزولاً تلقائياً مع المحتوى الفائض. المعاينة الحية تعيد استخدام `#marqLayer`/`.marq`/`#marqSize` (نفس لغة معاينة Marquee بصرياً، عبر `#txtBoxLive`).
+- **المحاذاة**: أزرار جديدة في `#textToolbar` (يسار/وسط/يمين، `setTtAlign`) — الافتراضي `dir="auto"` يجعل `text-align:start` يُحلّ يميناً للعربي ويساراً للاتيني تلقائياً، وليس افتراضاً ثابتاً.
+- **التصدير**: `drawTextItems`/`wrapTextToWidth` يعيد تنفيذ نفس التفاف الكانفس الحقيقي (`measureText`) لصناديق `.box` فقط — النص النقطي يبقى بلا التفاف كما على الشاشة، مطابقةً تامة بين المعاينة والتصدير. PSD: `exportPSD` يضيف `boxBounds={left,top,right,bottom}` لعناصر `.box` فقط.
+- **TypeR**: `placeInSel()` يُنشئ الآن صندوق نص حقيقياً (لا نقطة) بحدود التحديد كاملة، بدل نقطة مُقدَّرة تقريبياً كما كان.
+- **حارس هام**: نظام السحب الجديد يعمل عبر `pointerdown` وليس `click` — لا يتقاطع تلقائياً مع حماية TypeR المسلَّح (`stopImmediatePropagation` على `click` فقط)، فأُضيف حارس صريح `if(TR.armed)return` في مستمع `pointerdown` الجديد.
+
+## Stacking order (fixed this session — كان الخلل الحقيقي)
+
+ترتيب واحد صريح لأبناء `#page` من الأسفل للأعلى: الصورة (خلفية CSS على `#page` نفسه، تُرسم دائماً تحت كل الأبناء بغض النظر عن z-index) → `#paint`(6) → `#penSvg`(7) → `#origOverlay`(7) → `#textLayer`(8) → `#marqLayer`(9)/`#marqAnts`(10).
+
+**السبب الحقيقي** لظهور النص خلف الصورة لم يكن z-index ناقصاً على `#textLayer` (كان موجوداً أصلاً) بل `#origOverlay{z-index:30}` — أعلى بكثير من `#textLayer` — مقترناً بقاعدة `body.show-original #textLayer{visibility:hidden}` **أُزيلت الآن بالكامل**. صار وضع "الأصل فوق التبييض" لا يخفي النص إطلاقاً — يبقى ظاهراً وقابلاً للنقر فوق كل شيء، دون الحاجة لآلية "مقارنة مؤقتة" منفصلة.
+
+## Cursor/preview layer (added this session)
+
+معاينة حية لكل أداة، طبقة مشتركة `pointer-events:none` لا تتقاطع أبداً مع الأحداث:
+
+- **Brush/Eraser/Clone**: `#brushCursor` (موجود سابقاً) + حلقة داخلية جديدة `.hr` تعكس Hardness حياً (100% = بلا حلقة ظاهرة، أقل = الحلقة تنكمش نحو المركز لتُظهر بداية التلاشي الناعم). الممحاة لها لون مميز (`body.erasing`). Clone's مصدر (`#cloneSrc`) كان يتتبّع حياً أصلاً.
+- **Marquee**: معاينة rect/ellipse الحية كانت موجودة. أُضيف `#marqGuide` — خط دليل بعرض/ارتفاع الصفحة كاملاً لـ Single Row/Column **قبل** أول نقرة، محسوب بنفس دالة `marqRect()` الحقيقية فلا يختلف عن التحديد الفعلي لاحقاً.
+- **Text**: مؤشر I-beam عبر `body.texting{cursor:text}`، وقراءة W×H الحية أثناء رسم الصندوق كانت موجودة من قسم Text box أعلاه.
+- **Pen**: أُضيف خط معاينة متقطع (`.pen-live`) من آخر نقطة مثبَّتة إلى موضع المؤشر الحي، ومؤشر إغلاق — النقطة الأولى تتوهج أخضر عند دخول المؤشر نفس نصف قطر الإغلاق (20 وحدة صفحة) الذي يستخدمه `pointerdown` فعلياً، فلا تفترق المعاينة عن السلوك الحقيقي.
+- **Eyedropper**: `#eyeRing` جديدة تعاين اللون الحي عبر `buildComp()` (مُقيَّد بـ `requestAnimationFrame` لأن إعادة بناء composite عمل canvas حقيقي وmousemove أسرع منه).
+- **Hand/Zoom**: مؤشرات CSS حقيقية — `grab`/`grabbing` (كلاس `panning` جديد على body، يغطي `#page` أيضاً وليس `#viewport` فقط كما كان)، و`zoom-in`/`zoom-out` (الأخير حياً عند الضغط المطوّل على Alt).
+
 ## Export
 
 `#exportGo`: PNG/JPG/WEBP — يركّب بدقة الصورة الحقيقية: `drawBase` → `#paint` مكبَّراً → `drawBubbleText` + `drawTextItems` (يتخطى العناصر المخفية `offsetWidth===0`). JPG يُسطَّح على أبيض.
