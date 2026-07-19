@@ -90,6 +90,28 @@ async function dataUrlToCanvas(dataUrl: string, width: number, height: number): 
 }
 
 /**
+ * Our mask canvas stores the mask in the *alpha* channel (see `LayerMask`'s doc comment) — a plain
+ * `destination-in` composite with no conversion is what makes live rendering cheap. ag-psd's
+ * `LayerMaskData.canvas` wants a grayscale *channel* instead (Photoshop's own mask convention), so
+ * the alpha -> grayscale conversion happens here, at the PSD boundary, and nowhere else.
+ */
+async function buildPsdMaskCanvas(dataUrl: string, width: number, height: number): Promise<HTMLCanvasElement> {
+  const canvas = await dataUrlToCanvas(dataUrl, width, height);
+  const ctx = canvas.getContext('2d')!;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    data[i] = a;
+    data[i + 1] = a;
+    data[i + 2] = a;
+    data[i + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+/**
  * Maps our adjustment data onto ag-psd's own adjustment types, so the layer stays live and editable
  * in Photoshop rather than being baked into pixels.
  *
@@ -139,6 +161,19 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
     right: width,
   };
 
+  // Orthogonal to type — any layer (groups included) may carry a mask, per `StudioLayer.mask`'s
+  // doc comment — so this sits above the type-branch chain rather than inside one of its arms.
+  if (layer.mask && layer.maskRaster) {
+    base.mask = {
+      canvas: await buildPsdMaskCanvas(layer.maskRaster, width, height),
+      disabled: !layer.mask.enabled,
+      top: 0,
+      left: 0,
+      bottom: height,
+      right: width,
+    };
+  }
+
   if (layer.type === 'group') {
     // ag-psd models a group as a layer with `children` in the same bottom-to-top order we use, so
     // this maps across directly and the group stays a real, collapsible folder in Photoshop.
@@ -180,6 +215,37 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
     // degrades sensibly if the effect is switched off.
     if (t.gradient?.enabled) {
       base.effects = { gradientOverlay: [buildGradientOverlay(t.gradient)] };
+    }
+  } else if (layer.type === 'path' && layer.path) {
+    // Real vector path support, not a rasterize fallback — ag-psd's BezierKnot format was
+    // confirmed with an actual writePsd/readPsd round-trip during implementation: each knot's
+    // `points` is [inHandleX, inHandleY, anchorX, anchorY, outHandleX, outHandleY] in absolute
+    // page-pixel coordinates (ag-psd normalizes by width/height internally on write/read).
+    const p = layer.path;
+    base.vectorMask = {
+      paths: [{
+        open: !p.closed,
+        fillRule: p.fillRule === 'evenodd' ? 'even-odd' : 'non-zero',
+        knots: p.anchors.map(a => ({
+          linked: a.type === 'smooth',
+          points: [
+            a.point.x + (a.handleIn?.x ?? 0), a.point.y + (a.handleIn?.y ?? 0),
+            a.point.x, a.point.y,
+            a.point.x + (a.handleOut?.x ?? 0), a.point.y + (a.handleOut?.y ?? 0),
+          ],
+        })),
+      }],
+    };
+    if (p.fill.enabled) {
+      base.vectorFill = { type: 'color', color: hexToRgb(p.fill.color) };
+    }
+    if (p.stroke.enabled) {
+      base.vectorStroke = {
+        strokeEnabled: true,
+        fillEnabled: false,
+        lineWidth: { units: 'Pixels', value: p.stroke.width },
+        content: { type: 'color', color: hexToRgb(p.stroke.color) },
+      };
     }
   }
 

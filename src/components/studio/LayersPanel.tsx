@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal,
-  FolderPlus, ChevronRight, FolderOpen, CornerDownRight,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -42,6 +42,15 @@ interface LayersPanelProps {
   onToggleCollapsed?: (id: string) => void;
   /** Clip this layer to the raster layer directly below it, or release it. */
   onToggleClipped?: (id: string) => void;
+  /** Adds a mask to this layer if it has none, or removes its existing one. Any layer type may
+   *  carry a mask (groups included), so unlike clipping there's no eligibility gate. */
+  onToggleMask?: (id: string) => void;
+  /** Toggles an existing mask's `enabled` flag without removing it. */
+  onToggleMaskEnabled?: (id: string) => void;
+  /** Makes this layer's mask (rather than its own content) the current paint target. */
+  onSelectMask?: (id: string) => void;
+  /** The layer whose mask is currently the paint target, or null. */
+  activeMaskLayerId?: string | null;
   /** `index` is read against the destination list *after* the dragged layer is detached. */
   onReparent?: (id: string, newParentId: string | null, index: number) => void;
   /**
@@ -60,7 +69,8 @@ interface LayersPanelProps {
 export function LayersPanel({
   layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
   onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
-  onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onReparent, expandedLayerId, onToggleExpanded,
+  onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
+  activeMaskLayerId, onReparent, expandedLayerId, onToggleExpanded,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -227,6 +237,28 @@ export function LayersPanel({
                   {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
                 </span>
 
+                {/* Mask chip — always visible (not gated behind the row's own disclosure) so it's
+                    reachable with one click, matching Photoshop's layer-thumbnail/mask-thumbnail
+                    pair. Not a live pixel preview (that would need a new thumbnail-rendering
+                    pipeline); just an indicator of presence/enabled/active-paint-target state. */}
+                {layer.mask && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={activeMaskLayerId === layer.id ? `Stop editing ${layer.name}'s mask` : `Edit ${layer.name}'s mask`}
+                    title={layer.mask.enabled ? 'Layer mask (click to edit)' : 'Layer mask (disabled)'}
+                    onClick={(e) => { e.stopPropagation(); onSelectMask?.(layer.id); }}
+                    className={cn(
+                      'shrink-0 w-5 h-5 rounded border flex items-center justify-center',
+                      activeMaskLayerId === layer.id ? 'border-accent bg-accent-soft text-accent'
+                        : layer.mask.enabled ? 'border-hairline text-ink-faint hover:text-ink'
+                        : 'border-hairline text-ink-faint/40'
+                    )}
+                  >
+                    <Contrast size={11} />
+                  </span>
+                )}
+
                 <span className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}>
                   {layer.name}
                 </span>
@@ -290,6 +322,28 @@ export function LayersPanel({
                     <IconButton size="sm" aria-label="Move down" disabled={!canMove(layers, layer.id, 'down')} onClick={() => onMove(layer.id, 'down')} className="!bg-transparent !w-7 !h-7">
                       <ChevronDown size={13} />
                     </IconButton>
+                    {onToggleMask && !layer.isBackground && layer.type !== 'adjustment' && (
+                      <IconButton
+                        size="sm"
+                        aria-label={layer.mask ? 'Delete mask' : 'Add mask'}
+                        title={layer.mask ? 'Delete layer mask' : 'Add layer mask (from selection, or reveal-all)'}
+                        onClick={() => onToggleMask(layer.id)}
+                        className="!bg-transparent !w-7 !h-7"
+                      >
+                        <Contrast size={12} className={layer.mask ? 'text-accent' : undefined} />
+                      </IconButton>
+                    )}
+                    {layer.mask && onToggleMaskEnabled && (
+                      <IconButton
+                        size="sm"
+                        aria-label={layer.mask.enabled ? 'Disable layer mask' : 'Enable layer mask'}
+                        title={layer.mask.enabled ? 'Disable layer mask' : 'Enable layer mask'}
+                        onClick={() => onToggleMaskEnabled(layer.id)}
+                        className="!bg-transparent !w-7 !h-7"
+                      >
+                        {layer.mask.enabled ? <Eye size={12} /> : <EyeOff size={12} className="opacity-40" />}
+                      </IconButton>
+                    )}
                     {onToggleClipped && !layer.isBackground && (
                       <IconButton
                         size="sm"

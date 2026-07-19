@@ -1,12 +1,12 @@
 import { useCallback, useRef } from 'react';
 import {
-  applyFilterBrush, applyGradient, cloneSegment, contentAwareFill, drawShape, floodFillAt, strokeSegment, liquify,
+  applyFilterBrush, applyGradient, cloneSegment, healSegment, contentAwareFill, drawShape, floodFillAt, strokeSegment, liquify,
   type PaintSettings, type PaintTool,
 } from './paintEngine';
 import { magicWandMask, refineMaskedRegion, combineSelections, NO_SELECTION, type Selection, type SelectionCombineMode } from './selection';
 
 export const PAINT_TOOLS: PaintTool[] = [
-  'brush', 'pencil', 'eraser', 'bucket', 'gradient', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
+  'brush', 'pencil', 'eraser', 'bucket', 'gradient', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
   'shape-rect', 'shape-ellipse', 'shape-line', 'spot-heal', 'liquify',
 ];
 
@@ -37,6 +37,8 @@ interface UsePaintLayerArgs {
 export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas }: UsePaintLayerArgs) {
   const drawingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
+  // Intentionally shared between Clone Stamp and Healing Brush — Photoshop keeps one source point
+  // across both tools too, so alt-clicking with one and painting with the other is expected, not a bug.
   const cloneSourceRef = useRef<{ x: number; y: number } | null>(null);
   const cloneOffsetRef = useRef<{ x: number; y: number } | null>(null);
   const gradientStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -123,7 +125,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    if (tool === 'clone' && altKey) {
+    if ((tool === 'clone' || tool === 'heal') && altKey) {
       cloneSourceRef.current = { x, y };
       return;
     }
@@ -146,7 +148,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       onStrokeEnd(before);
       return;
     }
-    if (tool === 'clone' && cloneSourceRef.current) {
+    if ((tool === 'clone' || tool === 'heal') && cloneSourceRef.current) {
       cloneOffsetRef.current = { x: x - cloneSourceRef.current.x, y: y - cloneSourceRef.current.y };
       const snap = document.createElement('canvas');
       snap.width = canvas.width;
@@ -196,8 +198,12 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
         growBox(strokeSegment(bufCtx, w - lastX, h - lastY, w - x, h - y, settings, tool, selection, pressure));
       }
       compositeStroke(ctx, tool);
-    } else if (tool === 'clone' && cloneOffsetRef.current && sourceSnapshotRef.current) {
-      cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
+    } else if ((tool === 'clone' || tool === 'heal') && cloneOffsetRef.current && sourceSnapshotRef.current) {
+      if (tool === 'clone') {
+        cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
+      } else {
+        healSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
+      }
     } else if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn' || tool === 'sponge') {
       applyFilterBrush(ctx, x, y, settings.size, settings.flow, tool, x - lastX, y - lastY, selection);
     } else if (tool === 'liquify') {

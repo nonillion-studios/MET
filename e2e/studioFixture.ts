@@ -228,7 +228,7 @@ export async function openStudio(page: Page): Promise<void> {
  */
 export async function openLayersPanel(page: Page): Promise<void> {
   await page.getByRole('tab', { name: 'Layers' }).or(page.getByText('Layers', { exact: true })).first().click();
-  await page.getByRole('button', { name: 'Add layer' }).waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: 'Add layer', exact: true }).waitFor({ state: 'visible' });
 }
 
 /**
