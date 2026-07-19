@@ -85,9 +85,14 @@ body.show-safe #page .safe-ov{display:block}
 #paint{position:absolute;inset:0;width:100%;height:100%;z-index:6;pointer-events:none;border-radius:4px}
 body.painting #paint{pointer-events:auto}
 .bubble{
+  /* z-index:8, not the old 4 — this is the demo's actual visible manga text and it was sitting
+     below #paint(6)/#penSvg/#origOverlay(7) in EVERY mode, not just Show Original, which is the
+     real "text behind the image" bug: the earlier fix only touched #origOverlay/#textLayer and
+     never looked at .bubble, the element that actually holds data-jp/data-ar text. Matched to
+     #textLayer's own tier (8) so bubble text and .txt-item text layers are peers. */
   position:absolute;background:#fff;border:2px solid #16151a;border-radius:50%;
   display:flex;align-items:center;justify-content:center;text-align:center;
-  font-weight:600;color:#1a1922;line-height:1.35;cursor:pointer;transition:box-shadow .15s;z-index:4;
+  font-weight:600;color:#1a1922;line-height:1.35;cursor:pointer;transition:box-shadow .15s;z-index:8;
 }
 body.painting .bubble{pointer-events:none}
 .bubble:hover{box-shadow:0 0 0 3px rgba(124,106,245,.35)}
@@ -101,7 +106,7 @@ body.ws-typeset .ai-box,body.ws-review .ai-box{display:none}
   font-size:9px;font-weight:700;padding:3px 7px;border-radius:6px;letter-spacing:.4px;white-space:nowrap;
   box-shadow:0 4px 10px rgba(106,84,240,.45)}
 .sfx{position:absolute;font-family:'Arial Black',sans-serif;font-weight:900;color:#16151a;
-  transform:rotate(-8deg);-webkit-text-stroke:1px #16151a;letter-spacing:-1px}
+  transform:rotate(-8deg);-webkit-text-stroke:1px #16151a;letter-spacing:-1px;z-index:8}
 
 /* brush cursor — outer ring = actual brush size (matches the old behavior exactly); a nested
    .hr inner ring marks where hardness falloff begins (100% hardness = ring flush with the outer
@@ -246,7 +251,7 @@ kbd{font-family:var(--mono);font-size:9.5px;background:rgba(255,255,255,.07);
 /* ============================================================
    COLOR PANEL — wheel like Photoshop
    ============================================================ */
-#colorPanel{position:fixed;left:60px;bottom:56px;z-index:56;width:214px;padding:12px;
+#colorPanel{position:fixed;right:14px;top:var(--panels-top);z-index:56;width:214px;padding:12px;
   border-radius:16px;display:none;flex-direction:column;gap:10px}
 #colorPanel.open{display:flex;animation:pop .2s cubic-bezier(.2,.9,.3,1.15)}
 .wheel-wrap{position:relative;width:176px;height:176px;margin:0 auto}
@@ -321,7 +326,11 @@ kbd{font-family:var(--mono);font-size:9.5px;background:rgba(255,255,255,.07);
 /* ============================================================
    INSPECTOR
    ============================================================ */
-#inspector{position:fixed;right:10px;top:var(--panels-top);bottom:56px;width:264px;z-index:40;
+/* anchored bottom-right (not the old full-height right edge) so it sits under the color panel,
+   which now takes the top-right corner instead. Layers lives inside this tabbed panel along with
+   Properties/Translate/History — carving Layers out into its own standalone panel would be a much
+   bigger restructure than "move layers to the bottom right" asked for. */
+#inspector{position:fixed;right:10px;bottom:56px;max-height:56vh;width:264px;z-index:40;
   display:flex;flex-direction:column;overflow:hidden;
   transition:transform .28s cubic-bezier(.2,.8,.2,1),opacity .28s}
 #inspector.collapsed{transform:translateX(320px);opacity:0;pointer-events:none}
@@ -382,6 +391,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .layer-name{flex:1;font-size:11px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .layer .lock{color:var(--txt3);opacity:0;transition:opacity .12s;cursor:pointer;font-size:10px}
 .layer:hover .lock,.layer .lock.on{opacity:.8}
+.layer .trash{color:var(--txt3);opacity:0;transition:opacity .12s,color .12s;cursor:pointer;font-size:10px}
+.layer:hover .trash{opacity:.8}
+.layer .trash:hover{color:var(--red);opacity:1}
 .hist-item{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;font-size:11px;
   color:var(--txt2);cursor:pointer}
 .hist-item:hover{background:var(--glass-hover)}
@@ -944,6 +956,7 @@ body.mode-studio[class*=" "] #page{transition:width .25s cubic-bezier(.2,.8,.2,1
 body.typer-arm #brushCursor{display:none!important}
 /* ═══ MARQUEE TOOL + MULTI-BUBBLE ═══ */
 body.marquee #paint{cursor:crosshair}
+body.tool-move #paint{cursor:move}
 body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
 #marqLayer{position:absolute;inset:0;z-index:9;pointer-events:none;overflow:visible}
 /* Single Row/Column: before the first click, show where the exact 1-real-pixel line would land —
@@ -983,9 +996,16 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
   backdrop-filter:var(--blur);border:1px solid var(--stroke);border-radius:7px;padding:3px 7px;
   font-family:var(--mono);font-size:9px;color:var(--txt);display:none}
 /* grouped-tool flyout (Photoshop-style) — opened via right-click/long-press only (JS toggles
-   .open), not hover: hovering the rail must never pop a menu the user didn't ask for. */
-.tool-flyout{position:absolute;left:44px;top:0;display:none;flex-direction:column;gap:2px;padding:5px;
-  border-radius:12px;z-index:20;background:var(--glass-strong);backdrop-filter:var(--blur);
+   .open), not hover: hovering the rail must never pop a menu the user didn't ask for.
+   position:fixed (not absolute-relative-to-the-tool-button) and z-index:95, because #toolrail has
+   an unrelated overflow-y:auto (for tall rails on short screens) — and per the CSS spec, setting
+   overflow-y to anything but visible forces overflow-x to also clip, with no way to keep one axis
+   visible while the other scrolls. That silently clipped every flyout that tried to pop out
+   sideways. Fixed by portalling: these get moved to a direct child of <body> in JS (see
+   buildToolGroups()/the #marqFlyout init below) and positioned from getBoundingClientRect() on
+   open, instead of relying on CSS layout relative to their (clipping) ancestor. */
+.tool-flyout{position:fixed;display:none;flex-direction:column;gap:2px;padding:5px;
+  border-radius:12px;z-index:95;background:var(--glass-strong);backdrop-filter:var(--blur);
   border:1px solid var(--stroke);box-shadow:var(--shadow)}
 .tool-flyout.open{display:flex}
 .tool-flyout button{display:flex;align-items:center;gap:8px;padding:6px 10px 6px 8px;border-radius:8px;
@@ -1181,6 +1201,7 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
 <aside id="toolrail">
   <div class="tool-capsule glass">
     <button class="tool active" data-tool="select"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M5 3l14 8-6.5 1.5L9 19z"/></svg><span class="kbd-hint">Select <kbd>V</kbd></span></button>
+    <button class="tool" data-tool="move"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg><span class="kbd-hint">Move <kbd>K</kbd></span></button>
     <button class="tool has-flyout" data-tool="marquee"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.4"><rect x="3" y="4" width="18" height="16" rx="1"/></svg><span class="corner"></span>
       <div class="tool-flyout" id="marqFlyout">
         <button data-mq="rect" class="on"><svg class="mk" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2"><rect x="4" y="5" width="16" height="14" rx="1"/></svg>Rectangular <kbd>M</kbd></button>
@@ -1329,10 +1350,10 @@ body.marquee .txt-item,body.marquee .bubble{pointer-events:none}
     </div>
 
     <div class="insp-pane" id="pane-layers">
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">T</div><div class="layer-name">Typeset — AR text</div><span class="lock">🔒</span></div>
-      <div class="layer sel"><span class="eye">👁</span><div class="layer-ico">◯</div><div class="layer-name">Bubble B-02</div><span class="lock">🔒</span></div>
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">✦</div><div class="layer-name">AI inpaint mask</div><span class="lock">🔒</span></div>
-      <div class="layer"><span class="eye">👁</span><div class="layer-ico">▦</div><div class="layer-name">Clean plate</div><span class="lock on">🔒</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">T</div><div class="layer-name">Typeset — AR text</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer sel"><span class="eye">👁</span><div class="layer-ico">◯</div><div class="layer-name">Bubble B-02</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">✦</div><div class="layer-name">AI inpaint mask</div><span class="lock">🔒</span><span class="trash">🗑</span></div>
+      <div class="layer"><span class="eye">👁</span><div class="layer-ico">▦</div><div class="layer-name">Clean plate</div><span class="lock on">🔒</span><span class="trash">🗑</span></div>
       <div class="layer hidden-l"><span class="eye off">👁</span><div class="layer-ico">🖼</div><div class="layer-name">RAW original</div><span class="lock on">🔒</span></div>
       <div class="section" style="margin-top:14px">
         <div class="sec-head"><span class="sec-title">AI task queue</span></div>
@@ -1876,7 +1897,7 @@ function swapColors(){const fg=curHex();const tmp=bgColor;bgColor=fg;
 function resetColors(){bgColor='#FFFFFF';$('#bgSw').style.background=bgColor;setRGB(22,21,26);}
 
 /* ═════════ TOOLS + OPTIONS BAR ═════════ */
-const toolMeta={select:['▸','Select'],hand:['✋','Pan'],pin:['📍','Pin'],pen:['✒','Pen'],brush:['🖌','Brush'],erase:['◻','Eraser'],
+const toolMeta={select:['▸','Select'],move:['✥','Move'],hand:['✋','Pan'],pin:['📍','Pin'],pen:['✒','Pen'],brush:['🖌','Brush'],erase:['◻','Eraser'],
   clone:['◎','Clone Stamp'],eyedrop:['💧','Eyedropper'],marquee:['▱','Marquee'],text:['T','Text'],bubble:['◯','Bubble'],shape:['▢','Shape'],
   'ai-detect':['✦','AI Detect'],'ai-clean':['✦','AI Inpaint'],'content-aware':['✚','Content-Aware'],zoom:['⌕','Zoom']};
 const PAINT_TOOLS=['brush','erase','clone','content-aware','eyedrop','marquee'];
@@ -1884,6 +1905,7 @@ const OB_CFG={brush:['brushes','size','hard','opac','flow','color','smooth'],
   erase:['brushes','size','hard','opac','flow'],clone:['size','hard','opac','flow'],
   pen:['size','color'],bubble:['color'],shape:['size','color'],marquee:['selmod']};
 const OB_HINTS={select:'Click a bubble · double-click to edit its text',
+  move:'Drag pixels trapped inside the active selection',
   hand:'Drag to pan · ⌘+scroll to zoom',pin:'Click the page to drop a note',
   pen:'Click = anchor · drag = curve handles · Enter = stroke path',
   clone:'Alt+Click to set the source point, then paint',
@@ -1912,6 +1934,7 @@ function setTool(name){if(!toolMeta[name])return;curTool=name;
   if(name==='ai-detect'){setTimeout(()=>toast('AI detection complete','5 objects found on Page 07 · 1.2s'),700);}
   document.body.classList.toggle('eyedrop',name==='eyedrop');
   document.body.classList.toggle('marquee',name==='marquee');
+  document.body.classList.toggle('tool-move',name==='move');
   document.body.classList.toggle('erasing',name==='erase');
   document.body.classList.toggle('tool-hand',name==='hand');
   document.body.classList.toggle('tool-zoom',name==='zoom');
@@ -1924,7 +1947,7 @@ function setTool(name){if(!toolMeta[name])return;curTool=name;
     it.classList.toggle('hide',!vis.includes(it.dataset.ob));});
   if(OB_HINTS[name])$('#obHint').textContent=OB_HINTS[name];}
 $$('.tool[data-tool]').forEach(t=>t.addEventListener('click',()=>setTool(t.dataset.tool)));
-const toolKeys={v:'select',h:'hand',n:'pin',p:'pen',b:'brush',e:'erase',s:'clone',t:'text',u:'bubble',r:'shape',j:'eyedrop',m:'marquee',a:'ai-detect',i:'ai-clean',w:'content-aware',z:'zoom'};
+const toolKeys={v:'select',k:'move',h:'hand',n:'pin',p:'pen',b:'brush',e:'erase',s:'clone',t:'text',u:'bubble',r:'shape',j:'eyedrop',m:'marquee',a:'ai-detect',i:'ai-clean',w:'content-aware',z:'zoom'};
 
 /* ═════════ TOOL GROUPS — right-click / long-press flyouts, Photoshop-style ═════════
    Built by taking each group's already-rendered standalone rail buttons, snapshotting their real
@@ -1965,8 +1988,12 @@ function buildToolGroups(){
       b.addEventListener('click',e=>{e.stopPropagation();pickGroupTool(head,snap,id);closeAllToolFlyouts();});
       fly.appendChild(b);});
     real.slice(1).forEach(id=>{const b=document.querySelector(`.tool[data-tool="${id}"]`);if(b)b.remove();});
-    head.appendChild(fly);
-    toolGroupState.push({ids:real,head,snap});});}
+    /* portal: append to <body>, not head, so #toolrail's overflow-y:auto can never clip it (see
+       the .tool-flyout CSS comment). head._flyout keeps a direct reference since fly is no longer
+       a DOM descendant of head, so head.querySelector('.tool-flyout') would otherwise go stale
+       after this first open. */
+    document.body.appendChild(fly);head._flyout=fly;
+    toolGroupState.push({ids:real,head,snap,fly});});}
 function cycleToolGroup(anchorId){
   const grp=toolGroupOf[anchorId];if(!grp)return;
   const st=toolGroupState.find(g=>g.ids===grp);if(!st)return;
@@ -1978,19 +2005,26 @@ function cycleToolGroup(anchorId){
    Esc closes; clicking any flyout item also closes. One delegated listener set covers every
    grouped head (including marquee's pre-existing #marqFlyout) uniformly. ---- */
 function closeAllToolFlyouts(){$$('.tool-flyout.open').forEach(f=>f.classList.remove('open'));}
+/* positions a (now body-portalled) flyout next to its head button, clamped so it can't render
+   off the right/bottom edge of a narrow viewport. */
+function openFlyoutFor(head,fly){
+  const r=head.getBoundingClientRect();
+  fly.style.left=Math.min(window.innerWidth-220,r.right+8)+'px';
+  fly.style.top=Math.min(window.innerHeight-200,r.top)+'px';
+  closeAllToolFlyouts();fly.classList.add('open');}
 document.addEventListener('contextmenu',e=>{
   if(!e.target.closest('#toolrail'))return;
   e.preventDefault();
   const head=e.target.closest('.tool.has-flyout');
   if(!head)return;
-  const fly=head.querySelector('.tool-flyout');
+  const fly=head._flyout;
   if(!fly)return;
-  closeAllToolFlyouts();fly.classList.add('open');});
+  openFlyoutFor(head,fly);});
 let toolLongPress=null;
 $('#toolrail').addEventListener('touchstart',e=>{
   const head=e.target.closest('.tool.has-flyout');if(!head)return;
-  const fly=head.querySelector('.tool-flyout');if(!fly)return;
-  toolLongPress=setTimeout(()=>{closeAllToolFlyouts();fly.classList.add('open');},350);},{passive:true});
+  const fly=head._flyout;if(!fly)return;
+  toolLongPress=setTimeout(()=>openFlyoutFor(head,fly),350);},{passive:true});
 $('#toolrail').addEventListener('touchend',()=>clearTimeout(toolLongPress));
 $('#toolrail').addEventListener('touchmove',()=>clearTimeout(toolLongPress));
 document.addEventListener('click',e=>{if(e.target.closest('.tool-flyout button'))closeAllToolFlyouts();});
@@ -2393,12 +2427,13 @@ $$('input[type=range].live').forEach(r=>r.addEventListener('input',()=>{r.parent
 $('#aiApply').onclick=()=>toast('Suggestion applied','Bubble B-02 → jagged style · 24pt bold');
 $('#aiDismiss').onclick=e=>{e.target.closest('.ai-suggest').style.display='none';};
 
-/* layers: eye + lock toggles */
+/* layers: eye + lock + trash */
 $$('.layer').forEach(l=>{
   l.addEventListener('click',e=>{
     if(e.target.classList.contains('eye')){e.target.classList.toggle('off');
       l.classList.toggle('hidden-l');return;}
     if(e.target.classList.contains('lock')){e.target.classList.toggle('on');return;}
+    if(e.target.classList.contains('trash')){l.remove();return;}
     $$('.layer').forEach(x=>x.classList.remove('sel'));l.classList.add('sel');});});
 
 /* translate cards select bubble */
@@ -2589,7 +2624,11 @@ $$('.bubble').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();sele
 $('#viewport').addEventListener('click',e=>{
   if(curTool==='zoom'){setZoom(+slider.value+(e.altKey?-25:25));return;}
   if(e.target.id==='viewport'||e.target.id==='stage'){ctx.classList.remove('show');
-    $$('.bubble').forEach(x=>x.classList.remove('selected'));deselectTxt&&deselectTxt();}});
+    $$('.bubble').forEach(x=>x.classList.remove('selected'));deselectTxt&&deselectTxt();
+    /* clicking empty canvas also cancels the real marquee selection — otherwise every raster tool
+       stays clipped to whatever selection was last made, with no mouse-driven way out (Ctrl+D was
+       the only escape hatch, and it's not discoverable). */
+    if(typeof hasSelection==='function'&&hasSelection()&&!mbMode)deselectAll();}});
 ctx.addEventListener('click',e=>{const a=e.target.closest('[data-act]');if(!a)return;
   const sel=document.querySelector('.txt-item.sel')||document.querySelector('.bubble.selected');
   if(a.dataset.act==='color'){if(sel){sel.style.color=curHex();
@@ -3821,7 +3860,9 @@ function setMarquee(t){marqType=t;
   /* picking a subtype from the flyout also becomes the rail's visible icon, same as every other
      grouped tool — reuses the flyout's own small .mk icon rather than a second icon registry. */
   const head=document.querySelector('.tool[data-tool="marquee"]');
-  const mk=head&&head.querySelector(`.tool-flyout button[data-mq="${t}"] svg`);
+  /* by stable id, not head.querySelector — #marqFlyout is portalled to <body> now, no longer a
+     DOM descendant of head, so a nesting-relative lookup here would silently start failing. */
+  const mk=document.querySelector(`#marqFlyout button[data-mq="${t}"] svg`);
   const cur=head&&head.querySelector(':scope > svg');
   if(head&&mk&&cur)cur.replaceWith(mk.cloneNode(true));}
 function cycleMarquee(){const o=['rect','ell','col','row'],i=o.indexOf(marqType);
@@ -3902,7 +3943,10 @@ function deselectAll(){selOps=[];selMaskCtx.clearRect(0,0,selMaskCanvas.width,se
 function startMarqDraw(e){
   const r=page.getBoundingClientRect();
   marqDraw={x0:e.clientX-r.left,y0:e.clientY-r.top,shift:e.shiftKey,alt:e.altKey,r};
-  if(!mbMode&&!e.shiftKey&&!e.altKey)selOps=[];
+  /* deselectAll() also clears selMaskCtx and re-renders — a bare selOps=[] here used to leave the
+     mask and the marching-ants DOM stale, so a plain click (no real drag follows) looked like it
+     hadn't cancelled anything even though the logical selection was already gone. */
+  if(!mbMode&&!e.shiftKey&&!e.altKey)deselectAll();
   try{paint.setPointerCapture(e.pointerId);}catch(_){}}
 paint.addEventListener('pointerdown',e=>{
   if(curTool!=='marquee')return;
@@ -4142,6 +4186,57 @@ function commitFloatPiece(){if(!floatPiece)return;
   $('#selFloat')&&$('#selFloat').remove();floatPiece=null;}
 function nudgeFloatPiece(dx,dy){if(!floatPiece)return;floatPiece.x+=dx;floatPiece.y+=dy;renderFloatPiece();}
 
+/* ---- Move tool: drags the pixel content trapped inside the active selection. Reuses the same
+   cut-piece-and-redraw-at-offset machinery the paste flow already built (#selFloat/floatPiece/
+   renderFloatPiece) instead of a second scratch-canvas system — a live move IS "cut, drag, commit"
+   with the selection's own geometry translated to match, just without the clipboard in between. */
+let moveDrag=null;
+paint.addEventListener('pointerdown',e=>{
+  if(curTool!=='move')return;
+  if(!hasSelection()){toast('No selection','Make a selection first, then switch to Move');return;}
+  const b=selBoundsPx();if(!b)return;
+  const before=document.createElement('canvas');before.width=paint.width;before.height=paint.height;
+  before.getContext('2d').drawImage(paint,0,0);
+  const piece=document.createElement('canvas');piece.width=b.w;piece.height=b.h;
+  const pc=piece.getContext('2d');pc.drawImage(paint,b.x,b.y,b.w,b.h,0,0,b.w,b.h);
+  /* punch the lifted piece down to the mask's own silhouette, not just its bounding box —
+     matches copySelection()'s identical technique above. */
+  const mimg=selMaskCtx.getImageData(b.x,b.y,b.w,b.h);
+  const pimg=pc.getImageData(0,0,b.w,b.h);
+  for(let i=0;i<pimg.data.length;i+=4)pimg.data[i+3]=Math.min(pimg.data[i+3],mimg.data[i+3]);
+  pc.putImageData(pimg,0,0);
+  const c=paint.getContext('2d');c.clearRect(b.x,b.y,b.w,b.h);
+  applySelMaskToRect(c,before,b.x,b.y,b.w,b.h); // re-blend: only the masked pixels stay cleared
+  const[sx,sy]=px(e);
+  moveDrag={before,origX:b.x,origY:b.y,sx,sy,moved:false,
+    opsBefore:selOps.map(o=>({...o,shape:{...o.shape}}))};
+  floatPiece={canvas:piece,x:b.x,y:b.y,w:b.w,h:b.h};renderFloatPiece();
+  try{paint.setPointerCapture(e.pointerId);}catch(_){}});
+paint.addEventListener('pointermove',e=>{
+  if(!moveDrag||!floatPiece)return;
+  const[x,y]=px(e);const dx=x-moveDrag.sx,dy=y-moveDrag.sy;
+  if(Math.hypot(dx,dy)>0.5)moveDrag.moved=true;
+  floatPiece.x=moveDrag.origX+dx;floatPiece.y=moveDrag.origY+dy;renderFloatPiece();
+  /* live-translate the selection geometry too, so the marching ants track the moved content the
+     same way every other selection operation this session keeps visuals in sync with state. */
+  const dxPct=dx/paint.width*100,dyPct=dy/paint.height*100;
+  selOps=moveDrag.opsBefore.map(o=>({...o,shape:{...o.shape,l:o.shape.l+dxPct,t:o.shape.t+dyPct}}));
+  renderMarquees();});
+paint.addEventListener('pointerup',()=>{
+  if(!moveDrag)return;
+  const d=moveDrag;moveDrag=null;
+  const c=paint.getContext('2d');
+  if(!d.moved){ /* press-and-release with no real drag — put everything back, no undo entry */
+    c.clearRect(0,0,paint.width,paint.height);c.drawImage(d.before,0,0);
+    selOps=d.opsBefore;renderMarquees();
+    $('#selFloat')&&$('#selFloat').remove();floatPiece=null;return;}
+  c.globalCompositeOperation='source-over';c.globalAlpha=1;
+  c.drawImage(floatPiece.canvas,floatPiece.x,floatPiece.y);
+  rebuildSelMask();renderMarquees(); // resync the real mask to the selection's new position
+  strokes.push(c.getImageData(0,0,paint.width,paint.height));if(strokes.length>25)strokes.shift();
+  addHistory('Move selection');markUnsaved();
+  $('#selFloat')&&$('#selFloat').remove();floatPiece=null;});
+
 /* ---- options-bar Feather / Expand-Contract controls ---- */
 $('#obFeatherGo')&&$('#obFeatherGo').addEventListener('click',()=>{
   const v=+$('#obFeather').value;if(v>0)featherSelectionPx(v);else toast('Feather','Enter a value above 0px first');});
@@ -4154,6 +4249,11 @@ const _escMarq=()=>{clearMarquees();};
 
 /* apply default brush preset on load */
 applyPreset('soft');setTool('select');setMarquee('rect');buildToolGroups();
+/* #marqFlyout is static HTML, not JS-built like the other flyouts, so buildToolGroups() never
+   touches it — portal it the same way by hand: move it to <body> and give its head button the
+   same ._flyout reference the generic open/close handlers rely on for every other grouped tool. */
+(function(){const mHead=document.querySelector('.tool[data-tool="marquee"]'),mFly=$('#marqFlyout');
+  if(mHead&&mFly){document.body.appendChild(mFly);mHead._flyout=mFly;}})();
 
 /* welcome toast */
 
