@@ -568,7 +568,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const padding = 32;
     const scaleX = (containerSize.width - padding * 2) / image.width;
     const scaleY = (containerSize.height - padding * 2) / image.height;
-    const next = Math.min(scaleX, scaleY, 1.5);
+    // A container briefly shorter/narrower than the padding (a transient layout state during a
+    // panel/dock animation, say) makes scaleX/scaleY negative — clamp so a bad measurement can
+    // never jump the view to a nonsensical or negative zoom.
+    const next = clampScale(Math.min(scaleX, scaleY, 1.5));
     setScale(next);
     setPos({
       x: (containerSize.width - image.width * next) / 2,
@@ -1675,16 +1678,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
           className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
           style={{
+            // Layout (width/fontSize) is intentionally left in unscaled page-space units and only
+            // the *transform* scales it to match canvas zoom — mobile Safari/Chrome auto-zoom the
+            // whole viewport when a focused input's computed font-size is under ~16px, which most
+            // text layers' `fontSize * scale` dips under well before that at normal editing zoom
+            // levels (a 24px bubble font at 50% zoom is a 12px textarea). A `transform: scale()`
+            // changes only the rendered size, not the computed font-size the browser's heuristic
+            // reads, so tapping into a small bubble at a zoomed-out view no longer yanks the whole
+            // page's viewport zoom to somewhere else on screen.
             top: pos.y + editingLayer.text.y * scale,
             left: pos.x + editingLayer.text.x * scale,
-            width: (editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width) * scale,
-            fontSize: editingLayer.text.fontSize * scale,
+            width: editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width,
+            fontSize: editingLayer.text.fontSize,
             fontFamily: editingLayer.text.fontFamily,
             fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
             fontStyle: editingLayer.text.italic ? 'italic' : 'normal',
             lineHeight: editingLayer.text.lineHeight,
             color: editingLayer.text.color,
             textAlign: editingLayer.text.align,
+            transform: `scale(${scale})`,
+            transformOrigin: 'top left',
             zIndex: 20,
           }}
         />

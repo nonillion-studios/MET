@@ -390,10 +390,24 @@
 .stagger-item:nth-child(8) { animation-delay: 0.3s; }
 .stagger-item:nth-child(n+9) { animation-delay: 0.34s; }
 
-/* Crossfade when switching between bottom-nav / sidebar sections */
+/*
+ * Crossfade when switching between bottom-nav / sidebar sections.
+ *
+ * Opacity-only, deliberately — this used to also animate `transform` (translateY/scale), but
+ * `animation-fill-mode: both` keeps a CSS animation targeting `transform` permanently "active" on
+ * the element even once it's finished, and `getComputedStyle` then reports a resolved matrix
+ * (never the literal keyword `none`) for as long as that animation stays attached — changing the
+ * end keyframe to `transform: none` does not help, since it's the animation still being in effect
+ * that matters, not which value it's holding. Any non-`none` computed transform, identity or not,
+ * makes its element the containing block for `position: fixed` descendants instead of the
+ * viewport. App.tsx wraps every routed view (Studio included) in this class, and Studio's shell is
+ * `fixed inset-0` below the `lg` breakpoint, so this silently shrank the whole Studio canvas down
+ * to whatever height this element's own flowed content happened to be, not the real viewport,
+ * every time the Library/Studio/Settings/etc. tab was switched.
+ */
 @keyframes viewFadeIn {
-  0% { opacity: 0; transform: translateY(6px) scale(0.995); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
+  0% { opacity: 0; }
+  100% { opacity: 1; }
 }
 .animate-view-fade {
   animation: viewFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
