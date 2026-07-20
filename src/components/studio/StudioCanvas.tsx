@@ -267,7 +267,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * A marquee/lasso gesture doesn't touch the selection at all until the pointer has moved past a
    * small dead zone (4 screen px) — below that it's an ordinary click (e.g. re-clicking inside an
    * existing selection to start a paint stroke), not an attempt to draw a new empty selection. Once
-   * crossed, the gesture behaves exactly as before for its remaining lifetime.
+   * crossed, the gesture behaves exactly as before for its remaining lifetime. Mirrors
+   * objectMarqueeRef's `box.width < 4` gate and textDragRef's 12px gate for the same reason.
    */
   const marqueeDraggedRef = useRef(false);
   const lassoDraggedRef = useRef(false);
@@ -719,6 +720,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, [overlaySource]);
 
   // Esc cancels an in-progress Pen path, polygonal lasso, or Transform Selection; Enter commits any of them (or a pending Crop).
+  // Esc also clears the pixel selection itself while a marquee/lasso/crop tool is active — the
+  // other, more surgical deselect paths (Ctrl+D, an explicit Deselect action) work regardless of
+  // tool, but a bare Esc is scoped to the selection tools so it doesn't fight Pen/Transform's own
+  // Esc handling above, or surprise-clear a selection a paint tool is deliberately clipped to.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && penDraft.length > 0) { setPenDraft([]); penPlacingRef.current = null; }
@@ -742,7 +747,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [penDraft, lassoPolyPoints, activeTool, onCommitCrop, transformingSelection, transformBox]);
+  }, [penDraft, lassoPolyPoints, activeTool, onCommitCrop, transformingSelection, transformBox, selection, onSelectionChange]);
 
   // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
   useEffect(() => {
@@ -1570,6 +1575,41 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * selection the drag just made. Mirrors `textDragConsumedRef`'s handling of the same problem.
    */
   const objectMarqueeConsumedRef = useRef(false);
+
+  /**
+   * These refs hold pixel data and geometry captured against the page being *left* — a page switch
+   * mid-gesture (e.g. Move-tool cut-drag, Transform Selection, an in-progress marquee/lasso) must
+   * not carry any of it onto the newly active page, or a later pointermove/up would apply a stale
+   * cut/transform to the wrong page's canvas. A completed Move-tool drag is discarded (reverted to
+   * its pre-drag pixels) rather than auto-committed, since by cleanup time there's no further user
+   * input to confirm the edit was intentional — matches the existing "zero-movement click reverts"
+   * convention on the pointerup path above, just triggered by a page switch instead of a release
+   * with no movement. Quick Mask's scratch buffer is deliberately *not* reset here — Studio.tsx's
+   * own activePageId-keyed effect already owns that (committing it into the outgoing page's stashed
+   * selection before nulling it, via `commitQuickMask()`); duplicating the null-out here would race
+   * it, since this cleanup can run before that effect gets a chance to read the buffer.
+   */
+  useEffect(() => {
+    return () => {
+      const m = movingSelectionRef.current;
+      if (m) {
+        const canvas = paintCanvasRegistry.current[m.layerId];
+        if (canvas) {
+          canvas.getContext('2d')!.putImageData(m.before, 0, 0);
+          redrawLayerNode(m.layerId);
+        }
+        movingSelectionRef.current = null;
+      }
+      transformOriginRef.current = null;
+      setTransformBox(null);
+      marqueeStartRef.current = null;
+      marqueeDraggedRef.current = false;
+      lassoPointsRef.current = null;
+      lassoDraggedRef.current = false;
+      objectMarqueeRef.current = null;
+      setObjectMarquee(null);
+    };
+  }, [page?.id, redrawLayerNode]);
 
   /** Page-space bounds of a text layer's node, rotation included (Konva gives it to us). */
   const textLayerRect = (id: string) => {

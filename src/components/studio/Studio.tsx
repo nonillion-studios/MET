@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { cn, IconButton } from '../ui';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
 import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection } from './StudioCanvas';
@@ -16,7 +17,6 @@ import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
-import { CollapsibleDockSection } from './dock/CollapsibleDockSection';
 import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
@@ -263,8 +263,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [rightOpen, setRightOpen] = useState(true);
   const leftSidebarRef = useRef<HTMLDivElement>(null);
   const rightSidebarRef = useRef<HTMLDivElement>(null);
-  // Color and Layers are pinned sections of the right column — collapsing either via its chevron
-  // only shrinks it back to a header, it's never fully hidden the way a swappable tab can be.
+  // Color and Layers are pinned, always-visible sections of the right column — collapsing either
+  // via its chevron only shrinks it to a slim header, never fully hides it (aside from
+  // rightOpen/Window > Hide All Panels, which hides the whole column).
   const [colorPanelCollapsed, setColorPanelCollapsed] = useState(false);
   const [layersPanelCollapsed, setLayersPanelCollapsed] = useState(false);
 
@@ -737,6 +738,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     dock.selectTab('adjustment');
   }
 
+  function handleRenameLayer(id: string, name: string) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
+  }
+
   function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
     updateLayers(current => updateLayer(current, id, l =>
       l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
@@ -747,11 +752,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    * @param mode 'replace' (plain click) or 'toggle' (Shift/Ctrl-click — adds, or removes if already
    *             selected). A toggle keeps the clicked layer primary so the panels follow it.
    */
+  // Selecting a layer — from the canvas or the Layers panel — only ever selects it. It used to also
+  // jump the shared dock over to that layer's Text/Adjustment tab, which made the Layers list
+  // itself vanish on the very click that was supposed to just highlight a row in it. Opening those
+  // deeper panels is now a separate, explicit action: the Layers panel's own settings button
+  // (`openLayerSettings` below), handleAddTextLayer/handleAddAdjustmentLayer on creation, or
+  // jumpToBubble from Translation Preview.
   function selectLayer(id: string, mode: LayerSelectMode = 'replace') {
-    // Selecting a layer — from the canvas or the Layers panel — only ever selects it. It used to
-    // also jump the shared dock over to that layer's Text/Adjustment tab, which made the Layers
-    // list itself vanish on the very click that was supposed to just highlight a row in it. Opening
-    // those deeper panels is now a separate, explicit action (LayersPanel's own settings toggle).
     if (mode === 'toggle') {
       setSelectedLayerIds(current => current.includes(id)
         ? current.filter(l => l !== id)
@@ -768,8 +775,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveMaskLayerId(null);
   }
 
-  function handleRenameLayer(id: string, name: string) {
-    updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
+  /** Explicit intent to edit a layer's full settings (Text/Adjustment panel) — the Layers panel's
+   *  settings button, not plain selection. No-ops for layer types with no dedicated panel. */
+  function openLayerSettings(id: string) {
+    const type = findLayer(layers, id)?.type;
+    if (type === 'text') dock.selectTab('text');
+    if (type === 'adjustment') dock.selectTab('adjustment');
+    setActiveMaskLayerId(null);
   }
 
   /** Clicking a mask's thumbnail makes it the paint target; clicking it again (or the layer's own
@@ -1157,12 +1169,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onToggleCollapsed={handleToggleGroupCollapsed}
       onReparent={handleReparentLayer}
       onToggleClipped={handleToggleClipped}
+      onOpenSettings={openLayerSettings}
       onToggleMask={handleToggleMaskExistence}
       onToggleMaskEnabled={handleToggleMaskEnabled}
       onSelectMask={selectMask}
       activeMaskLayerId={activeMaskLayerId}
       expandedLayerId={expandedLayerId}
       onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
+      panelCollapsed={layersPanelCollapsed}
+      onTogglePanelCollapsed={() => setLayersPanelCollapsed(v => !v)}
     />
   );
 
@@ -1204,7 +1219,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
-  const colorPanel = <ColorPanel />;
+  const colorPanel = <ColorPanel collapsed={colorPanelCollapsed} onToggleCollapsed={() => setColorPanelCollapsed(v => !v)} />;
   const historyPanel = <HistoryPanel />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} />;
 
@@ -1428,22 +1443,24 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   );
 
   // Color (top) and Layers (bottom) are pinned, always-visible sections of the right column;
-  // collapsing one via its chevron hands its space to whatever's still expanded, including the
-  // swappable tab strip between them (Text/Adjustment/TypeR/Translation/Brushes/Fonts/History) —
-  // which keeps working exactly as it did as a single-region dock, just relocated.
+  // collapsing one via its own chevron (rendered in its own StudioPanel header — see ColorPanel's
+  // and LayersPanel's `collapsed`/`onToggleCollapsed` props) shrinks its wrapper div to just that
+  // header height and hands the freed space to whatever's still expanded, including the swappable
+  // tab strip between them (Text/Adjustment/TypeR/Translation/Brushes/Fonts/History) — which keeps
+  // working exactly as it did as a single-region dock, just relocated.
   const toolsSidebar = (
     <div className="h-full flex">
       <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
       <div className="w-64 sm:w-72 h-full flex flex-col min-h-0">
-        <CollapsibleDockSection title="Color" collapsed={colorPanelCollapsed} onToggle={() => setColorPanelCollapsed(v => !v)}>
+        <div className={cn('shrink-0 min-h-0 overflow-hidden border-b border-hairline', colorPanelCollapsed ? 'h-10' : 'h-[45%]')}>
           {colorPanel}
-        </CollapsibleDockSection>
+        </div>
         <div className="flex-1 min-h-0 border-y border-hairline">
           <RightDock activeTab={dock.activeTab ?? undefined} onTabChange={dock.selectTab} tabs={toolTabs} className="!border-l-0" />
         </div>
-        <CollapsibleDockSection title="Layers" collapsed={layersPanelCollapsed} onToggle={() => setLayersPanelCollapsed(v => !v)}>
+        <div className={cn('min-h-0 overflow-hidden', layersPanelCollapsed ? 'h-10 shrink-0' : 'flex-1')}>
           {layersPanel}
-        </CollapsibleDockSection>
+        </div>
       </div>
     </div>
   );
@@ -1565,9 +1582,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
             <div className="flex-1 min-h-0 flex flex-col-reverse">
               <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="horizontal" />
               <div className="flex-1 min-h-0 flex flex-col border-x border-hairline">
-                <CollapsibleDockSection title="Color" collapsed={colorPanelCollapsed} onToggle={() => setColorPanelCollapsed(v => !v)}>
+                <div className={cn('shrink-0 min-h-0 overflow-hidden border-b border-hairline', colorPanelCollapsed ? 'h-10' : 'h-[45%]')}>
                   {colorPanel}
-                </CollapsibleDockSection>
+                </div>
                 <div className="flex-1 min-h-0 border-y border-hairline">
                   <RightDock
                     activeTab={dock.activeTab ?? undefined}
@@ -1576,9 +1593,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
                     tabs={toolTabs}
                   />
                 </div>
-                <CollapsibleDockSection title="Layers" collapsed={layersPanelCollapsed} onToggle={() => setLayersPanelCollapsed(v => !v)}>
+                <div className={cn('min-h-0 overflow-hidden', layersPanelCollapsed ? 'h-10 shrink-0' : 'flex-1')}>
                   {layersPanel}
-                </CollapsibleDockSection>
+                </div>
               </div>
             </div>
           </div>

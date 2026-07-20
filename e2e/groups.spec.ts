@@ -76,7 +76,7 @@ test('hiding a group hides its whole subtree on canvas', async ({ page }) => {
   await addLayers(page, 1);
   // Make Layer 1 visibly distinct from the page so hiding it is observable.
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(400);
   expect(near((await sampleStageColor(page)).r, 64)).toBe(true);
 
@@ -93,7 +93,7 @@ test('hiding a group hides its whole subtree on canvas', async ({ page }) => {
 test('a default group is pass-through — children still blend with the page', async ({ page }) => {
   await addLayers(page, 1);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(400);
   expect(near((await sampleStageColor(page)).r, 64)).toBe(true);
 
@@ -110,13 +110,13 @@ test('a default group is pass-through — children still blend with the page', a
 test('lowering a group’s opacity makes it isolated', async ({ page }) => {
   await addLayers(page, 1);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(300);
 
   await row(page, 'Layer 1').click();
   await page.getByRole('button', { name: 'Group layers' }).click();
   await row(page, 'Group').click();
-  await page.locator('input[type=range]').first().fill('50');
+  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
   await page.waitForTimeout(600);
 
   // Isolated: the subtree composites against nothing, so Multiply has no backdrop and the child
@@ -138,7 +138,7 @@ test('a two-child group at partial opacity is isolated before compositing', asyn
   await addLayers(page, 2);
   for (const name of ['Layer 1', 'Layer 2']) {
     await row(page, name).click();
-    await page.locator('select').first().selectOption('multiply');
+    await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
     await page.waitForTimeout(250);
     await row(page, name).click(); // collapse the row again
   }
@@ -148,7 +148,7 @@ test('a two-child group at partial opacity is isolated before compositing', asyn
   await page.getByRole('button', { name: 'Group layers' }).click();
 
   await row(page, 'Group').click();
-  await page.locator('input[type=range]').first().fill('50');
+  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
   await page.waitForTimeout(600);
 
   const c = await sampleStageColor(page);
@@ -235,7 +235,7 @@ test('painting inside a group with opacity still shows the stroke live', async (
   // ancestor holds a stale snapshot, so without suspending it during the stroke the brush would
   // appear to do nothing until pointerup.
   await row(page, 'Group').click();
-  await page.locator('input[type=range]').first().fill('60');
+  await page.getByRole('slider', { name: 'Opacity' }).fill('60');
   await page.waitForTimeout(400);
 
   await row(page, 'Layer 2').click();

@@ -59,7 +59,7 @@ test('a multiply layer exports the same as it renders', async ({ page }) => {
   await page.getByRole('button', { name: 'Add layer' }).click();
   await page.waitForTimeout(400);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(500);
 
   const onScreen = await sampleStageColor(page);
@@ -72,13 +72,13 @@ test('a group exports the same as it renders', async ({ page }) => {
   await page.getByRole('button', { name: 'Add layer' }).click();
   await page.waitForTimeout(400);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(300);
 
   await row(page, 'Layer 1').click();
   await page.getByRole('button', { name: 'Group layers' }).click();
   await row(page, 'Group').click();
-  await page.locator('input[type=range]').first().fill('50');
+  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
   await page.waitForTimeout(600);
 
   // An isolated group (opacity < 1) must isolate identically on both sides. This is the assertion
@@ -94,7 +94,7 @@ test('a pass-through group exports the same as it renders', async ({ page }) => 
   await page.getByRole('button', { name: 'Add layer' }).click();
   await page.waitForTimeout(400);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(300);
 
   await row(page, 'Layer 1').click();
@@ -144,7 +144,7 @@ test('a hidden group is left out of the export', async ({ page }) => {
   await page.getByRole('button', { name: 'Add layer' }).click();
   await page.waitForTimeout(400);
   await row(page, 'Layer 1').click();
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(300);
 
   await row(page, 'Layer 1').click();

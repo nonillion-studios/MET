@@ -7,8 +7,14 @@ interface DockContextValue {
 
 const DockContext = createContext<DockContextValue | null>(null);
 
-// 'layers' (the old default) is no longer one of the swappable tabs — it and 'color' are now
-// pinned sections of their own, always visible regardless of which swappable tab is active.
+// 'layers' and 'color' used to be dock tabs and are now their own always-visible panels outside
+// this context (see Studio.tsx's toolsSidebar). 'typer' is the default for when nothing is
+// selected yet. ('history' looked like a safer, content-free default — TypeR/Translation both
+// carry a script/free-text textarea a text-layer-selection default could collide with — but the
+// History panel's own entries are labeled with the exact same action names their own buttons use
+// ("Add Layer", "Add Adjustment Layer", ...), so having it open by default doubled up almost every
+// `getByRole('button', { name: ... })` locator in the e2e suite with a strict-mode violation the
+// moment any history existed. 'typer' has no such collision.)
 const DEFAULT_ACTIVE_TAB = 'typer';
 
 function loadPersistedTab(storageKey: string | undefined): string | null {
