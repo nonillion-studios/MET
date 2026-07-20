@@ -43,12 +43,17 @@ export interface Conversation {
 
 export interface MessageAttachment { msgId: number; name: string; size: number }
 
-export async function sendTeamMessage(teamId: string, body: string, opts?: { replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
+/**
+ * `id` lets the caller optimistically render the message before this resolves — pass a
+ * client-generated uuid, append a locally-built TeamMessage with that same id, and the eventual
+ * realtime INSERT (if it arrives) just replaces the optimistic copy in place via upsertById.
+ */
+export async function sendTeamMessage(teamId: string, body: string, opts?: { id?: string; replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
   const { data: userData } = await supabase.auth.getUser();
   const senderId = userData.user?.id;
   if (!senderId) return 'Not signed in.';
   const { error } = await supabase.from('team_messages').insert({
-    team_id: teamId, sender_id: senderId, body,
+    id: opts?.id, team_id: teamId, sender_id: senderId, body,
     reply_to_id: opts?.replyToId ?? null,
     attachment_msg_id: opts?.attachment?.msgId ?? null,
     attachment_name: opts?.attachment?.name ?? null,
@@ -96,12 +101,12 @@ export async function pinTeamMessage(id: string, pinned: boolean): Promise<strin
   return error ? error.message : null;
 }
 
-export async function sendDirectMessage(teamId: string, toUserId: string, body: string, opts?: { replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
+export async function sendDirectMessage(teamId: string, toUserId: string, body: string, opts?: { id?: string; replyToId?: string; attachment?: MessageAttachment }): Promise<string | null> {
   const { data: userData } = await supabase.auth.getUser();
   const senderId = userData.user?.id;
   if (!senderId) return 'Not signed in.';
   const { error } = await supabase.from('direct_messages').insert({
-    team_id: teamId, sender_id: senderId, receiver_id: toUserId, body,
+    id: opts?.id, team_id: teamId, sender_id: senderId, receiver_id: toUserId, body,
     reply_to_id: opts?.replyToId ?? null,
     attachment_msg_id: opts?.attachment?.msgId ?? null,
     attachment_name: opts?.attachment?.name ?? null,

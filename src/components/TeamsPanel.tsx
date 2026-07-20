@@ -3468,7 +3468,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
   const [search, setSearch] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [attaching, setAttaching] = useState(false);
-  const { bottomRef, scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
+  const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const typingRef = useRef<ReturnType<typeof subscribeToTyping> | null>(null);
   const typingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3536,7 +3536,17 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     }
     setAttaching(false);
     if (result) {
-      await sendTeamMessage(team.id, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      const id = crypto.randomUUID();
+      const text = body.trim() || `📎 ${result.name}`;
+      pinToBottom();
+      setMessages(prev => upsertById(prev, {
+        id, team_id: team.id, sender_id: myUserId || '', body: text,
+        created_at: new Date().toISOString(), reply_to_id: replyTo?.id ?? null,
+        edited_at: null, deleted: false, pinned: false,
+        attachment_msg_id: result.msgId, attachment_name: result.name, attachment_size: result.size,
+        sender: myMember?.profile ? { name: myMember.profile.name, avatar: myMember.profile.avatar } : null,
+      }));
+      await sendTeamMessage(team.id, text, { id, attachment: result, replyToId: replyTo?.id });
       setBody(''); setReplyTo(null);
     }
   };
@@ -3550,9 +3560,23 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       setEditingId(null);
       return;
     }
+    const id = crypto.randomUUID();
+    const replyToId = replyTo?.id;
     pinToBottom();
-    await sendTeamMessage(team.id, text, { replyToId: replyTo?.id });
+    setMessages(prev => upsertById(prev, {
+      id, team_id: team.id, sender_id: myUserId || '', body: text,
+      created_at: new Date().toISOString(), reply_to_id: replyToId ?? null,
+      edited_at: null, deleted: false, pinned: false,
+      attachment_msg_id: null, attachment_name: null, attachment_size: null,
+      sender: myMember?.profile ? { name: myMember.profile.name, avatar: myMember.profile.avatar } : null,
+    }));
     setReplyTo(null);
+    const error = await sendTeamMessage(team.id, text, { id, replyToId });
+    if (error) {
+      swal({ icon: 'error', title: 'Message failed to send', text: error });
+      setMessages(prev => prev.filter(m => m.id !== id));
+      return;
+    }
 
     const mentioned = parseMentions(text, members);
     for (const userId of mentioned) {
@@ -3580,7 +3604,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       <div className="px-3 py-2 border-b border-hairline shrink-0">
         <Input placeholder="Search messages..." value={search} onChange={e => setSearch(e.target.value)} className="text-xs" />
       </div>
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="chat-scroll" className="flex-1 overflow-y-auto p-4 space-y-3 relative">
         {messages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
         {messages.map(m => (
           <TeamMessageBubble
@@ -3602,7 +3626,6 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
             onToggleReaction={toggleReaction}
           />
         ))}
-        <div ref={bottomRef} />
         {showJumpToEnd && (
           <button
             onClick={jumpToEnd}
@@ -3709,7 +3732,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
   const [replyTo, setReplyTo] = useState<DirectMessage | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
-  const { bottomRef, scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
+  const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { session } = useTeamAuth();
   const myUserId = session?.user.id;
@@ -3747,7 +3770,15 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     }
     setAttaching(false);
     if (result) {
-      await sendDirectMessage(team.id, partnerId, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      const id = crypto.randomUUID();
+      const text = body.trim() || `📎 ${result.name}`;
+      pinToBottom();
+      setMessages(prev => upsertById(prev, {
+        id, team_id: team.id, sender_id: myUserId || '', receiver_id: partnerId, body: text, read: false,
+        created_at: new Date().toISOString(), reply_to_id: replyTo?.id ?? null, edited_at: null, deleted: false,
+        attachment_msg_id: result.msgId, attachment_name: result.name, attachment_size: result.size,
+      }));
+      await sendDirectMessage(team.id, partnerId, text, { id, attachment: result, replyToId: replyTo?.id });
       setBody(''); setReplyTo(null);
     }
   };
@@ -3761,9 +3792,21 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
       setEditingId(null);
       return;
     }
+    const id = crypto.randomUUID();
+    const replyToId = replyTo?.id;
     pinToBottom();
-    await sendDirectMessage(team.id, partnerId, text, { replyToId: replyTo?.id });
+    setMessages(prev => upsertById(prev, {
+      id, team_id: team.id, sender_id: myUserId || '', receiver_id: partnerId, body: text, read: false,
+      created_at: new Date().toISOString(), reply_to_id: replyToId ?? null, edited_at: null, deleted: false,
+      attachment_msg_id: null, attachment_name: null, attachment_size: null,
+    }));
     setReplyTo(null);
+    const error = await sendDirectMessage(team.id, partnerId, text, { id, replyToId });
+    if (error) {
+      swal({ icon: 'error', title: 'Message failed to send', text: error });
+      setMessages(prev => prev.filter(m => m.id !== id));
+      return;
+    }
     notify(partnerId, `New message from ${session?.user.email || 'a teammate'}`, text.slice(0, 80));
   };
 
@@ -3778,7 +3821,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
           <p className="text-sm font-semibold text-ink">{partnerName}</p>
         </button>
       </div>
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="chat-scroll" className="flex-1 overflow-y-auto p-4 space-y-3 relative">
         {messages.map(m => (
           <DirectMessageBubble
             key={m.id}
@@ -3799,7 +3842,6 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
             onToggleReaction={toggleReaction}
           />
         ))}
-        <div ref={bottomRef} />
         {showJumpToEnd && (
           <button
             onClick={jumpToEnd}
