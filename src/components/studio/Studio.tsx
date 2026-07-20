@@ -525,10 +525,33 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     return () => { cancelled = true; };
   }, [chapterId]);
 
-  // A pixel selection is in the *previous* page's image-space coordinates — carrying it over
-  // makes the marching ants stale/meaningless the moment the page changes.
+  // Selections are per-page. A pixel selection is expressed in the *previous* page's image-space
+  // coordinates, so it can't just carry over — but it also shouldn't be discarded outright: it's
+  // stashed here (mirroring how rasterByPageRef/maskByPageRef already keep other per-page data)
+  // and restored if the user comes back to that page. Quick Mask's scratch alpha canvas lives in a
+  // flat (non-page-keyed) ref inside StudioCanvas, so switching pages while it's active would leave
+  // it painting into/reading the previous page's buffer; commit it (same as toggling it off, and
+  // reading purely from the canvas ref itself so it's unaffected by the new page's image already
+  // loading) into that outgoing page's stashed selection — never silently drop in-progress mask
+  // work. Multi-Bubble/Slice's queued rects are likewise a flat array with no page id on each
+  // entry; carrying them over would draw/fill the wrong page's regions, so they're cleared same as
+  // `selection` used to be unconditionally.
+  const selectionByPageRef = useRef<Record<string, Selection>>({});
+  const prevPageIdRef = useRef(activePageId);
   useEffect(() => {
-    setSelection(NO_SELECTION);
+    const prevId = prevPageIdRef.current;
+    if (prevId === activePageId) return;
+    if (prevId) selectionByPageRef.current[prevId] = selection;
+    prevPageIdRef.current = activePageId;
+    if (quickMaskActive) {
+      const result = canvasRef.current?.commitQuickMask();
+      if (result && prevId) selectionByPageRef.current[prevId] = result;
+      setQuickMaskActive(false);
+    }
+    setSelection(activePageId ? (selectionByPageRef.current[activePageId] ?? NO_SELECTION) : NO_SELECTION);
+    setMultiBubbleRects([]);
+    setSliceRects([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePageId]);
 
   // Hydrate the active page's raster (painted pixel) layers and masks once its canvas is ready.
