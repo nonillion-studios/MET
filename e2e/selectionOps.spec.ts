@@ -38,14 +38,19 @@ test('Quick Mask painted region becomes a real selection that clips subsequent p
   const box = (await page.locator('canvas').first().boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
+  // Proportional to the canvas's own rendered width, not a fixed pixel count — the Studio's right
+  // column (Color/Layers, always visible now) genuinely narrows the canvas versus a bare dock, so a
+  // fixed offset calibrated for the old, wider render could land outside the canvas entirely.
+  const near = box.width * 0.1;
+  const far = box.width * 0.2;
 
   // Enter Quick Mask and paint a solid patch on the left half only.
   await page.keyboard.press('q');
   await page.keyboard.press('b');
   await page.locator('label').filter({ hasText: 'Size' }).locator('input[type=range]').first().fill('80');
-  await page.mouse.move(cx - 60, cy);
+  await page.mouse.move(cx - near, cy);
   await page.mouse.down();
-  await page.mouse.move(cx - 60, cy, { steps: 2 });
+  await page.mouse.move(cx - near, cy, { steps: 2 });
   await page.mouse.up();
   await page.waitForTimeout(300);
 
@@ -54,14 +59,14 @@ test('Quick Mask painted region becomes a real selection that clips subsequent p
   await page.waitForTimeout(300);
 
   // Paint a wide stroke spanning both the selected patch (left) and well outside it (right).
-  await page.mouse.move(cx - 60, cy);
+  await page.mouse.move(cx - near, cy);
   await page.mouse.down();
-  await page.mouse.move(cx + 120, cy, { steps: 10 });
+  await page.mouse.move(cx + far, cy, { steps: 10 });
   await page.mouse.up();
   await page.waitForTimeout(300);
 
-  const insideSelection = await pixelAt(page, cx - 60, cy);
-  const outsideSelection = await pixelAt(page, cx + 120, cy);
+  const insideSelection = await pixelAt(page, cx - near, cy);
+  const outsideSelection = await pixelAt(page, cx + far, cy);
   expect(isBlack(insideSelection), `paint inside the quick-mask selection should land, got ${JSON.stringify(insideSelection)}`).toBe(true);
   expect(isGrey(outsideSelection), `paint outside the quick-mask selection should be clipped away, got ${JSON.stringify(outsideSelection)}`).toBe(true);
 });

@@ -7,7 +7,11 @@ interface DockContextValue {
 
 const DockContext = createContext<DockContextValue | null>(null);
 
-const DEFAULT_ACTIVE_TAB = 'layers';
+// 'layers' used to be a dock tab and is now its own always-visible panel outside this context.
+// 'history' is a neutral, content-free default for when nothing is selected yet — TypeR/Translation
+// both carry a script/free-text textarea that a text-layer-selection default would collide with the
+// very moment a text layer gets selected (RightDock falls back to tabs[0] until then).
+const DEFAULT_ACTIVE_TAB = 'history';
 
 function loadPersistedTab(storageKey: string | undefined): string | null {
   if (!storageKey) return null;

@@ -221,12 +221,15 @@ export async function openStudio(page: Page): Promise<void> {
 }
 
 /**
- * Brings the Layers panel back to the front of the dock.
+ * Waits for the Layers panel to be interactive.
  *
- * Creating a text or adjustment layer auto-switches the dock to that layer's panel, so anything
- * that touches the Layers panel afterwards has to come back first.
+ * The Layers panel now lives in its own always-visible column (see Studio.tsx's
+ * rightPersistentColumn) rather than the tab-switched dock, so creating a text/adjustment layer
+ * (which still auto-opens that layer's settings tab) no longer navigates away from it — there's
+ * nothing left to click back to. Kept as a named step so call sites read the same either way.
  */
 export async function openLayersPanel(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Add layer' }).waitFor({ state: 'visible' });
   await page.getByRole('tab', { name: 'Layers' }).or(page.getByText('Layers', { exact: true })).first().click();
   await page.getByRole('button', { name: 'Add layer', exact: true }).waitFor({ state: 'visible' });
 }
@@ -238,9 +241,15 @@ export async function openLayersPanel(page: Page): Promise<void> {
  * after mount, and until then keystrokes fall through to the global tool shortcuts — which is how
  * "hello" silently became "ello" (`h` is the Hand tool). `pressSequentially` focuses first, so this
  * also can't race.
+ *
+ * `:not(#swal2-textarea)` excludes SweetAlert2's own permanently-hidden template textarea, which
+ * sweetalert2 injects into the DOM once its module is loaded (before any dialog is ever shown) — a
+ * plain `locator('textarea').first()` can resolve to it instead of the real editing overlay
+ * depending on DOM insertion order, and then waits forever for a textarea that never becomes
+ * visible, since that one never does.
  */
 export async function typeIntoTextLayer(page: Page, text: string): Promise<void> {
-  const textarea = page.locator('textarea').first();
+  const textarea = page.locator('textarea:not(#swal2-textarea)').first();
   await textarea.waitFor({ state: 'visible' });
   await expect(textarea).toBeFocused();
   await textarea.pressSequentially(text);

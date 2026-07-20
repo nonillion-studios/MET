@@ -47,7 +47,7 @@ test('a new raster layer is seeded with a copy of the background', async ({ page
 
 test('multiply blends against the background', async ({ page }) => {
   await addLayerAndOpenItsRow(page);
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(500);
 
   // grey x grey = 128*128/255 ~= 64. Before the collapse this stayed at 128.
@@ -57,7 +57,7 @@ test('multiply blends against the background', async ({ page }) => {
 
 test('screen blends against the background', async ({ page }) => {
   await addLayerAndOpenItsRow(page);
-  await page.locator('select').first().selectOption('screen');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('screen');
   await page.waitForTimeout(500);
 
   // screen(grey, grey) = 255 - (127*127/255) ~= 191.
@@ -69,8 +69,8 @@ test('layer opacity fades a layer toward what is beneath it', async ({ page }) =
   await addLayerAndOpenItsRow(page);
   // Multiply at full strength is 64; at 50% opacity it composites halfway back to the grey
   // underneath, i.e. ~96. This checks opacity and blend interact, not just that each runs.
-  await page.locator('select').first().selectOption('multiply');
-  await page.locator('input[type=range]').first().fill('50');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
+  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
   await page.waitForTimeout(500);
 
   const c = await sampleStageColor(page);
@@ -79,7 +79,7 @@ test('layer opacity fades a layer toward what is beneath it', async ({ page }) =
 
 test('hiding a layer removes it from the composite', async ({ page }) => {
   await addLayerAndOpenItsRow(page);
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(400);
   expect(near((await sampleStageColor(page)).r, 64)).toBe(true);
 
@@ -99,7 +99,12 @@ test('the View Original overlay still sits above the background', async ({ page 
 test('text renders and stays clickable inside the collapsed stack', async ({ page }) => {
   const before = await countDarkPixels(page);
 
+  // A settle wait after the tool-switch shortcut — pressing 't' and clicking on the same tick can
+  // otherwise race the Studio's initial mount (now doing more work up front: Color/Layers render
+  // unconditionally rather than only once their tab is selected), landing a click before the tool
+  // switch commits. Matches the settle-wait convention already used throughout this file.
   await page.keyboard.press('t');
+  await page.waitForTimeout(300);
   const box = (await page.locator('canvas').first().boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
@@ -113,10 +118,10 @@ test('text renders and stays clickable inside the collapsed stack', async ({ pag
 
   // Now hit-testing: clicking the glyphs with the Move tool must select that layer. Text nodes are
   // nested inside a Group now rather than owning a Konva Layer, so this is the thing most likely to
-  // have broken. Creating text auto-switches the dock to the Text panel, so go back to Layers.
+  // have broken. The Layers panel lives in its own always-visible column now, so no tab switch is
+  // needed to see the selection reflected there.
   await page.keyboard.press('v');
   await page.mouse.click(cx, cy);
-  await page.getByRole('tab', { name: 'Layers' }).or(page.getByText('Layers', { exact: true })).first().click();
   await expect(page.getByText('Text 1', { exact: true })).toBeVisible();
 });
 
@@ -130,7 +135,7 @@ test('painting still lands on the active layer after the collapse', async ({ pag
 
 test('zooming does not disturb the composite', async ({ page }) => {
   await addLayerAndOpenItsRow(page);
-  await page.locator('select').first().selectOption('multiply');
+  await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
   await page.waitForTimeout(400);
 
   const box = (await page.locator('canvas').first().boundingBox())!;

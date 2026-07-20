@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal,
-  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Settings2,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -53,6 +53,11 @@ interface LayersPanelProps {
   activeMaskLayerId?: string | null;
   /** `index` is read against the destination list *after* the dragged layer is detached. */
   onReparent?: (id: string, newParentId: string | null, index: number) => void;
+  /** Renames a layer — double-click the name to edit it inline. */
+  onRename?: (id: string, name: string) => void;
+  /** Explicit "open full settings" intent (the Text/Adjustment panel) — separate from onSelect, so
+   *  a plain click never navigates away from this list. No-ops for layer types without a panel. */
+  onOpenSettings?: (id: string) => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -64,17 +69,32 @@ interface LayersPanelProps {
    */
   expandedLayerId: string | null;
   onToggleExpanded: (id: string) => void;
+  /** When it's docked in the persistent Color+Layers column, the wrapper controls the collapse
+   *  height — this just renders the toggle button in the header's actions slot. Distinct from
+   *  `onToggleCollapsed` above, which collapses a *group layer's* subtree in the tree, not the
+   *  whole panel. */
+  panelCollapsed?: boolean;
+  onTogglePanelCollapsed?: () => void;
 }
 
 export function LayersPanel({
   layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
-  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
-  onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
-  activeMaskLayerId, onReparent, expandedLayerId, onToggleExpanded,
+  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,  onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onReparent, onRename, onOpenSettings,
+  expandedLayerId, onToggleExpanded, panelCollapsed, onTogglePanelCollapsed,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; zone: DropZone } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+
+  function commitRename() {
+    const id = renamingId;
+    setRenamingId(null);
+    if (!id) return;
+    const trimmed = renameValue.trim();
+    if (trimmed) onRename?.(id, trimmed);
+  }
 
   // Render top-most layer first, matching Photoshop's stacking convention. Reversing the flattened
   // walk puts a group directly above its own children, which is the order the panel wants to indent.
@@ -158,6 +178,11 @@ export function LayersPanel({
           <IconButton size="sm" aria-label="Add layer" title="Add raster layer" onClick={onAdd} className="!bg-transparent">
             <Plus size={14} />
           </IconButton>
+          {onTogglePanelCollapsed && (
+            <IconButton size="sm" aria-label={panelCollapsed ? 'Expand Layers panel' : 'Collapse Layers panel'} onClick={onTogglePanelCollapsed} className="!bg-transparent">
+              {panelCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+            </IconButton>
+          )}
         </>
       }
     >
@@ -199,44 +224,67 @@ export function LayersPanel({
                   : 'bg-ink/5 border-transparent hover:bg-ink/5'
               )}
             >
-              <button
-                type="button"
-                onClick={(e) => {
-                  onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace');
-                  onToggleExpanded(layer.id);
-                }}
-                className="w-full flex items-center gap-2 px-2 h-11"
-              >
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                  onClick={(e) => { e.stopPropagation(); onToggleVisible(layer.id); }}
-                  className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
-                >
-                  {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
-                </span>
+              {(() => {
+                const isRenaming = renamingId === layer.id;
+                const rowInner = (
+                  <>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                      onClick={(e) => { e.stopPropagation(); onToggleVisible(layer.id); }}
+                      className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
+                    >
+                      {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
+                    </span>
 
-                {/* Collapse chevron — a group's *subtree* visibility in the panel, which is a
-                    different thing from `expandedId` (this row's own properties disclosure). */}
-                {isGroup ? (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    aria-label={layer.collapsed ? `Expand ${layer.name}` : `Collapse ${layer.name}`}
-                    onClick={(e) => { e.stopPropagation(); onToggleCollapsed?.(layer.id); }}
-                    className="shrink-0 w-4 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
-                  >
-                    {layer.collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                  </span>
-                ) : (
-                  <span className="shrink-0 w-4" />
-                )}
+                    {/* Collapse chevron — a group's *subtree* visibility in the panel, which is a
+                        different thing from `expandedId` (this row's own properties disclosure). */}
+                    {isGroup ? (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={layer.collapsed ? `Expand ${layer.name}` : `Collapse ${layer.name}`}
+                        onClick={(e) => { e.stopPropagation(); onToggleCollapsed?.(layer.id); }}
+                        className="shrink-0 w-4 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
+                      >
+                        {layer.collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                      </span>
+                    ) : (
+                      <span className="shrink-0 w-4" />
+                    )}
 
-                <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
-                  {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
-                </span>
+                    <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
+                      {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
+                    </span>
 
+                    {isRenaming ? (
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === 'Enter') commitRename();
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        onBlur={commitRename}
+                        className="flex-1 min-w-0 bg-ink/10 border border-accent/40 rounded-control px-1.5 py-0.5 text-ui text-ink outline-none"
+                      />
+                    ) : (
+                      <span
+                        className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}
+                        onDoubleClick={(e) => {
+                          if (!onRename) return;
+                          e.stopPropagation();
+                          setRenameValue(layer.name);
+                          setRenamingId(layer.id);
+                        }}
+                      >
+                        {layer.name}
+                      </span>
+                    )}
                 {/* Mask chip — always visible (not gated behind the row's own disclosure) so it's
                     reachable with one click, matching Photoshop's layer-thumbnail/mask-thumbnail
                     pair. Not a live pixel preview (that would need a new thumbnail-rendering
@@ -263,18 +311,37 @@ export function LayersPanel({
                   {layer.name}
                 </span>
 
-                {!layer.isBackground && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
-                    onClick={(e) => { e.stopPropagation(); onToggleLocked(layer.id); }}
-                    className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
+                    {!layer.isBackground && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={layer.locked ? `Unlock ${layer.name}` : `Lock ${layer.name}`}
+                        onClick={(e) => { e.stopPropagation(); onToggleLocked(layer.id); }}
+                        className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
+                      >
+                        {layer.locked ? <Lock size={13} /> : <Unlock size={13} className="opacity-30" />}
+                      </span>
+                    )}
+                  </>
+                );
+                // A real <button> whenever possible (matches every other row-as-button convention
+                // in this panel and keeps plain `locator('button')` queries working) — an <input>
+                // can't validly nest inside one, so renaming swaps to a plain <div> for that one row.
+                return isRenaming ? (
+                  <div className="w-full flex items-center gap-2 px-2 h-11">{rowInner}</div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace');
+                      onToggleExpanded(layer.id);
+                    }}
+                    className="w-full flex items-center gap-2 px-2 h-11"
                   >
-                    {layer.locked ? <Lock size={13} /> : <Unlock size={13} className="opacity-30" />}
-                  </span>
-                )}
-              </button>
+                    {rowInner}
+                  </button>
+                );
+              })()}
 
               {expanded && (
                 <div className="px-3 pb-2.5 pt-0.5 flex flex-col gap-2 border-t border-hairline/60 mx-2">
@@ -361,6 +428,11 @@ export function LayersPanel({
                       </IconButton>
                     )}
                     <div className="flex-1" />
+                    {onOpenSettings && (layer.type === 'text' || layer.type === 'adjustment') && (
+                      <IconButton size="sm" aria-label="Open layer settings" title="Open full settings" onClick={() => onOpenSettings(layer.id)} className="!bg-transparent !w-7 !h-7">
+                        <Settings2 size={12} />
+                      </IconButton>
+                    )}
                     {isGroup && onUngroup && (
                       <IconButton size="sm" aria-label="Ungroup layers" title="Ungroup" onClick={() => onUngroup(layer.id)} className="!bg-transparent !w-7 !h-7">
                         <FolderOpen size={12} />

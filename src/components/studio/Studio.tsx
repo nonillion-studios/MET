@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import type { Page } from '../../types';
+import { cn, IconButton } from '../ui';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
 import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
@@ -261,6 +264,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [rightOpen, setRightOpen] = useState(true);
   const leftSidebarRef = useRef<HTMLDivElement>(null);
   const rightSidebarRef = useRef<HTMLDivElement>(null);
+  // Color/Layers are their own always-visible column — each collapses to a slim header
+  // individually, but never fully hides except via rightOpen/Window > Hide All Panels.
+  const [colorPanelCollapsed, setColorPanelCollapsed] = useState(false);
+  const [layersPanelCollapsed, setLayersPanelCollapsed] = useState(false);
 
   function toggleLeftSidebar() {
     setLeftOpen(v => {
@@ -682,6 +689,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     dock.selectTab('adjustment');
   }
 
+  function handleRenameLayer(id: string, name: string) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
+  }
+
   function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
     updateLayers(current => updateLayer(current, id, l =>
       l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
@@ -692,6 +703,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    * @param mode 'replace' (plain click) or 'toggle' (Shift/Ctrl-click — adds, or removes if already
    *             selected). A toggle keeps the clicked layer primary so the panels follow it.
    */
+  // Plain selection deliberately never touches the dock — Layers/Color live in their own always-
+  // visible column now (see rightPersistentPanel below), so there's nothing to "navigate away from"
+  // on a click. Opening a layer's full Text/Adjustment settings is a separate, explicit action (the
+  // Layers panel's settings button, handleAddTextLayer/handleAddAdjustmentLayer on creation, or
+  // jumpToBubble from Translation Preview) — see openLayerSettings.
   function selectLayer(id: string, mode: LayerSelectMode = 'replace') {
     if (mode === 'toggle') {
       setSelectedLayerIds(current => current.includes(id)
@@ -709,6 +725,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   /** Replaces the whole selection at once — used by the canvas's drag-a-box object marquee. */
   function selectLayers(ids: string[]) {
     setSelectedLayerIds(ids);
+  }
+
+  /** Explicit intent to edit a layer's full settings (Text/Adjustment panel) — the Layers panel's
+   *  settings button, not plain selection. No-ops for layer types with no dedicated panel. */
+  function openLayerSettings(id: string) {
+    const type = findLayer(layers, id)?.type;
+    if (type === 'text') dock.selectTab('text');
+    if (type === 'adjustment') dock.selectTab('adjustment');
     setActiveMaskLayerId(null);
     if (ids.length === 1 && findLayer(layers, ids[0])?.type === 'text') dock.selectTab('text');
   }
@@ -1088,12 +1112,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onToggleCollapsed={handleToggleGroupCollapsed}
       onReparent={handleReparentLayer}
       onToggleClipped={handleToggleClipped}
+      onRename={handleRenameLayer}
+      onOpenSettings={openLayerSettings}
       onToggleMask={handleToggleMaskExistence}
       onToggleMaskEnabled={handleToggleMaskEnabled}
       onSelectMask={selectMask}
       activeMaskLayerId={activeMaskLayerId}
       expandedLayerId={expandedLayerId}
       onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
+      panelCollapsed={layersPanelCollapsed}
+      onTogglePanelCollapsed={() => setLayersPanelCollapsed(v => !v)}
     />
   );
 
@@ -1134,7 +1162,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
-  const colorPanel = <ColorPanel />;
+  const colorPanel = <ColorPanel collapsed={colorPanelCollapsed} onToggleCollapsed={() => setColorPanelCollapsed(v => !v)} />;
   const historyPanel = <HistoryPanel />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} />;
 
@@ -1191,6 +1219,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'layers', label: 'Layers', content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
+  // Color and Layers live in their own always-visible column (rightPersistentPanel below), not in
+  // the tab-switched dock — that's what stops selecting a layer from evicting the Layers panel.
+  const toolTabs = allTabs.filter(t => t.id !== 'pages' && t.id !== 'color' && t.id !== 'layers');
+  const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" />;
   const toolTabs = allTabs.filter(t => t.id !== 'pages');
   const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
 
@@ -1239,8 +1271,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     decreaseTextSize: () => handleTextSizeStep(-1),
     hasActiveTextLayer: activeLayer?.type === 'text',
     panelTabs: allTabs.map(t => ({ id: t.id, label: t.label })),
-    showPanel: (id) => { if (id === 'pages') { setLeftOpen(true); } else { dock.selectTab(id); setRightOpen(true); } },
-    isPanelVisible: (id) => id === 'pages' ? leftOpen : (rightOpen && dock.activeTab === id),
+    showPanel: (id) => {
+      if (id === 'pages') { setLeftOpen(true); return; }
+      setRightOpen(true);
+      if (id === 'color') { setColorPanelCollapsed(false); return; }
+      if (id === 'layers') { setLayersPanelCollapsed(false); return; }
+      dock.selectTab(id);
+    },
+    isPanelVisible: (id) => {
+      if (id === 'pages') return leftOpen;
+      if (id === 'color') return rightOpen && !colorPanelCollapsed;
+      if (id === 'layers') return rightOpen && !layersPanelCollapsed;
+      return rightOpen && dock.activeTab === id;
+    },
     showShortcutsHelp: () => swal({
       title: 'Keyboard Shortcuts',
       html: `<div style="text-align:left;font-size:13px;line-height:1.8">${FIXED_SHORTCUTS_HELP.map(s => `<div><b>${s.keys}</b> — ${s.description}</div>`).join('')}</div>`,
@@ -1340,12 +1383,27 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
+  // Color (top) + Layers (bottom), always visible in their own column — each collapses to its own
+  // StudioPanel header (h-10, matching the collapsed height below) rather than the tab-switched
+  // dock, so selecting a layer (which may open Text/Adjustment in that dock) never displaces them.
+  const rightPersistentColumn = (
+    <div className="w-64 sm:w-72 h-full flex flex-col min-h-0 border-l border-hairline">
+      <div className={cn('shrink-0 min-h-0 overflow-hidden border-b border-hairline', colorPanelCollapsed ? 'h-10' : 'h-[45%]')}>
+        {colorPanel}
+      </div>
+      <div className={cn('min-h-0 overflow-hidden', layersPanelCollapsed ? 'h-10 shrink-0' : 'flex-1')}>
+        {layersPanel}
+      </div>
+    </div>
+  );
+
   const toolsSidebar = (
     <div className="h-full flex">
       <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
       <div className="w-64 sm:w-72 h-full">
         <RightDock activeTab={dock.activeTab ?? undefined} onTabChange={dock.selectTab} tabs={toolTabs} />
       </div>
+      {rightPersistentColumn}
     </div>
   );
 
