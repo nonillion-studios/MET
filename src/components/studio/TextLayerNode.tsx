@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Group, Rect, Line, Text as KonvaText } from 'react-konva';
+import { Group, Rect, Line, Ellipse, Text as KonvaText } from 'react-konva';
 import type Konva from 'konva';
 import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes';
 import { layoutText } from './textLayout';
@@ -54,10 +54,35 @@ export function TextLayerNode({
   // subtraction every run would restart the ramp.
   const ramp = gradient ? gradientVector(layout.width, layout.height, gradient.angle) : null;
 
+  // Type Region: clips the whole node to the shape the container was created from, in the Group's
+  // own local space (its clipShape is stored in the same image-space coords as text.x/y, so each
+  // point is offset back by them). Konva's clipFunc runs on every draw, so this stays correct as
+  // the layer moves — nothing needs to re-translate the stored shape itself.
+  const clip = text.clipShape;
+  const clipFunc = useMemo(() => {
+    if (!clip) return undefined;
+    return (ctx: Konva.Context) => {
+      ctx.beginPath();
+      if (clip.kind === 'ellipse') {
+        const cx = clip.x + clip.width / 2 - text.x;
+        const cy = clip.y + clip.height / 2 - text.y;
+        ctx.ellipse(cx, cy, Math.abs(clip.width) / 2, Math.abs(clip.height) / 2, 0, 0, Math.PI * 2);
+      } else {
+        clip.points.forEach((p, i) => {
+          const lx = p.x - text.x, ly = p.y - text.y;
+          if (i === 0) ctx.moveTo(lx, ly); else ctx.lineTo(lx, ly);
+        });
+      }
+      ctx.closePath();
+    };
+  }, [clip, text.x, text.y]);
+
   return (
+    <>
     <Group
       ref={groupRef}
       visible={!editing}
+      clipFunc={clipFunc}
       x={text.x}
       y={text.y}
       rotation={text.rotation}
@@ -164,5 +189,34 @@ export function TextLayerNode({
         />
       )}
     </Group>
+
+    {/* Type Region's own shape outline. A sibling of the main Group (not a child of it) since that
+        Group hides entirely while editing — the outline is exactly what needs to stay visible then,
+        so the container's real shape is still readable on canvas behind the editing textarea. Shown
+        while editing, hidden once the layer is deselected entirely. */}
+    {clip && (editing || selected) && (
+      <Group x={text.x} y={text.y} rotation={text.rotation} listening={false}>
+        {clip.kind === 'ellipse' ? (
+          <Ellipse
+            x={clip.x + clip.width / 2 - text.x}
+            y={clip.y + clip.height / 2 - text.y}
+            radiusX={Math.abs(clip.width) / 2}
+            radiusY={Math.abs(clip.height) / 2}
+            stroke="#f59e0b"
+            strokeWidth={1}
+            dash={[5, 4]}
+          />
+        ) : (
+          <Line
+            points={clip.points.flatMap(p => [p.x - text.x, p.y - text.y])}
+            closed
+            stroke="#f59e0b"
+            strokeWidth={1}
+            dash={[5, 4]}
+          />
+        )}
+      </Group>
+    )}
+    </>
   );
 }

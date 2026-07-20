@@ -113,6 +113,17 @@ export interface LineStyleOverride {
   align?: TextAlign;
 }
 
+/**
+ * A shape a text layer's live rendering (and flattened export) clips to, in the same image-space
+ * coordinates as the layer's own x/y — set when Type Region converts a non-rectangular selection
+ * into a text container. Rect needs no entry (the frame itself already is the rect); a mask-kind
+ * selection has no clean vector form to persist, so Type Region falls back to a plain rectangular
+ * container for those rather than storing one (a documented gap, not silently dropped pixels).
+ */
+export type TextClipShape =
+  | { kind: 'ellipse'; x: number; y: number; width: number; height: number }
+  | { kind: 'polygon'; points: { x: number; y: number }[] };
+
 export interface TextLayerData {
   content: string;
   x: number;
@@ -150,6 +161,8 @@ export interface TextLayerData {
   runs: TextRun[];
   /** Per-wrapped-line overrides. See LineStyleOverride. */
   lineOverrides?: Record<number, LineStyleOverride>;
+  /** Set by Type Region for a non-rectangular container. See TextClipShape. */
+  clipShape?: TextClipShape;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;

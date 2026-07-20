@@ -36,6 +36,22 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
   ctx.rotate((text.rotation * Math.PI) / 180);
   ctx.translate(-cx, -cy);
 
+  // Type Region: clips flattened export identically to what StudioCanvas/TextLayerNode's Konva
+  // clipFunc shows on screen. Coordinates are already page-space here (this context was only
+  // rotated, never translated to the layer's own origin), so they're used as stored, unlike the
+  // Konva clipFunc which runs in the Group's local space and has to subtract text.x/y itself.
+  if (text.clipShape) {
+    ctx.beginPath();
+    const shape = text.clipShape;
+    if (shape.kind === 'ellipse') {
+      ctx.ellipse(shape.x + shape.width / 2, shape.y + shape.height / 2, Math.abs(shape.width) / 2, Math.abs(shape.height) / 2, 0, 0, Math.PI * 2);
+    } else {
+      shape.points.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
+
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left'; // alignment is already baked into each run's x by the layout
 

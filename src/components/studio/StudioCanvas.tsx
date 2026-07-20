@@ -102,6 +102,11 @@ interface StudioCanvasProps {
   /** Active selection (marquee/lasso/wand); paint ops clip to this when present. */
   selection: Selection;
   onSelectionChange: (sel: Selection) => void;
+  /** Type Region: while armed, clicking inside an existing selection — or completing a new
+   *  marquee/lasso one — converts it straight into a text container instead of just setting the
+   *  pixel selection. Independent of the TypeR panel's own arm state. */
+  typeRegionArmed?: boolean;
+  onCreateTypeRegion?: (shape: Selection) => void;
   /**
    * Fired once per committed stroke/fill/etc., with its pixels just before the op, for the history
    * stack. `maskId` is set when the stroke landed on a layer's mask rather than its own raster
@@ -201,7 +206,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
   onTextLineSelectionChange,
-  paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
+  paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
 }, ref) {
@@ -1090,6 +1095,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // While transforming the selection box, only its own Konva drag/Transformer should respond —
     // no marquee/paint/lasso dispatch until it's committed (Enter) or cancelled (Escape).
     if (transformingSelection) return;
+    // Type Region: a click landing inside an existing selection (made with any selection tool —
+    // marquee, lasso, wand, pen-via-Make-Selection-from-Path) converts it straight into a text
+    // container, ahead of whatever the currently active tool would otherwise do with the click.
+    if (typeRegionArmed && onCreateTypeRegion && hasSelection(selection)) {
+      const p = imageSpacePointer();
+      if (p && selectionContainsPoint(selection, p.x, p.y)) {
+        onCreateTypeRegion(selection);
+        return;
+      }
+    }
     if (activeTool === 'select') {
       // Dragging inside an active selection on the active raster layer moves the pixel content
       // it encloses, rather than starting a text-multi-select marquee box over it. But a click that
@@ -1464,19 +1479,40 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (MARQUEE_TOOLS.has(activeTool)) {
       // A click with no real drag never touched the selection (see the dead-zone guard in
       // pointermove) — nothing to combine, and nothing to revert either.
-      if (marqueeStartRef.current && marqueeDraggedRef.current && combineModeRef.current !== 'replace' && image) {
-        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      let finalShape: Selection | null = null;
+      if (marqueeStartRef.current && marqueeDraggedRef.current) {
+        if (combineModeRef.current !== 'replace' && image) {
+          finalShape = combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height);
+          onSelectionChange(finalShape);
+        } else {
+          finalShape = selection; // already the live rect/ellipse committed on the last pointermove
+        }
       }
       marqueeStartRef.current = null;
       marqueeDraggedRef.current = false;
+      // Type Region auto-bubble: only Rectangular/Elliptical Marquee (not row/col/Crop/Slice, which
+      // aren't meant to become text containers) — a completed new selection becomes a text container
+      // the instant it's drawn, with no separate click needed.
+      if (finalShape && typeRegionArmed && onCreateTypeRegion && (activeTool === 'marquee-rect' || activeTool === 'marquee-ellipse')) {
+        onCreateTypeRegion(finalShape);
+      }
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
-      if (lassoPointsRef.current && lassoDraggedRef.current && combineModeRef.current !== 'replace' && image) {
-        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      let finalShape: Selection | null = null;
+      if (lassoPointsRef.current && lassoDraggedRef.current) {
+        if (combineModeRef.current !== 'replace' && image) {
+          finalShape = combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height);
+          onSelectionChange(finalShape);
+        } else {
+          finalShape = { kind: 'polygon', points: lassoPointsRef.current };
+        }
       }
       lassoPointsRef.current = null;
       lassoDraggedRef.current = false;
+      if (finalShape && typeRegionArmed && onCreateTypeRegion) {
+        onCreateTypeRegion(finalShape);
+      }
       return;
     }
     if (!isPaintTool) return;

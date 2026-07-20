@@ -28,7 +28,28 @@ export function hasSelection(sel: Selection): boolean {
   return sel.kind !== 'none';
 }
 
-function pathForSelection(sel: Selection): Path2D | null {
+/**
+ * The selection's own bounding box, without rasterizing it — a rect/ellipse/polygon computes this
+ * directly; a mask already carries its own bounds from whatever built it. Type Region uses this to
+ * size a new text container to whatever shape the selection was, regardless of which tool made it.
+ */
+export function selectionBounds(sel: Selection): { x: number; y: number; width: number; height: number } | null {
+  if (sel.kind === 'none') return null;
+  if (sel.kind === 'rect' || sel.kind === 'ellipse') return { x: sel.x, y: sel.y, width: sel.width, height: sel.height };
+  if (sel.kind === 'mask') return sel.bounds;
+  const xs = sel.points.map(p => p.x);
+  const ys = sel.points.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Builds the Path2D a selection clips paint against. Exported (only) for Type Region's Konva
+ * `clipFunc`, which needs the exact same shape — translated into the text layer's local coordinate
+ * space — so a live-editing bubble visually clips to the region it was created from.
+ */
+export function pathForSelection(sel: Selection): Path2D | null {
   if (sel.kind === 'rect') {
     const p = new Path2D();
     p.rect(sel.x, sel.y, sel.width, sel.height);

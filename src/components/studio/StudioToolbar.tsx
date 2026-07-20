@@ -1,4 +1,4 @@
-import { Home, Maximize2, Minimize2, PanelLeft, PanelRight } from 'lucide-react';
+import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { WorkflowStage } from './WorkflowBar';
 
@@ -18,11 +18,17 @@ interface StudioToolbarProps {
   /** Chapter → Page → ... → Export pipeline pills, folded into this same row to cut down on
    *  stacked chrome bars above the canvas — see WorkflowBar.tsx for what each stage means. */
   workflowStages: WorkflowStage[];
+  /** Type Region: while armed, clicking inside any selection (or drawing a new marquee/lasso/wand
+   *  one) turns it straight into a text container — a separate, freehand extension of the TypeR
+   *  panel's own scripted workflow, not a replacement for it. */
+  typeRegionArmed: boolean;
+  onToggleTypeRegion: () => void;
 }
 
 export function StudioToolbar({
   chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
   onFit, onBack, onToggleLeftSidebar, onToggleRightSidebar, hasCleaned, isFullscreen, onToggleFullscreen, workflowStages,
+  typeRegionArmed, onToggleTypeRegion,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline">
@@ -65,6 +71,16 @@ export function StudioToolbar({
           />
         </div>
       )}
+
+      <IconButton
+        size="sm"
+        aria-label={typeRegionArmed ? 'Disarm Type Region' : 'Arm Type Region — click or draw a selection to type into it'}
+        title={typeRegionArmed ? 'Type Region armed — click or draw a selection to type into it' : 'Type Region'}
+        onClick={onToggleTypeRegion}
+        className={`shrink-0 ${typeRegionArmed ? '!bg-accent-soft !text-accent' : '!bg-transparent'}`}
+      >
+        <MessageSquareText size={15} />
+      </IconButton>
 
       <div className="w-px h-6 bg-hairline mx-1 shrink-0 hidden lg:block" />
 

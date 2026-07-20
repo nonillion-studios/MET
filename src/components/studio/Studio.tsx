@@ -21,7 +21,7 @@ import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
 } from './layerTree';
-import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, type Selection } from './paint/selection';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
@@ -397,6 +397,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setMultiBubbleRects([]);
     setActiveTool('select');
     swalToast({ icon: 'success', title: `Placed ${newLayers.length} line${newLayers.length === 1 ? '' : 's'}` });
+  }
+
+  // Type Region: a freeform, freehand extension of TypeR — not a replacement for the panel above,
+  // which keeps its own separate arm state and untouched placeInSel/mqAuto/mbFill flow. While armed,
+  // StudioCanvas either clicks inside an existing selection or completes a brand-new marquee/lasso
+  // one, then hands the shape here to become a text container immediately.
+  const [typeRegionArmed, setTypeRegionArmed] = useState(false);
+
+  function handleCreateTypeRegion(shape: Selection) {
+    const bounds = selectionBounds(shape);
+    if (!bounds || bounds.width < 8 || bounds.height < 8) return;
+    const layer = createTextLayer(bounds.x, bounds.y, bounds.width);
+    if (shape.kind === 'ellipse') {
+      layer.text!.clipShape = { kind: 'ellipse', x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    } else if (shape.kind === 'polygon') {
+      layer.text!.clipShape = { kind: 'polygon', points: shape.points };
+    }
+    // rect needs no clip (the frame itself already is the rect); mask-kind selections have no clean
+    // vector form to persist, so they fall back to a plain rectangular container at their bounds.
+    updateLayers(current => [...current, layer], 'Type Region');
+    setActiveLayerId(layer.id);
+    setActiveTool('select');
+    setSelection(NO_SELECTION);
   }
 
   // Slice tool: draw a rect per slice (reuses the Rectangular-Marquee-style drag via MARQUEE_TOOLS),
@@ -1390,6 +1413,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       paintSettings={paintSettings}
       selection={selection}
       onSelectionChange={setSelection}
+      typeRegionArmed={typeRegionArmed}
+      onCreateTypeRegion={handleCreateTypeRegion}
       onPaintStrokeEnd={handlePaintStrokeEnd}
       onEyedropperPick={setForeground}
       onCommitCrop={handleCommitCrop}
@@ -1444,6 +1469,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
         workflowStages={workflowStages}
+        typeRegionArmed={typeRegionArmed}
+        onToggleTypeRegion={() => setTypeRegionArmed(v => !v)}
       />
 
       {!panelsHidden && (
