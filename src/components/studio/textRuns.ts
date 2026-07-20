@@ -1,4 +1,4 @@
-import type { TextLayerData, TextRun } from './studioTypes';
+import type { TextLayerData, TextRun, LineStyleOverride } from './studioTypes';
 
 /** The character-level properties a run may override. Everything else on a text layer is either a
  *  layer effect (stroke/shadow/gradient) or a paragraph property (align/lineHeight/wrap). */
@@ -44,6 +44,25 @@ export function resolveRunStyle(text: TextLayerData, run?: TextRun): ResolvedRun
 /** The CSS/canvas font shorthand for a resolved style. Konva builds the same string internally. */
 export function runFontString(style: ResolvedRunStyle): string {
   return `${style.italic ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+}
+
+/**
+ * A run's already-resolved style, with its line's overrides (if any) applied on top — the highest
+ * precedence tier, above both the run and the layer default. Kept separate from `resolveRunStyle`
+ * (rather than threading a third argument through it) since a line override only exists once
+ * wrapping has happened and a piece has a line index, which `resolveRunStyle` never sees.
+ */
+export function resolveLineStyle(base: ResolvedRunStyle, override?: LineStyleOverride): ResolvedRunStyle {
+  if (!override) return base;
+  return {
+    ...base,
+    fontFamily: override.fontFamily ?? base.fontFamily,
+    fontSize: override.fontSize ?? base.fontSize,
+    fontWeight: override.fontWeight ?? (override.bold !== undefined ? (override.bold ? 700 : 400) : base.fontWeight),
+    color: override.color ?? base.color,
+    italic: override.italic ?? base.italic,
+    letterSpacing: override.letterSpacing ?? base.letterSpacing,
+  };
 }
 
 function sameStyle(a: TextRun, b: TextRun): boolean {

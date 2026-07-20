@@ -95,6 +95,24 @@ export interface TextRun {
   baselineShift?: number;
 }
 
+/**
+ * A single wrapped line's overrides, independent from `TextRun` (per-character). Keyed by the
+ * line's index in the *current* wrapped layout (`textLayout.ts`'s `layoutText`) — reflowing the
+ * layer (edited content, resized frame) can shift what's on which line, same trade-off `runs`
+ * would have without `textRuns.ts`'s reflow-by-diff, but line overrides are a coarser, occasional
+ * tool (balancing one bubble line against another) rather than something edited every keystroke.
+ */
+export interface LineStyleOverride {
+  fontFamily?: string;
+  fontSize?: number;
+  fontWeight?: number;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  letterSpacing?: number;
+  align?: TextAlign;
+}
+
 export interface TextLayerData {
   content: string;
   x: number;
@@ -116,6 +134,12 @@ export interface TextLayerData {
    * width=0 so a point layer keeps a usable width if it's later converted to a box.
    */
   autoWidth: boolean;
+  /**
+   * Area (box) text only: when set, the frame stops growing at this height instead of always
+   * auto-sizing to content — `textLayout.ts` reports `overflowing` once laid-out content exceeds
+   * it, which the canvas/panel surface as the ⊞ indicator rather than silently clipping.
+   */
+  fixedHeight?: number;
   /** Extra px between characters (Konva `letterSpacing`; canvas 2D letterSpacing on export). */
   letterSpacing: number;
   /** Drop shadow / glow — a glow is just a shadow at offset 0 with a wide blur. */
@@ -124,6 +148,8 @@ export interface TextLayerData {
   gradient: TextGradient;
   /** Per-character overrides over the layer style above. See TextRun; maintained by textRuns.ts. */
   runs: TextRun[];
+  /** Per-wrapped-line overrides. See LineStyleOverride. */
+  lineOverrides?: Record<number, LineStyleOverride>;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;

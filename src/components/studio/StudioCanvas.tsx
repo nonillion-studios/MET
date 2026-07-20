@@ -36,6 +36,12 @@ export interface TextSelection {
   end: number;
 }
 
+/** A wrapped line clicked inside one text layer, while it's selected but not being edited. */
+export interface TextLineSelection {
+  layerId: string;
+  lineIndex: number;
+}
+
 export interface ExportSnapshot {
   width: number;
   height: number;
@@ -88,6 +94,9 @@ interface StudioCanvasProps {
    * the editing overlay is a plain textarea, so its selectionStart/End *is* the selection model.
    */
   onTextSelectionChange?: (selection: TextSelection | null) => void;
+  /** A wrapped line clicked inside a selected (not editing) text layer — lifted the same way as
+   *  onTextSelectionChange, so TextPanel can apply per-line overrides to it. */
+  onTextLineSelectionChange?: (selection: TextLineSelection | null) => void;
   /** Current brush/fill/etc. settings, driven by the tool options bar. */
   paintSettings: PaintSettings;
   /** Active selection (marquee/lasso/wand); paint ops clip to this when present. */
@@ -191,6 +200,7 @@ export interface StudioCanvasHandle {
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
+  onTextLineSelectionChange,
   paintSettings, selection, onSelectionChange, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
@@ -941,6 +951,23 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
   }, [selectionIds, activeTool, editingLayerId, layers]);
+
+  // Double-clicking one of the Transformer's own resize handles auto-fits a single selected box
+  // (area) text layer's frame tightly to its content, matching Photoshop's bounding-box gesture.
+  // Point text has no frame to fit (its width already *is* its content), so it's excluded.
+  useEffect(() => {
+    const transformer = transformerRef.current;
+    if (!transformer) return;
+    function onHandleDblClick() {
+      if (selectionIds.length !== 1) return;
+      const layer = findLayer(layers, selectionIds[0]);
+      if (!layer || layer.type !== 'text' || !layer.text || layer.text.autoWidth) return;
+      const natural = layoutText({ ...layer.text, autoWidth: true });
+      onUpdateTextLayer(layer.id, { width: Math.max(20, natural.width) });
+    }
+    transformer.on('dblclick dbltap', onHandleDblClick);
+    return () => { transformer.off('dblclick dbltap', onHandleDblClick); };
+  }, [selectionIds, layers, onUpdateTextLayer]);
 
   // Seed Select > Transform Selection's box from the current selection's bounds the moment the
   // mode is entered — not every render, or a mid-transform re-render would snap the box back.
@@ -1773,6 +1800,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
+            onSelectLine={onTextLineSelectionChange ? (lineIndex) => onTextLineSelectionChange({ layerId: layer.id, lineIndex }) : undefined}
           />
         )}
 

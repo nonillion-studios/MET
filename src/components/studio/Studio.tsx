@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
+import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
 import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
@@ -41,7 +41,7 @@ import {
   createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
   type TyperStyle, type TyperFolder, type AdjustmentLayerData, type LayerSelectMode,
 } from './studioTypes';
-import { layoutText } from './textLayout';
+import { layoutText, isArabicMajority } from './textLayout';
 import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
@@ -309,6 +309,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
   // character styling to it.
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
+  // A wrapped line clicked on a selected (not editing) text layer — independent of textSelection
+  // above, which only exists while the editing textarea is open.
+  const [textLineSelection, setTextLineSelection] = useState<TextLineSelection | null>(null);
 
   // TypeR: scripted lettering — paste a script, arm it, click bubbles to stamp lines in order.
   const [typerScript, setTyperScript] = useState('');
@@ -979,9 +982,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>) {
-    updateLayers(current => updateLayer(current, id, l =>
-      l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
-    ));
+    updateLayers(current => updateLayer(current, id, l => {
+      if (l.type !== 'text' || !l.text) return l;
+      // Default a freshly-typed layer to RTL/right alignment the moment its content first reads as
+      // Arabic — only on the empty-to-non-empty transition, and only if the caller (or a prior edit)
+      // hasn't already set an alignment, so it never fights a deliberate later change.
+      let next = patch;
+      if (patch.content && !l.text.content && patch.align === undefined && isArabicMajority(patch.content)) {
+        next = { ...patch, align: 'right' };
+      }
+      return { ...l, text: { ...l.text, ...next } };
+    }));
   }
 
   function handleUpdatePathLayer(id: string, patch: Partial<PathLayerData>) {
@@ -1139,6 +1150,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onCenter={handleCenterTextLayer}
       fontFamilies={allFontFamilies}
       selection={textSelection?.layerId === activeLayer.id ? textSelection : null}
+      selectedLineIndex={textLineSelection?.layerId === activeLayer.id ? textLineSelection.lineIndex : null}
     />
   ) : null;
 
@@ -1374,6 +1386,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onUpdatePathLayer={handleUpdatePathLayer}
       onAddPathLayer={handleAddPathLayer}
       onTextSelectionChange={setTextSelection}
+      onTextLineSelectionChange={setTextLineSelection}
       paintSettings={paintSettings}
       selection={selection}
       onSelectionChange={setSelection}

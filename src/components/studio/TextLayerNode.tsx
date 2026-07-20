@@ -14,6 +14,9 @@ interface TextLayerNodeProps {
   onSelect: (mode: LayerSelectMode) => void;
   onEdit: () => void;
   onUpdate: (patch: Partial<TextLayerData>) => void;
+  /** Click a wrapped line (while selected, not editing) to apply per-line style overrides to it —
+   *  independent of the character-range selection the editing textarea drives. */
+  onSelectLine?: (lineIndex: number) => void;
 }
 
 /**
@@ -40,7 +43,7 @@ function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
  * The Group is the interactive/transform target; the run nodes are inert.
  */
 export function TextLayerNode({
-  layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate,
+  layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate, onSelectLine,
 }: TextLayerNodeProps) {
   const text = layer.text!;
   const layout = useMemo(() => layoutText(text), [text]);
@@ -130,6 +133,33 @@ export function TextLayerNode({
           strokeWidth={1}
           dash={[4, 3]}
           opacity={0.7}
+          listening={false}
+        />
+      )}
+
+      {/* Per-line hit targets — only while selected and not mid-edit, so they never fight the
+          editing textarea's own character-range selection or the Group's own drag/select click. */}
+      {selected && !editing && onSelectLine && layout.lines.map((line, i) => (
+        <Rect
+          key={i}
+          y={line.y}
+          width={Math.max(layout.width, 4)}
+          height={line.height}
+          fill="transparent"
+          onClick={(e) => { e.cancelBubble = true; onSelectLine(i); }}
+          onTap={(e) => { e.cancelBubble = true; onSelectLine(i); }}
+        />
+      ))}
+
+      {/* Overflow indicator for a fixed-height area frame — laid-out content exceeds it, so some
+          lines are being clipped rather than silently lost off-frame. */}
+      {layout.overflowing && (
+        <KonvaText
+          text="⊞"
+          x={Math.max(layout.width, 4) - 16}
+          y={(text.fixedHeight ?? layout.height) - 16}
+          fontSize={14}
+          fill="#f59e0b"
           listening={false}
         />
       )}

@@ -1,5 +1,20 @@
 import type { TextLayerData, TextRun } from './studioTypes';
-import { normalizeRuns, resolveRunStyle, runFontString, type ResolvedRunStyle } from './textRuns';
+import { normalizeRuns, resolveRunStyle, resolveLineStyle, runFontString, type ResolvedRunStyle } from './textRuns';
+
+/**
+ * Whether `text` reads as Arabic-script content — used to default a freshly-typed text layer to
+ * RTL/right alignment (Photoshop/Illustrator both auto-detect script direction the same way rather
+ * than asking up front). Counts letters only, so punctuation/digits/spaces don't dilute the ratio.
+ */
+// Arabic, Arabic Supplement, Arabic Extended-A, and Arabic Presentation Forms A/B blocks.
+const ARABIC_SCRIPT_RANGE = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/gu;
+
+export function isArabicMajority(text: string): boolean {
+  const letters = text.replace(/[^\p{L}]/gu, '');
+  if (!letters) return false;
+  const arabic = letters.match(ARABIC_SCRIPT_RANGE)?.length ?? 0;
+  return arabic / letters.length > 0.5;
+}
 
 /** One run's worth of text on one line, already positioned in the layer's local coords. */
 export interface PositionedRun {
@@ -9,6 +24,15 @@ export interface PositionedRun {
   /** Top of the em box, relative to the layer's y — i.e. a canvas `textBaseline='top'` origin. */
   y: number;
   style: ResolvedRunStyle;
+  /** Index into the wrapped line list — what `TextLayerData.lineOverrides` and line selection key against. */
+  lineIndex: number;
+}
+
+/** A wrapped line's own bounds, relative to the layer's y — for line-click hit targets and the
+ *  overflow check, independent of any particular run inside it. */
+export interface LineMetrics {
+  y: number;
+  height: number;
 }
 
 export interface TextLayout {
@@ -18,6 +42,9 @@ export interface TextLayout {
   height: number;
   /** Where the first line's baseline sits, relative to the layer's y (for the baseline guide). */
   firstBaselineY: number;
+  lines: LineMetrics[];
+  /** True once laid-out content exceeds `text.fixedHeight` (area text with a fixed frame only). */
+  overflowing: boolean;
 }
 
 /** A run sliced down to a single line, before horizontal alignment is applied. */
@@ -154,21 +181,38 @@ export function layoutText(text: TextLayerData): TextLayout {
     ? paragraphs.map(p => (p.length ? p : []))
     : paragraphs.flatMap(p => wrapParagraph(p, text.width));
 
-  const lineWidths = lines.map(line => line.reduce((sum, p) => sum + p.kerning + p.width, 0));
+  // A line override can change fontSize/letterSpacing, which the pre-wrap piece widths above
+  // (measured before any line index existed to look an override up by) don't reflect — an
+  // overridden line is re-measured here so its own width/alignment stay correct, at the one-time
+  // cost of remeasuring just that line's pieces.
+  const resolvedLines = lines.map((line, lineIndex) => {
+    const override = text.lineOverrides?.[lineIndex];
+    if (!override) return line;
+    return line.map(piece => {
+      const style = resolveLineStyle(piece.style, override);
+      return { ...piece, style, width: measureRunText(piece.text, style) };
+    });
+  });
+
+  const lineWidths = resolvedLines.map(line => line.reduce((sum, p) => sum + p.kerning + p.width, 0));
   // Point text is as wide as its content; box text keeps its authored width so alignment has a box.
   const contentWidth = Math.max(0, ...lineWidths);
   const boxWidth = text.autoWidth ? contentWidth : text.width;
+  const lineStep = text.fontSize * text.lineHeight;
 
   const runs: PositionedRun[] = [];
-  lines.forEach((line, lineIndex) => {
+  const lineMetrics: LineMetrics[] = [];
+  resolvedLines.forEach((line, lineIndex) => {
     // Line height is driven by the layer's fontSize so a big run doesn't reflow the whole block —
     // matching Konva's own lineHeight behaviour, which the layer style has always defined.
-    const lineTop = lineIndex * text.fontSize * text.lineHeight;
+    const lineTop = lineIndex * lineStep;
+    lineMetrics.push({ y: lineTop, height: lineStep });
     const lineWidth = lineWidths[lineIndex];
+    const align = text.lineOverrides?.[lineIndex]?.align ?? text.align;
 
     let x = 0;
-    if (text.align === 'center') x = (boxWidth - lineWidth) / 2;
-    else if (text.align === 'right') x = boxWidth - lineWidth;
+    if (align === 'center') x = (boxWidth - lineWidth) / 2;
+    else if (align === 'right') x = boxWidth - lineWidth;
     // 'justify' anchors left; canvas 2D has no justify and inter-word stretch isn't implemented,
     // so this matches how it's rendered rather than silently dropping the setting.
 
@@ -181,17 +225,21 @@ export function layoutText(text: TextLayerData): TextLayout {
         // then lifts (+) or drops (-) just that run.
         y: lineTop + (text.fontSize - piece.style.fontSize) - piece.style.baselineShift,
         style: piece.style,
+        lineIndex,
       });
       x += piece.width;
     }
   });
 
+  const naturalHeight = Math.max(1, lines.length) * lineStep;
   return {
     runs,
     width: boxWidth,
-    height: Math.max(1, lines.length) * text.fontSize * text.lineHeight,
+    height: naturalHeight,
     // Approximates the baseline at 80% of the em box — canvas gives no baseline metric without
     // measuring, and this only positions a visual guide.
     firstBaselineY: text.fontSize * 0.8,
+    lines: lineMetrics,
+    overflowing: !text.autoWidth && text.fixedHeight != null && naturalHeight > text.fixedHeight,
   };
 }

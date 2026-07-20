@@ -9,7 +9,7 @@ import {
   loadTextStyles, saveTextStyles, captureStyleFields, styleToPatch,
   type TextStyle, type TextStyleKind,
 } from '../../lib/textStyleStore';
-import { FONT_FAMILIES, DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TextAlign, type TextLayerData } from './studioTypes';
+import { FONT_FAMILIES, DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TextAlign, type TextLayerData, type LineStyleOverride } from './studioTypes';
 import { applyToRange, resolveRunStyle, runAt, styleOverRange, type ResolvedRunStyle, type RunStylePatch } from './textRuns';
 import type { TextSelection } from './StudioCanvas';
 
@@ -21,6 +21,8 @@ interface TextPanelProps {
   fontFamilies?: string[];
   /** Character range selected on canvas, when this layer is being edited. */
   selection?: TextSelection | null;
+  /** Wrapped-line index selected on canvas (click a line while the layer is selected, not editing). */
+  selectedLineIndex?: number | null;
 }
 
 const FONT_WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900];
@@ -29,7 +31,7 @@ const FONT_WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900];
  *  explicit weight) only exist per-run, so with no selection they're written across every run. */
 const LAYER_BACKED_CHAR_KEYS = new Set(['fontFamily', 'fontSize', 'color', 'bold', 'italic', 'letterSpacing']);
 
-export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMILIES, selection = null }: TextPanelProps) {
+export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMILIES, selection = null, selectedLineIndex = null }: TextPanelProps) {
   const [styles, setStyles] = useState<TextStyle[]>([]);
   const [openGroups, setOpenGroups] = useState<Record<TextStyleKind, boolean>>({ character: true, paragraph: false });
 
@@ -129,6 +131,25 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
     set({ ...layerPatch, runs: next });
   };
 
+  // A selected line's controls show its own override where set, falling back to the layer default
+  // — not a resolved per-run style, since a line can span several differently-styled runs and there's
+  // no single "shared" value to show the way character range controls do (styleOverRange exists
+  // exactly to solve that for runs; lines don't need it, since an override here always wins outright).
+  const lineOverride: LineStyleOverride | undefined = selectedLineIndex != null ? text.lineOverrides?.[selectedLineIndex] : undefined;
+  const lineValue = <K extends keyof LineStyleOverride>(key: K, fallback: NonNullable<LineStyleOverride[K]>): NonNullable<LineStyleOverride[K]> =>
+    (lineOverride?.[key] ?? fallback) as NonNullable<LineStyleOverride[K]>;
+  const setLine = (patch: Partial<LineStyleOverride>) => {
+    if (selectedLineIndex == null) return;
+    const merged: LineStyleOverride = { ...lineOverride, ...patch };
+    for (const key of Object.keys(merged) as (keyof LineStyleOverride)[]) {
+      if (merged[key] === undefined) delete merged[key];
+    }
+    const nextOverrides = { ...(text.lineOverrides ?? {}) };
+    if (Object.keys(merged).length === 0) delete nextOverrides[selectedLineIndex];
+    else nextOverrides[selectedLineIndex] = merged;
+    set({ lineOverrides: nextOverrides });
+  };
+
   return (
     <StudioPanel
       title="Text"
@@ -151,6 +172,87 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
             ? `Character controls apply to ${range.end - range.start} selected character${range.end - range.start === 1 ? '' : 's'}.`
             : 'Character controls apply to the whole layer. Select characters on canvas to style part of it.'}
         </p>
+
+        {selectedLineIndex != null && (
+          <div className="flex flex-col gap-2 rounded-control border border-accent/30 bg-accent-soft/40 px-2 py-2">
+            <div className="flex items-center justify-between text-micro text-accent font-medium">
+              <span>Line {selectedLineIndex + 1}</span>
+              <button type="button" className="text-ink-faint hover:text-ink text-[10px] underline" onClick={() => setLine({})}>
+                Clear overrides
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 text-micro text-ink-faint flex-1">
+                <span className="shrink-0">Size</span>
+                <input
+                  type="number"
+                  min={6}
+                  max={200}
+                  value={Math.round(lineValue('fontSize', text.fontSize))}
+                  onChange={(e) => setLine({ fontSize: Number(e.target.value) || undefined })}
+                  className="w-full bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-micro text-ink-faint">
+                <span className="shrink-0">Color</span>
+                <input
+                  type="color"
+                  value={lineValue('color', text.color)}
+                  onChange={(e) => setLine({ color: e.target.value })}
+                  className="w-8 h-7 rounded-control border border-hairline bg-transparent"
+                />
+              </label>
+            </div>
+            <label className="flex flex-col gap-1 text-micro text-ink-faint">
+              <span>Font</span>
+              <select
+                value={lineValue('fontFamily', text.fontFamily)}
+                onChange={(e) => setLine({ fontFamily: e.target.value })}
+                className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1.5 text-ink text-micro"
+              >
+                {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </label>
+            <div className="flex items-center gap-1">
+              <IconButton
+                size="sm"
+                active={lineValue('fontWeight', text.bold ? 700 : 400) >= 600}
+                aria-label="Bold this line"
+                onClick={() => setLine({ bold: !(lineValue('fontWeight', text.bold ? 700 : 400) >= 600), fontWeight: undefined })}
+                className="!bg-transparent"
+              >
+                <Bold size={14} />
+              </IconButton>
+              <IconButton
+                size="sm"
+                active={lineValue('italic', text.italic)}
+                aria-label="Italicize this line"
+                onClick={() => setLine({ italic: !lineValue('italic', text.italic) })}
+                className="!bg-transparent"
+              >
+                <Italic size={14} />
+              </IconButton>
+              <div className="w-px h-6 bg-hairline mx-1" />
+              {([
+                { id: 'left', icon: AlignLeft },
+                { id: 'center', icon: AlignCenter },
+                { id: 'right', icon: AlignRight },
+                { id: 'justify', icon: AlignJustify },
+              ] as { id: TextAlign; icon: typeof AlignLeft }[]).map(({ id, icon: Icon }) => (
+                <IconButton
+                  key={id}
+                  size="sm"
+                  active={lineValue('align', text.align) === id}
+                  aria-label={`Align this line ${id}`}
+                  onClick={() => setLine({ align: id })}
+                  className="!bg-transparent"
+                >
+                  <Icon size={14} />
+                </IconButton>
+              ))}
+            </div>
+          </div>
+        )}
 
         <label className="flex flex-col gap-1 text-micro text-ink-faint">
           <span>Font</span>
@@ -288,6 +390,28 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
             <option value="box">Box (wraps at width)</option>
           </select>
         </label>
+
+        {!text.autoWidth && (
+          <label className="flex items-center gap-2 text-micro text-ink-faint">
+            <span className="w-16 shrink-0">Height</span>
+            <input
+              type="checkbox"
+              checked={text.fixedHeight != null}
+              onChange={(e) => set({ fixedHeight: e.target.checked ? Math.round(text.fontSize * text.lineHeight * 3) : undefined })}
+              className="accent-[var(--color-accent)]"
+            />
+            <span className="shrink-0">Fixed</span>
+            {text.fixedHeight != null && (
+              <input
+                type="number"
+                min={text.fontSize}
+                value={Math.round(text.fixedHeight)}
+                onChange={(e) => set({ fixedHeight: Number(e.target.value) || text.fixedHeight })}
+                className="w-16 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+              />
+            )}
+          </label>
+        )}
 
         <div className="flex flex-col gap-2 pt-2 border-t border-hairline/60">
           <label className="flex items-center justify-between text-micro text-ink-faint">
