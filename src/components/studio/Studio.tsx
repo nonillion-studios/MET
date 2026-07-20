@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Page } from '../../types';
+import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
+import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
+import { PagesManagePanel } from './PagesManagePanel';
+import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { RightDock } from './RightDock';
 import { LayersPanel } from './LayersPanel';
@@ -18,7 +20,7 @@ import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
 } from './layerTree';
-import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, type Selection } from './paint/selection';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
@@ -243,6 +245,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onTextSizeStep: handleTextSizeStep,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
+  const [pagesManagerOpen, setPagesManagerOpen] = useState(pages.length === 0);
   const [activeTool, setActiveTool] = useState('select');
   const [showCleaned, setShowCleaned] = useState(false);
   const [overlayOpacity, setOverlayOpacity] = useState(0);
@@ -645,6 +648,31 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     // "duplicate scan, clean the duplicate" manga workflow and gives clone/heal/filter-brush/
     // liquify tools real pixels to act on immediately instead of an empty transparent canvas.
     canvasRef.current?.seedLayerWithBackground(layer.id);
+  }
+
+  async function handleCreateWhitedPatchLayer(page: Page, whited: ProcessedImage) {
+    try {
+      const [originalImg, whitedImg] = await Promise.all([
+        loadImageFromSrc(page.original.dataUrl),
+        loadImageFromSrc(whited.dataUrl),
+      ]);
+      const { maskCanvas, changedRatio } = computeWhitedDiffMask(originalImg, whitedImg);
+      if (changedRatio < 0.001) {
+        swalToast({ icon: 'warning', title: 'No differences detected', text: 'The whited image looks identical to the original.' });
+        return;
+      }
+      if (page.id !== activePageId) setActivePageId(page.id);
+      const layer = createLayer('clean-patch', 'Whited Patch');
+      updateLayersOnPage(page.id, current => [...current, layer], 'Add Whited Patch Layer');
+      setActiveLayerId(layer.id);
+      setSelection(alphaMaskToSelection(maskCanvas));
+      canvasRef.current?.seedLayerWithMaskedImage(layer.id, maskCanvas);
+      swalToast({ icon: 'success', title: 'Patch layer created', text: `${Math.round(changedRatio * 100)}% of the page differed from the original.` });
+    } catch (err) {
+      console.error(err);
+      const detail = err instanceof Error && err.message ? err.message : 'Could not diff the whited image against the original.';
+      swal({ icon: 'error', title: 'Diff Failed', text: detail });
+    }
   }
 
   function handleAddAdjustmentLayer() {
@@ -1164,7 +1192,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'pages', label: 'Pages', content: null },
   ];
   const toolTabs = allTabs.filter(t => t.id !== 'pages');
-  const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" />;
+  const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
 
   const menus = buildMenus({
     onBack: onBack,
@@ -1322,7 +1350,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   );
 
   return (
-    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {!panelsHidden && (
         <div className="relative z-40 overflow-x-auto">
           <MenuBar menus={menus} />
@@ -1385,7 +1413,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       <div className="flex-1 flex min-h-0 relative">
         {!panelsHidden && isDesktop && leftOpen && (
           <div className="h-full shrink-0 relative z-30">
-            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" onManagePages={() => setPagesManagerOpen(true)} />
           </div>
         )}
 
@@ -1401,7 +1429,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
         {!panelsHidden && layoutMode === 'tablet' && leftOpen && (
           <div ref={leftSidebarRef} className="absolute inset-y-0 left-0 z-20 w-72 max-w-[75vw] h-full liquid-glass-heavy border-r border-hairline shadow-2xl">
-            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" onManagePages={() => setPagesManagerOpen(true)} />
           </div>
         )}
         {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
@@ -1411,7 +1439,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         )}
 
         {!panelsHidden && layoutMode === 'phone' && leftOpen && (
-          <div ref={leftSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+          <div ref={leftSidebarRef} className="studio-sheet absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet rounded-t-2xl overflow-hidden">
             <button
               aria-label="Close panel"
               onClick={() => setLeftOpen(false)}
@@ -1423,7 +1451,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
         {!panelsHidden && layoutMode === 'phone' && rightOpen && (
-          <div ref={rightSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+          <div ref={rightSidebarRef} className="studio-sheet absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet rounded-t-2xl overflow-hidden">
             <button
               aria-label="Close panel"
               onClick={() => setRightOpen(false)}
@@ -1450,6 +1478,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         fileBaseName={`${chapterName}${activePage ? `_${activePage.original.filename.replace(/\.[^.]+$/, '')}` : ''}`.replace(/\s+/g, '_')}
         getSnapshot={() => canvasRef.current?.getExportSnapshot() ?? null}
         exportPsd={exportPsd}
+      />
+      <PagesManagePanel
+        open={pagesManagerOpen}
+        onClose={() => setPagesManagerOpen(false)}
+        chapterName={chapterName}
+        pages={pages}
+        onChange={(newPages) => onPagesChange?.(newPages)}
+        onCreateWhitedPatchLayer={handleCreateWhitedPatchLayer}
       />
     </div>
   );

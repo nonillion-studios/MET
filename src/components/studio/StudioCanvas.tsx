@@ -161,6 +161,9 @@ export interface StudioCanvasHandle {
    * only ever read/write the active layer's own canvas, never the background underneath it.
    */
   seedLayerWithBackground: (layerId: string) => void;
+  /** Like seedLayerWithBackground, but draws `maskCanvas` (already carrying its own precise
+   *  per-pixel alpha — see whitedDiff.ts) instead of a flat unmasked copy of the background. */
+  seedLayerWithMaskedImage: (layerId: string, maskCanvas: HTMLCanvasElement) => void;
   /** Reads the Quick Mask scratch buffer back into a Selection as mode is turned off; null if no
    *  mask buffer exists (Quick Mask was never entered, or no page is loaded). */
   commitQuickMask: () => Selection | null;
@@ -598,6 +601,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      redrawLayerNode(layerId);
+    },
+    seedLayerWithMaskedImage(layerId: string, maskCanvas: HTMLCanvasElement) {
+      // Sized from `maskCanvas` itself (already the target page's own dimensions, per
+      // whitedDiff.ts), not `imageRef.current` — this can legitimately run for a page that
+      // isn't the currently-displayed one, whose background image may not have loaded yet.
+      const canvas = getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, maskCanvas.width, maskCanvas.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(maskCanvas, 0, 0);
       redrawLayerNode(layerId);
     },
     commitQuickMask() {
@@ -2048,7 +2062,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   );
 });
 
-function loadImageFromSrc(src: string): Promise<HTMLImageElement> {
+export function loadImageFromSrc(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new window.Image();
     img.onload = () => resolve(img);

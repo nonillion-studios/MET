@@ -1,15 +1,34 @@
-import { CheckCircle2, Circle } from 'lucide-react';
+import { CheckCircle2, Circle, Plus } from 'lucide-react';
 import type { Page } from '../../types';
 import { cn } from '../ui/cn';
+import { IconButton } from '../ui';
 
 interface StudioPagesPanelProps {
   pages: Page[];
   activePageId: string | null;
   onSelect: (pageId: string) => void;
   orientation: 'vertical' | 'horizontal';
+  onManagePages?: () => void;
 }
 
-export function StudioPagesPanel({ pages, activePageId, onSelect, orientation }: StudioPagesPanelProps) {
+export function StudioPagesPanel({ pages, activePageId, onSelect, orientation, onManagePages }: StudioPagesPanelProps) {
+  if (pages.length === 0) {
+    return (
+      <div
+        className={cn(
+          'liquid-glass-bar shrink-0 flex flex-col items-center justify-center gap-2 text-center p-3',
+          orientation === 'vertical' ? 'w-32 sm:w-36 h-full border-r border-hairline' : 'w-full h-24 border-t border-hairline'
+        )}
+      >
+        <p className="text-micro text-ink-faint">No pages yet</p>
+        {onManagePages && (
+          <IconButton size="sm" aria-label="Add pages" title="Add Pages" onClick={onManagePages}>
+            <Plus size={14} />
+          </IconButton>
+        )}
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
@@ -19,6 +38,17 @@ export function StudioPagesPanel({ pages, activePageId, onSelect, orientation }:
           : 'w-full h-24 border-t border-hairline flex flex-row gap-2 p-2 items-center'
       )}
     >
+      {onManagePages && (
+        <IconButton
+          size="sm"
+          aria-label="Add pages"
+          title="Add Pages"
+          onClick={onManagePages}
+          className={orientation === 'vertical' ? 'w-full aspect-[2/3] !h-auto shrink-0' : 'h-full aspect-[2/3] shrink-0'}
+        >
+          <Plus size={16} />
+        </IconButton>
+      )}
       {pages.map((page, index) => {
         const active = page.id === activePageId;
         return (

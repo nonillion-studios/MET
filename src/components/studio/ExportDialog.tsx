@@ -49,7 +49,7 @@ export function ExportDialog({ open, onClose, fileBaseName, getSnapshot, exportP
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Export Page" size="sm">
+    <Modal open={open} onClose={onClose} title="Export Page" size="sm" className="studio-shell">
       <p className="text-sm text-ink-muted mb-4">Flattens the background and every visible layer at full resolution.</p>
       <div className="grid grid-cols-2 gap-2">
         {IMAGE_FORMATS.map(f => (

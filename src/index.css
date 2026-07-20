@@ -82,6 +82,51 @@
   --color-warning: #FF9F0A;
 }
 
+/* ---- "Obsidian Edit" theme, scoped to the Studio shell only -------------
+   The Studio gets its own dark, flat, Photoshop-style skin (ported from a
+   Stitch design export) independent of the iOS-glass theme the rest of the
+   app (Library/Settings/Teams/Cloud) uses. Scoping via a single ancestor
+   class — rather than touching :root/.dark — means every existing
+   `text-ink`/`bg-base`/`border-hairline`/`rounded-panel`/etc utility class
+   already used across the ~20 Studio chrome files repaints for free: Tailwind
+   v4's `@theme`/`@theme inline` vars resolve against the nearest ancestor
+   defining them, so this block never touches the values consumed by
+   TopBar/SidebarRail/BottomTabBar/GlassCard/etc, which sit outside .studio-shell. */
+.studio-shell {
+  color-scheme: dark;
+  --color-bg-base: #121414;
+  --color-bg-elevated: #1e2020;
+  --color-surface: #1a1c1c;
+  --color-text-primary: #e2e2e2;
+  --color-text-secondary: #c4c7c7;
+  --color-text-tertiary: color-mix(in srgb, #c4c7c7 55%, transparent);
+  --color-accent: #00A3FF;
+  --color-accent-soft: rgba(0, 163, 255, 0.16);
+  --color-border: #333333;
+  --color-danger: #ffb4ab;
+  --color-success: #30D158;
+  --color-warning: #FF9F0A;
+
+  --radius-control: 4px;
+  --radius-panel: 8px;
+  --radius-surface: 12px;
+
+  --text-micro: 11px;
+  --text-ui: 12px;
+  --text-title: 14px;
+
+  --shadow-control: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-panel: 0 4px 12px rgba(0, 0, 0, 0.6);
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.7);
+
+  --spacing-control-sm: 24px;
+  --spacing-control: 28px;
+  --spacing-control-lg: 32px;
+  --spacing-bar: 56px;
+
+  --studio-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
 @theme inline {
   --color-base: var(--color-bg-base);
   --color-elevated: var(--color-bg-elevated);
@@ -187,9 +232,9 @@
      page art reads as the brightest thing on screen and the glass chrome
      visibly floats above it. */
   .studio-canvas-bg {
-    background-color: #0d0d0f;
+    background-color: #0c0f0f;
     background-image:
-      radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 60%);
+      radial-gradient(ellipse at 50% 0%, color-mix(in srgb, #00A3FF 6%, transparent), transparent 60%);
   }
 
   /* One transition for every interactive bit of studio chrome. */
@@ -223,6 +268,64 @@
     pointer-events: none;
     z-index: 0;
     mix-blend-mode: overlay;
+  }
+
+  /* ---- Obsidian Edit: flatten the shared glass materials inside the Studio
+     shell only. Same class names as the iOS-glass theme (so no JSX changes
+     anywhere in Studio chrome), just re-defined under a `.studio-shell`
+     ancestor selector so Library/Settings/Teams keep the frosted look.
+     Per the reference DESIGN.md: "Tonal Layering and Low-Contrast Outlines",
+     shadows "tight, non-diffused, and purely black" — no backdrop blur,
+     no specular sheen, solid panel fills with a 1px outline instead. */
+  .studio-shell .liquid-glass,
+  .studio-shell .liquid-glass-heavy,
+  .studio-shell .liquid-glass-nav,
+  .studio-shell .liquid-glass-bar {
+    background: var(--color-bg-elevated);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-panel);
+  }
+  .studio-shell .liquid-glass-nav::before,
+  .studio-shell .liquid-glass-bar::before {
+    content: none;
+  }
+  .studio-shell .studio-panel {
+    background: var(--color-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .studio-shell .studio-panel-floating {
+    background: var(--color-bg-elevated);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-float);
+  }
+
+  /* The one deliberate exception to "no backdrop blur": phone-breakpoint
+     bottom sheets, per the reference DESIGN.md's Bottom Sheets spec
+     (drag handle, semi-transparent surface, 20px backdrop blur). */
+  .studio-shell .studio-sheet {
+    background: color-mix(in srgb, var(--color-bg-elevated) 92%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-float);
+  }
+
+  /* Numeric read-outs (brush size/opacity/flow, zoom %, RGB/HEX) get the
+     monospace label face so digits don't cause layout jumps as they change. */
+  .studio-shell .text-mono-label {
+    font-family: var(--studio-font-mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .studio-shell input[type="range"] {
+    accent-color: var(--color-accent);
   }
 }
 
