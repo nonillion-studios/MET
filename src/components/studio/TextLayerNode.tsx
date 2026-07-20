@@ -63,6 +63,10 @@ export function TextLayerNode({
       onTap={(e) => onSelect(selectModeFor(e.evt))}
       onDblClick={onEdit}
       onDblTap={onEdit}
+      // Stops the browser's own touch-scroll/gesture handling from fighting a text drag on touch
+      // devices — Konva's own drag machinery (document-level move/up listeners) already takes care
+      // of tracking the pointer past the node's bounds, so nothing else is needed here.
+      onDragStart={(e) => e.evt?.preventDefault?.()}
       // Konva's Transformer already moves every attached node when a multi-selection is dragged, so
       // each node just commits its own final position — propagating the delta by hand here would
       // double-apply it and the followers would overshoot.

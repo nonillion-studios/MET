@@ -1769,7 +1769,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
             editing={layer.id === editingLayerId}
             selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-            draggable={activeTool === 'select' && !layer.locked}
+            draggable={activeTool === 'select' && !layer.locked && !spaceDown}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
