@@ -1,6 +1,7 @@
 import { findTool } from '../toolGroups';
 import type { LiquifyMode, SymmetryMode } from '../paint/paintEngine';
 import type { BrushShape } from '../paint/brushTip';
+import { PAINT_TOOLS } from '../paint/usePaintLayer';
 
 interface ToolOptionsBarProps {
   activeTool: string;
@@ -33,6 +34,8 @@ interface ToolOptionsBarProps {
   sliceRectCount: number;
   onAddSliceRect: () => void;
   onExportSlices: () => void;
+  hasSelection: boolean;
+  onDeselect: () => void;
 }
 
 const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
@@ -41,6 +44,7 @@ const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'heal', 'blur', 'sharpe
 const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient']);
 const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
 const SYMMETRY_TOOLS = new Set(['brush', 'pencil', 'eraser']);
+const SELECTION_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'lasso-freehand', 'lasso-polygon', 'lasso-magnetic', 'wand']);
 
 const LIQUIFY_MODES: { id: LiquifyMode; label: string }[] = [
   { id: 'push', label: 'Push' },
@@ -80,6 +84,7 @@ export function ToolOptionsBar({
   angle, onAngleChange, roundness, onRoundnessChange, scatter, onScatterChange,
   smoothing, onSmoothingChange,
   sliceRectCount, onAddSliceRect, onExportSlices,
+  hasSelection, onDeselect,
 }: ToolOptionsBarProps) {
   const tool = findTool(activeTool);
   const showSize = SIZE_TOOLS.has(activeTool);
@@ -90,8 +95,10 @@ export function ToolOptionsBar({
   const showLiquifyMode = activeTool === 'liquify';
   const showSymmetry = SYMMETRY_TOOLS.has(activeTool);
   const showSlice = activeTool === 'slice';
+  const showDeselect = SELECTION_TOOLS.has(activeTool) && hasSelection;
+  const showSelectionHint = (PAINT_TOOLS as readonly string[]).includes(activeTool) && hasSelection;
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice && !showDeselect && !showSelectionHint)) return null;
 
   return (
     <div className="liquid-glass-bar flex items-center gap-4 px-3 h-10 shrink-0 border-b border-hairline overflow-x-auto">
@@ -108,6 +115,19 @@ export function ToolOptionsBar({
             {LIQUIFY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </label>
+      )}
+      {showDeselect && (
+        <button
+          className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ink text-micro shrink-0"
+          onClick={onDeselect}
+        >
+          Deselect
+        </button>
+      )}
+      {showSelectionHint && (
+        <span className="text-micro text-ink-faint shrink-0 whitespace-nowrap">
+          Editing inside selection — Ctrl+D to deselect
+        </span>
       )}
       {showSize && <Slider label="Size" value={size} min={1} max={200} step={1} onChange={onSizeChange} />}
       {showHardness && <Slider label="Hardness" value={hardness * 100} min={0} max={100} step={1} onChange={(v) => onHardnessChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}

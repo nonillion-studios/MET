@@ -243,6 +243,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onUngroupLayers: () => { if (activeLayerId) handleUngroupLayer(activeLayerId); },
     onToggleQuickMask: handleToggleQuickMask,
     onTextSizeStep: handleTextSizeStep,
+    onDeselect: () => setSelection(NO_SELECTION),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   const [pagesManagerOpen, setPagesManagerOpen] = useState(pages.length === 0);
@@ -1404,6 +1405,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}
+          hasSelection={hasSelection(selection)}
+          onDeselect={() => setSelection(NO_SELECTION)}
         />
       )}
 

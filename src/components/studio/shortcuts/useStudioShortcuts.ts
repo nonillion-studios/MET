@@ -18,6 +18,7 @@ interface UseStudioShortcutsArgs {
   onToggleQuickMask: () => void;
   /** TypeR-style size-increment-with-recenter for the active text layer. delta is +1/-1. */
   onTextSizeStep: (delta: number) => void;
+  onDeselect: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -30,7 +31,7 @@ function isTextInputFocused(): boolean {
 export function useStudioShortcuts({
   onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
   onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
-  onToggleQuickMask, onTextSizeStep,
+  onToggleQuickMask, onTextSizeStep, onDeselect,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -55,6 +56,7 @@ export function useStudioShortcuts({
         // "." / "," rather than "]" / "[" — those are already the brush-size-step keys.
         if (key === '.') { e.preventDefault(); onTextSizeStep(1); return; }
         if (key === ',') { e.preventDefault(); onTextSizeStep(-1); return; }
+        if (key === 'd') { e.preventDefault(); onDeselect(); return; }
         return; // other mod combos (undo/redo) are handled by useKeyboardUndo
       }
 
@@ -72,5 +74,5 @@ export function useStudioShortcuts({
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit, onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onToggleQuickMask, onTextSizeStep]);
+  }, [toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit, onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onToggleQuickMask, onTextSizeStep, onDeselect]);
 }

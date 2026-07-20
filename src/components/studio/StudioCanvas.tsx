@@ -249,6 +249,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const combineBaseRef = useRef<Selection>(NO_SELECTION);
   const combineModeRef = useRef<SelectionCombineMode>('replace');
   /**
+   * A marquee/lasso gesture doesn't touch the selection at all until the pointer has moved past a
+   * small dead zone (4 screen px) — below that it's an ordinary click (e.g. re-clicking inside an
+   * existing selection to start a paint stroke), not an attempt to draw a new empty selection. Once
+   * crossed, the gesture behaves exactly as before for its remaining lifetime.
+   */
+  const marqueeDraggedRef = useRef(false);
+  const lassoDraggedRef = useRef(false);
+  const DRAG_DEAD_ZONE_PX = 4;
+  /**
    * Move tool (activeTool 'select') dragging the pixel content trapped inside the active
    * selection on the active clean-patch layer — distinct from objectMarqueeRef (which
    * drag-selects text layers): this fires instead of it when the pointerdown lands inside the
@@ -700,6 +709,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (e.key === 'Escape' && penDraft.length > 0) { setPenDraft([]); penPlacingRef.current = null; }
       if (e.key === 'Escape' && lassoPolyPoints.length > 0) setLassoPolyPoints([]);
       if (e.key === 'Escape' && transformingSelection) cancelTransformSelection();
+      // Esc deselects while a plain marquee/lasso selection tool is active — but not Crop/Slice,
+      // which use Esc for their own draft-cancel flow, and only once nothing else above already
+      // consumed it (an in-progress pen/lasso-polygon draft or a live Transform Selection box).
+      const isSelectionTool = (MARQUEE_TOOLS.has(activeTool) && activeTool !== 'crop' && activeTool !== 'slice') || LASSO_TOOLS.has(activeTool);
+      if (
+        e.key === 'Escape' && isSelectionTool && hasSelection(selection)
+        && penDraft.length === 0 && lassoPolyPoints.length === 0 && !transformingSelection
+      ) {
+        onSelectionChange(NO_SELECTION);
+      }
       if (e.key === 'Enter' && (activeTool === 'pen' || activeTool === 'curvature-pen') && penDraft.length > 1) commitPenLayer(false);
       if (e.key === 'Enter' && (activeTool === 'lasso-polygon' || activeTool === 'lasso-magnetic') && lassoPolyPoints.length > 2) commitLassoPolygon();
       if (e.key === 'Enter' && activeTool === 'crop') onCommitCrop?.();
@@ -1176,6 +1195,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       combineBaseRef.current = selection;
       combineModeRef.current = mode;
       marqueeStartRef.current = p;
+      marqueeDraggedRef.current = false;
       return;
     }
     if (LASSO_TOOLS.has(activeTool) && !quickMaskActive) {
@@ -1184,6 +1204,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       combineBaseRef.current = selection;
       combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
       lassoPointsRef.current = [p];
+      lassoDraggedRef.current = false;
       return;
     }
     if (!isPaintTool) return;
@@ -1298,6 +1319,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const p = imageSpacePointer();
       if (!p) return;
       const start = marqueeStartRef.current;
+      if (!marqueeDraggedRef.current) {
+        if (Math.hypot(p.x - start.x, p.y - start.y) * scale < DRAG_DEAD_ZONE_PX) return;
+        marqueeDraggedRef.current = true;
+      }
       let width = Math.abs(p.x - start.x);
       let height = Math.abs(p.y - start.y);
       // Shift constrains Rectangular/Elliptical Marquee to a perfect square/circle, Photoshop-style.
@@ -1318,6 +1343,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (LASSO_TOOLS.has(activeTool) && lassoPointsRef.current) {
       const p = imageSpacePointer();
       if (!p) return;
+      if (!lassoDraggedRef.current) {
+        const start = lassoPointsRef.current[0];
+        if (Math.hypot(p.x - start.x, p.y - start.y) * scale < DRAG_DEAD_ZONE_PX) return;
+        lassoDraggedRef.current = true;
+      }
       lassoPointsRef.current = [...lassoPointsRef.current, p];
       onSelectionChange({ kind: 'polygon', points: lassoPointsRef.current });
       return;
@@ -1405,17 +1435,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return;
     }
     if (MARQUEE_TOOLS.has(activeTool)) {
-      if (marqueeStartRef.current && combineModeRef.current !== 'replace' && image) {
+      // A click with no real drag never touched the selection (see the dead-zone guard in
+      // pointermove) — nothing to combine, and nothing to revert either.
+      if (marqueeStartRef.current && marqueeDraggedRef.current && combineModeRef.current !== 'replace' && image) {
         onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
       }
       marqueeStartRef.current = null;
+      marqueeDraggedRef.current = false;
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
-      if (lassoPointsRef.current && combineModeRef.current !== 'replace' && image) {
+      if (lassoPointsRef.current && lassoDraggedRef.current && combineModeRef.current !== 'replace' && image) {
         onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
       }
       lassoPointsRef.current = null;
+      lassoDraggedRef.current = false;
       return;
     }
     if (!isPaintTool) return;
