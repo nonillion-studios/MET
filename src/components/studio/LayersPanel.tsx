@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, ChevronUp, ChevronDown, SlidersHorizontal,
-  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { StudioPanel } from './StudioPanel';
+import { swal } from '../../lib/swalTheme';
 import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
@@ -36,6 +37,8 @@ interface LayersPanelProps {
   onAddAdjustment: () => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
+  onDeleteMany?: (ids: string[]) => void;
+  onRename: (id: string, name: string) => void;
   onMove: (id: string, direction: 'up' | 'down') => void;
   onGroup?: () => void;
   onUngroup?: (id: string) => void;
@@ -68,13 +71,76 @@ interface LayersPanelProps {
 
 export function LayersPanel({
   layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
-  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onMove,
+  onOpacityChange, onBlendChange, onAdd, onAddAdjustment, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, expandedLayerId, onToggleExpanded,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; zone: DropZone } | null>(null);
+
+  // Esc while a row's inline settings are open just closes them back to the plain list — it never
+  // needed to navigate anywhere to begin with, so there's nothing else to restore.
+  useEffect(() => {
+    if (!expandedLayerId) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onToggleExpanded(expandedLayerId!);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [expandedLayerId, onToggleExpanded]);
+
+  function deleteLayerOrSelection(id: string) {
+    const ids = selected.includes(id) && selected.length > 1 ? selected : [id];
+    if (ids.length > 1 && onDeleteMany) onDeleteMany(ids);
+    else onDelete(id);
+  }
+
+  async function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
+    e.preventDefault();
+    e.stopPropagation();
+    const options: Record<string, string> = {
+      select: 'Select',
+      rename: 'Rename…',
+      duplicate: 'Duplicate',
+      visibility: layer.visible ? 'Hide' : 'Show',
+      ...(layer.isBackground ? {} : { lock: layer.locked ? 'Unlock' : 'Lock' }),
+      moveUp: 'Move Up',
+      moveDown: 'Move Down',
+      ...(layer.isBackground ? {} : { delete: 'Delete' }),
+    };
+    const result = await swal({
+      title: layer.name,
+      input: 'select',
+      inputOptions: options,
+      inputPlaceholder: 'Choose an action',
+      showCancelButton: true,
+      confirmButtonText: 'Go',
+    });
+    if (!result.isConfirmed || !result.value) return;
+    switch (result.value as string) {
+      case 'select': onSelect(layer.id, 'replace'); break;
+      case 'rename': {
+        const renamed = await swal({
+          title: 'Rename Layer',
+          input: 'text',
+          inputValue: layer.name,
+          showCancelButton: true,
+          confirmButtonText: 'Rename',
+        });
+        if (renamed.isConfirmed && typeof renamed.value === 'string' && renamed.value.trim()) {
+          onRename(layer.id, renamed.value.trim());
+        }
+        break;
+      }
+      case 'duplicate': onDuplicate(layer.id); break;
+      case 'visibility': onToggleVisible(layer.id); break;
+      case 'lock': onToggleLocked(layer.id); break;
+      case 'moveUp': onMove(layer.id, 'up'); break;
+      case 'moveDown': onMove(layer.id, 'down'); break;
+      case 'delete': deleteLayerOrSelection(layer.id); break;
+    }
+  }
 
   // Render top-most layer first, matching Photoshop's stacking convention. Reversing the flattened
   // walk puts a group directly above its own children, which is the order the panel wants to indent.
@@ -184,9 +250,10 @@ export function LayersPanel({
               }}
               onDragLeave={() => setDropTarget(null)}
               onDrop={(e) => { e.preventDefault(); handleDrop(layer, zoneFor(e, layer)); }}
+              onContextMenu={(e) => openContextMenu(e, layer)}
               style={{ marginLeft: depth * 12 }}
               className={cn(
-                'rounded-control border transition-colors',
+                'group rounded-control border transition-colors',
                 dragId === layer.id && 'opacity-40',
                 // The drop affordance has to say *which* of the three things will happen.
                 drop === 'into' && 'ring-1 ring-accent',
@@ -201,10 +268,8 @@ export function LayersPanel({
             >
               <button
                 type="button"
-                onClick={(e) => {
-                  onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace');
-                  onToggleExpanded(layer.id);
-                }}
+                onClick={(e) => onSelect(layer.id, e.shiftKey || e.ctrlKey || e.metaKey ? 'toggle' : 'replace')}
+                onDoubleClick={() => onToggleExpanded(layer.id)}
                 className="w-full flex items-center gap-2 px-2 h-11"
               >
                 <span
@@ -272,6 +337,37 @@ export function LayersPanel({
                     className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
                   >
                     {layer.locked ? <Lock size={13} /> : <Unlock size={13} className="opacity-30" />}
+                  </span>
+                )}
+
+                {/* Settings — always the same inline-expansion this row already supports, just
+                    reachable without needing a double-click. Visible on hover, always on touch
+                    (no hover state to reveal it there). */}
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={expanded ? `Close ${layer.name} settings` : `Open ${layer.name} settings`}
+                  onClick={(e) => { e.stopPropagation(); onToggleExpanded(layer.id); }}
+                  className={cn(
+                    'shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink transition-opacity',
+                    'opacity-0 group-hover:opacity-100 [@media(pointer:coarse)]:opacity-100',
+                    expanded && 'opacity-100 text-accent'
+                  )}
+                >
+                  <Settings2 size={13} />
+                </span>
+
+                {/* Trash — a quick one-click delete without expanding the row first. Hover-only on a
+                    fine pointer, always visible on touch (there's no hover state to reveal it). */}
+                {!layer.isBackground && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Delete ${layer.name}`}
+                    onClick={(e) => { e.stopPropagation(); deleteLayerOrSelection(layer.id); }}
+                    className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-red-400 transition-opacity opacity-0 group-hover:opacity-100 [@media(pointer:coarse)]:opacity-100"
+                  >
+                    <Trash2 size={13} />
                   </span>
                 )}
               </button>

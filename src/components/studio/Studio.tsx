@@ -717,6 +717,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *             selected). A toggle keeps the clicked layer primary so the panels follow it.
    */
   function selectLayer(id: string, mode: LayerSelectMode = 'replace') {
+    // Selecting a layer — from the canvas or the Layers panel — only ever selects it. It used to
+    // also jump the shared dock over to that layer's Text/Adjustment tab, which made the Layers
+    // list itself vanish on the very click that was supposed to just highlight a row in it. Opening
+    // those deeper panels is now a separate, explicit action (LayersPanel's own settings toggle).
     if (mode === 'toggle') {
       setSelectedLayerIds(current => current.includes(id)
         ? current.filter(l => l !== id)
@@ -725,16 +729,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       setSelectedLayerIds([id]);
     }
     setActiveMaskLayerId(null);
-    const type = findLayer(layers, id)?.type;
-    if (type === 'text') dock.selectTab('text');
-    if (type === 'adjustment') dock.selectTab('adjustment');
   }
 
   /** Replaces the whole selection at once — used by the canvas's drag-a-box object marquee. */
   function selectLayers(ids: string[]) {
     setSelectedLayerIds(ids);
     setActiveMaskLayerId(null);
-    if (ids.length === 1 && findLayer(layers, ids[0])?.type === 'text') dock.selectTab('text');
+  }
+
+  function handleRenameLayer(id: string, name: string) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
   }
 
   /** Clicking a mask's thumbnail makes it the paint target; clicking it again (or the layer's own
@@ -1106,6 +1110,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onAddAdjustment={handleAddAdjustmentLayer}
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
+      onDeleteMany={handleDeleteLayers}
+      onRename={handleRenameLayer}
       onMove={handleMoveLayer}
       onGroup={handleGroupLayers}
       onUngroup={handleUngroupLayer}
