@@ -16,6 +16,7 @@ import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { DockProvider, useDock } from './dock/DockContext';
+import { CollapsibleDockSection } from './dock/CollapsibleDockSection';
 import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
@@ -262,6 +263,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [rightOpen, setRightOpen] = useState(true);
   const leftSidebarRef = useRef<HTMLDivElement>(null);
   const rightSidebarRef = useRef<HTMLDivElement>(null);
+  // Color and Layers are pinned sections of the right column — collapsing either via its chevron
+  // only shrinks it back to a header, it's never fully hidden the way a swappable tab can be.
+  const [colorPanelCollapsed, setColorPanelCollapsed] = useState(false);
+  const [layersPanelCollapsed, setLayersPanelCollapsed] = useState(false);
 
   function toggleLeftSidebar() {
     setLeftOpen(v => {
@@ -1221,7 +1226,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'layers', label: 'Layers', content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
-  const toolTabs = allTabs.filter(t => t.id !== 'pages');
+  // Color and Layers are pinned sections of the right column (see toolsSidebar below), not part of
+  // the swappable strip — otherwise switching to any other tab would hide whichever of the two was
+  // active, which is exactly the "Layers panel disappears" bug this restructure exists to remove.
+  const toolTabs = allTabs.filter(t => t.id !== 'pages' && t.id !== 'color' && t.id !== 'layers');
   const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
 
   const menus = buildMenus({
@@ -1269,8 +1277,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     decreaseTextSize: () => handleTextSizeStep(-1),
     hasActiveTextLayer: activeLayer?.type === 'text',
     panelTabs: allTabs.map(t => ({ id: t.id, label: t.label })),
-    showPanel: (id) => { if (id === 'pages') { setLeftOpen(true); } else { dock.selectTab(id); setRightOpen(true); } },
-    isPanelVisible: (id) => id === 'pages' ? leftOpen : (rightOpen && dock.activeTab === id),
+    showPanel: (id) => {
+      if (id === 'pages') { setLeftOpen(true); return; }
+      setRightOpen(true);
+      if (id === 'color') { setColorPanelCollapsed(false); return; }
+      if (id === 'layers') { setLayersPanelCollapsed(false); return; }
+      dock.selectTab(id);
+    },
+    isPanelVisible: (id) => {
+      if (id === 'pages') return leftOpen;
+      if (id === 'color') return rightOpen && !colorPanelCollapsed;
+      if (id === 'layers') return rightOpen && !layersPanelCollapsed;
+      return rightOpen && dock.activeTab === id;
+    },
     showShortcutsHelp: () => swal({
       title: 'Keyboard Shortcuts',
       html: `<div style="text-align:left;font-size:13px;line-height:1.8">${FIXED_SHORTCUTS_HELP.map(s => `<div><b>${s.keys}</b> — ${s.description}</div>`).join('')}</div>`,
@@ -1370,11 +1389,23 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
+  // Color (top) and Layers (bottom) are pinned, always-visible sections of the right column;
+  // collapsing one via its chevron hands its space to whatever's still expanded, including the
+  // swappable tab strip between them (Text/Adjustment/TypeR/Translation/Brushes/Fonts/History) —
+  // which keeps working exactly as it did as a single-region dock, just relocated.
   const toolsSidebar = (
     <div className="h-full flex">
       <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
-      <div className="w-64 sm:w-72 h-full">
-        <RightDock activeTab={dock.activeTab ?? undefined} onTabChange={dock.selectTab} tabs={toolTabs} />
+      <div className="w-64 sm:w-72 h-full flex flex-col min-h-0">
+        <CollapsibleDockSection title="Color" collapsed={colorPanelCollapsed} onToggle={() => setColorPanelCollapsed(v => !v)}>
+          {colorPanel}
+        </CollapsibleDockSection>
+        <div className="flex-1 min-h-0 border-y border-hairline">
+          <RightDock activeTab={dock.activeTab ?? undefined} onTabChange={dock.selectTab} tabs={toolTabs} className="!border-l-0" />
+        </div>
+        <CollapsibleDockSection title="Layers" collapsed={layersPanelCollapsed} onToggle={() => setLayersPanelCollapsed(v => !v)}>
+          {layersPanel}
+        </CollapsibleDockSection>
       </div>
     </div>
   );
@@ -1493,12 +1524,22 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
             </button>
             <div className="flex-1 min-h-0 flex flex-col-reverse">
               <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="horizontal" />
-              <RightDock
-                activeTab={dock.activeTab ?? undefined}
-                onTabChange={dock.selectTab}
-                className="!w-full !h-full !border-l-0 border-x border-hairline"
-                tabs={toolTabs}
-              />
+              <div className="flex-1 min-h-0 flex flex-col border-x border-hairline">
+                <CollapsibleDockSection title="Color" collapsed={colorPanelCollapsed} onToggle={() => setColorPanelCollapsed(v => !v)}>
+                  {colorPanel}
+                </CollapsibleDockSection>
+                <div className="flex-1 min-h-0 border-y border-hairline">
+                  <RightDock
+                    activeTab={dock.activeTab ?? undefined}
+                    onTabChange={dock.selectTab}
+                    className="!w-full !h-full !border-l-0"
+                    tabs={toolTabs}
+                  />
+                </div>
+                <CollapsibleDockSection title="Layers" collapsed={layersPanelCollapsed} onToggle={() => setLayersPanelCollapsed(v => !v)}>
+                  {layersPanel}
+                </CollapsibleDockSection>
+              </div>
             </div>
           </div>
         )}

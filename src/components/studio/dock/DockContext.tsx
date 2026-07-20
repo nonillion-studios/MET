@@ -7,7 +7,9 @@ interface DockContextValue {
 
 const DockContext = createContext<DockContextValue | null>(null);
 
-const DEFAULT_ACTIVE_TAB = 'layers';
+// 'layers' (the old default) is no longer one of the swappable tabs — it and 'color' are now
+// pinned sections of their own, always visible regardless of which swappable tab is active.
+const DEFAULT_ACTIVE_TAB = 'typer';
 
 function loadPersistedTab(storageKey: string | undefined): string | null {
   if (!storageKey) return null;
