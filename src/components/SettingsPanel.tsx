@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut, Download, CloudUpload, Archive } from 'lucide-react';
 import { clear } from 'idb-keyval';
 import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
@@ -10,6 +10,7 @@ import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
 import { requestNotificationPermission } from '../lib/notifications';
 import { Bell } from 'lucide-react';
 import { AdminAnnouncementsPanel } from './AdminAnnouncementsPanel';
+import { isAllowedAnnouncementSender } from '../lib/adminMessages';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -35,8 +36,14 @@ export function SettingsPanel({
   onDownloadAllBackup, isDownloadingAllBackup, onBackupAllToCloud, isBackingUpAll,
 }: SettingsPanelProps) {
   const { mode, setMode } = useTheme();
-  const { session, signOut, updateProfile, isAdmin } = useTeamAuth();
+  const { session, signOut, updateProfile } = useTeamAuth();
   const profile = profileFromSession(session);
+  const [canSendAnnouncements, setCanSendAnnouncements] = useState(false);
+
+  useEffect(() => {
+    if (!session) { setCanSendAnnouncements(false); return; }
+    isAllowedAnnouncementSender().then(setCanSendAnnouncements);
+  }, [session]);
   const [name, setName] = useState(profile.name);
   const [avatar, setAvatar] = useState(profile.avatar);
   const [saving, setSaving] = useState(false);
@@ -201,7 +208,7 @@ export function SettingsPanel({
         </div>
       </GlassCard>
 
-      {isAdmin && <AdminAnnouncementsPanel />}
+      {canSendAnnouncements && <AdminAnnouncementsPanel />}
 
       <GlassCard className="p-6 space-y-3">
         <h3 className="text-base font-semibold text-ink font-display">Legal</h3>

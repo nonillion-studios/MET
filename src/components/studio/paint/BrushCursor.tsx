@@ -11,7 +11,7 @@ interface BrushCursorProps {
 
 const STROKE_TOOLS = new Set(['brush', 'pencil', 'eraser']);
 /** Tools that are brush-sized but don't use the brush tip geometry (no angle/roundness). */
-const ROUND_SIZED_TOOLS = new Set(['clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'liquify']);
+const ROUND_SIZED_TOOLS = new Set(['clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'liquify']);
 
 /**
  * Live brush outline that tracks the pointer, drawn in container space above the

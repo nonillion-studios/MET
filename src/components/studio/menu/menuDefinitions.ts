@@ -18,6 +18,8 @@ export interface MenuDef {
 export interface MenuActions {
   onBack: () => void;
   onExport: () => void;
+  onExportSlices: () => void;
+  hasSliceRects: boolean;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -40,7 +42,17 @@ export interface MenuActions {
   toggleClipped: () => void;
   /** False when the layer below can't be a clip base — only raster layers can, see `canBeClipBase`. */
   canClip: boolean;
+  strokeActivePath: () => void;
+  fillActivePath: () => void;
+  /** Stroke/Fill Path need both an active path layer (the geometry) and an active raster layer
+   *  (the bake target) — disabled, not silently no-op, when either is missing. */
+  canBakePath: boolean;
   isClipped: boolean;
+  toggleMask: () => void;
+  /** False for adjustment layers — they have no paintable content to trim to a mask. Any other
+   *  non-background type (groups included) is fair game. */
+  canMask: boolean;
+  hasMask: boolean;
   addTextLayer: () => void;
   centerTextInBubble: () => void;
   increaseTextSize: () => void;
@@ -64,6 +76,8 @@ export interface MenuActions {
   expandSelection: () => void;
   contractSelection: () => void;
   transformSelection: () => void;
+  makeSelectionFromPath: () => void;
+  hasActivePathLayer: boolean;
   quickMaskActive: boolean;
   toggleQuickMask: () => void;
 }
@@ -75,6 +89,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       label: 'Project',
       items: [
         { id: 'export', label: 'Export…', shortcut: 'Ctrl+E', action: a.onExport },
+        { id: 'export-slices', label: 'Export Slices…', action: a.onExportSlices, disabled: !a.hasSliceRects },
         { id: 'sep1', label: '', separator: true },
         { id: 'back', label: 'Back to Pages', action: a.onBack },
       ],
@@ -97,6 +112,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'expand', label: 'Expand…', action: a.expandSelection, disabled: !a.hasSelection },
         { id: 'contract', label: 'Contract…', action: a.contractSelection, disabled: !a.hasSelection },
         { id: 'transform', label: 'Transform Selection', action: a.transformSelection, disabled: !a.hasSelection },
+        { id: 'make-selection', label: 'Make Selection from Path', action: a.makeSelectionFromPath, disabled: !a.hasActivePathLayer },
         { id: 'sep2', label: '', separator: true },
         { id: 'quick-mask', label: 'Quick Mask', shortcut: 'Q', action: a.toggleQuickMask, checked: a.quickMaskActive },
       ],
@@ -129,12 +145,21 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'group-layers', label: 'Group Layers', shortcut: 'Ctrl+G', action: a.groupLayers, disabled: !a.hasActiveLayer },
         { id: 'ungroup-layers', label: 'Ungroup Layers', shortcut: 'Ctrl+Shift+G', action: a.ungroupLayers, disabled: !a.isGroupActive },
         {
+          id: 'layer-mask',
+          label: a.hasMask ? 'Delete Layer Mask' : 'Add Layer Mask',
+          action: a.toggleMask,
+          disabled: !a.canMask && !a.hasMask,
+        },
+        {
           id: 'clip-layer',
           label: a.isClipped ? 'Release Clipping Mask' : 'Create Clipping Mask',
           action: a.toggleClipped,
           disabled: !a.canClip && !a.isClipped,
         },
         { id: 'sep2', label: '', separator: true },
+        { id: 'stroke-path', label: 'Stroke Path', action: a.strokeActivePath, disabled: !a.canBakePath },
+        { id: 'fill-path', label: 'Fill Path', action: a.fillActivePath, disabled: !a.canBakePath },
+        { id: 'sep3', label: '', separator: true },
         { id: 'move-up', label: 'Bring Forward', action: a.moveLayerUp, disabled: !a.hasActiveLayer },
         { id: 'move-down', label: 'Send Backward', action: a.moveLayerDown, disabled: !a.hasActiveLayer },
       ],

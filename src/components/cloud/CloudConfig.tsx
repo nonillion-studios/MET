@@ -1,4 +1,4 @@
-import { Smartphone, CheckCircle } from 'lucide-react';
+import { Smartphone, CheckCircle, CloudOff, Cloud } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Input, Button, GlassCard } from '../ui';
 import type { CloudClient } from '../../lib/cloudClient';
@@ -40,8 +40,18 @@ export function CloudConfig({ cc }: { cc: CloudClient }) {
               <CheckCircle className="text-success" size={24} />
               <div>
                 <h3 className="text-success font-bold text-sm">Connected to Telegram servers!</h3>
-                <p className="text-xs text-success/70">Your session is encrypted and stored locally.</p>
+                <p className="text-xs text-success/70">Your session is encrypted, stored locally, and synced to your account.</p>
               </div>
+            </div>
+
+            <div className={`rounded-xl p-3 flex items-center gap-3 border ${cc.isSessionSynced ? 'bg-success/10 border-success/30' : 'bg-warning/10 border-warning/30'}`}>
+              {cc.isSessionSynced ? <Cloud className="text-success" size={18} /> : <CloudOff className="text-warning" size={18} />}
+              <p className={`flex-1 text-xs font-semibold ${cc.isSessionSynced ? 'text-success' : 'text-warning'}`}>
+                {cc.isSessionSynced === null ? 'Checking cloud sync…' : cc.isSessionSynced ? 'Session synced to the cloud — other devices can use it too.' : 'Not synced to the cloud yet — this session only works on this device.'}
+              </p>
+              {cc.isSessionSynced === false && (
+                <Button onClick={cc.retryCloudSync} size="sm" variant="secondary">Retry</Button>
+              )}
             </div>
 
             <div className="space-y-1 mt-4">

@@ -32,8 +32,8 @@ export function BottomTabBar({ activeTab, onTabChange, onCreatePress }: BottomTa
   const right = tabs.slice(2);
 
   return (
-    <div className="lg:hidden fixed bottom-safe left-1/2 -translate-x-1/2 z-50 flex justify-center">
-      <div className="liquid-glass-nav relative px-4 xs:px-5 sm:px-6 py-2.5 rounded-[28px] flex items-center justify-center gap-4 xs:gap-5 sm:gap-6 transition-all">
+    <div className="lg:hidden fixed bottom-0 left-0 w-full z-50">
+      <div className="liquid-glass-bar relative w-full pb-safe px-4 xs:px-5 sm:px-6 py-2.5 rounded-t-[22px] border border-hairline border-b-0 flex items-center justify-around gap-4 xs:gap-5 sm:gap-6 transition-all">
         {left.map(tab => (
           <TabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => onTabChange(tab.id)} />
         ))}

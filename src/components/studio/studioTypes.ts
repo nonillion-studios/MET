@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
-import { Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder } from 'lucide-react';
+import { Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder, PenTool } from 'lucide-react';
+import type { Point } from './paint/selection';
 
 export type BlendMode =
   | 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
@@ -23,7 +24,7 @@ export const BLEND_TO_COMPOSITE: Record<BlendMode, GlobalCompositeOperation> = {
   lighten: 'lighten',
 };
 
-export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group';
+export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group' | 'path';
 
 /** How a click changes the canvas selection: plain click replaces it, Shift/Ctrl-click toggles. */
 export type LayerSelectMode = 'replace' | 'toggle';
@@ -34,6 +35,7 @@ export const LAYER_TYPE_ICON: Record<StudioLayerType, LucideIcon> = {
   text: Type,
   adjustment: SlidersHorizontal,
   group: Folder,
+  path: PenTool,
 };
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
@@ -199,6 +201,38 @@ export interface LayerMask {
   showAlone?: boolean;
 }
 
+/**
+ * One anchor on a vector path. `handleIn`/`handleOut` are stored as offsets from `point`, not
+ * absolute coordinates — translating the whole path is then a pure `point += delta` per anchor
+ * with handles untouched, the same convention `translateSelection` already uses for polygon
+ * points (paint/selection.ts).
+ *
+ * `type` is an interaction hint ("keep handles collinear on drag"), not an enforced geometry
+ * invariant — Photoshop itself lets you later drag one handle of a smooth anchor to break
+ * symmetry while staying collinear, so the data model doesn't police this.
+ */
+export interface PathAnchor {
+  id: string;
+  point: Point;
+  /** Offset from `point`; absent means no handle on that side (a pure corner). */
+  handleIn?: Point;
+  handleOut?: Point;
+  type: 'corner' | 'smooth';
+}
+
+export type PathFillRule = 'nonzero' | 'evenodd';
+
+/** Vector path data — models exactly one open-or-closed subpath (no compound paths). Pure
+ *  geometry, deliberately no rasterized pixel cache: a path layer can't be a clip base/target
+ *  and can't carry a paintable mask until it's baked onto a raster layer (Stroke Path/Fill Path). */
+export interface PathLayerData {
+  anchors: PathAnchor[];
+  closed: boolean;
+  fill: { enabled: boolean; color: string };
+  stroke: { enabled: boolean; color: string; width: number };
+  fillRule: PathFillRule;
+}
+
 export interface StudioLayer {
   id: string;
   type: StudioLayerType;
@@ -218,12 +252,14 @@ export interface StudioLayer {
   collapsed?: boolean;
   /** Clipped to the nearest non-clipped sibling below it in the same parent. */
   clipped?: boolean;
-  /** Raster layer mask. Any layer type may carry one, groups included. */
+  /** Raster layer mask. Any layer type may carry one, groups included — except 'path', see PathLayerData. */
   mask?: LayerMask;
   /** Only present when type === 'text'. */
   text?: TextLayerData;
   /** Only present when type === 'adjustment'. */
   adjustment?: AdjustmentLayerData;
+  /** Only present when type === 'path'. */
+  path?: PathLayerData;
 }
 
 export function createBackgroundLayer(): StudioLayer {
@@ -280,6 +316,26 @@ export function createGroupLayer(name = 'Group', children: StudioLayer[] = []): 
     blendMode: 'normal',
     children,
     collapsed: false,
+  };
+}
+
+export function createPathLayer(anchors: PathAnchor[], closed: boolean, style: { strokeColor: string; strokeWidth: number }): StudioLayer {
+  layerCounter += 1;
+  return {
+    id: `layer-${Date.now()}-${layerCounter}`,
+    type: 'path',
+    name: `Path ${layerCounter}`,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blendMode: 'normal',
+    path: {
+      anchors,
+      closed,
+      fill: { enabled: false, color: '#000000' },
+      stroke: { enabled: true, color: style.strokeColor, width: style.strokeWidth },
+      fillRule: 'nonzero',
+    },
   };
 }
 

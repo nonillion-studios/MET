@@ -30,11 +30,14 @@ interface ToolOptionsBarProps {
   onScatterChange: (v: number) => void;
   smoothing: number;
   onSmoothingChange: (v: number) => void;
+  sliceRectCount: number;
+  onAddSliceRect: () => void;
+  onExportSlices: () => void;
 }
 
-const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
-const HARDNESS_TOOLS = new Set(['brush', 'clone']);
-const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'liquify']);
+const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
+const HARDNESS_TOOLS = new Set(['brush', 'clone', 'heal']);
+const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'liquify']);
 const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient']);
 const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
 const SYMMETRY_TOOLS = new Set(['brush', 'pencil', 'eraser']);
@@ -76,6 +79,7 @@ export function ToolOptionsBar({
   symmetry, onSymmetryChange, spacing, onSpacingChange, brushShape, onBrushShapeChange,
   angle, onAngleChange, roundness, onRoundnessChange, scatter, onScatterChange,
   smoothing, onSmoothingChange,
+  sliceRectCount, onAddSliceRect, onExportSlices,
 }: ToolOptionsBarProps) {
   const tool = findTool(activeTool);
   const showSize = SIZE_TOOLS.has(activeTool);
@@ -85,8 +89,9 @@ export function ToolOptionsBar({
   const showTolerance = TOLERANCE_TOOLS.has(activeTool);
   const showLiquifyMode = activeTool === 'liquify';
   const showSymmetry = SYMMETRY_TOOLS.has(activeTool);
+  const showSlice = activeTool === 'slice';
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice)) return null;
 
   return (
     <div className="liquid-glass-bar flex items-center gap-4 px-3 h-10 shrink-0 border-b border-hairline overflow-x-auto">
@@ -109,6 +114,23 @@ export function ToolOptionsBar({
       {showFlow && <Slider label="Flow" value={flow * 100} min={0} max={100} step={1} onChange={(v) => onFlowChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
       {showOpacity && <Slider label="Opacity" value={opacity * 100} min={0} max={100} step={1} onChange={(v) => onOpacityChange(v / 100)} format={(v) => `${Math.round(v)}%`} />}
       {showTolerance && <Slider label="Tolerance" value={tolerance} min={0} max={100} step={1} onChange={onToleranceChange} />}
+      {showSlice && (
+        <>
+          <button
+            className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ink text-micro shrink-0"
+            onClick={onAddSliceRect}
+          >
+            Add Rect ({sliceRectCount})
+          </button>
+          <button
+            className="studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ink text-micro shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={onExportSlices}
+            disabled={sliceRectCount === 0}
+          >
+            Export Slices…
+          </button>
+        </>
+      )}
       {showSymmetry && (
         <>
           <Slider label="Spacing" value={spacing * 100} min={1} max={100} step={1} onChange={(v) => onSpacingChange(v / 100)} format={(v) => `${Math.round(v)}%`} />

@@ -2,8 +2,9 @@ import { get, set } from 'idb-keyval';
 import { genId } from './id';
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
 
-/** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes. */
-export const STUDIO_SCHEMA_VERSION = 6;
+/** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes.
+ *  v7 added the 'path' layer type — no backfill needed (old data simply has zero path layers). */
+export const STUDIO_SCHEMA_VERSION = 7;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
 

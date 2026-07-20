@@ -265,18 +265,18 @@ export function CloudFiles({ cc, workspaces, onImportWorkspace, automationEngine
           <h3 className="text-lg font-bold text-ink flex items-center gap-2">
             <HardDrive className="text-accent" size={18} /> Cloud Storage
           </h3>
-          <div className="flex items-center gap-2 w-full md:w-auto">
-            <Input type="text" placeholder="Search files, senders, tags..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 min-w-[200px]" />
+          <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto flex-nowrap">
+            <Input type="text" placeholder="Search files, senders, tags..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 min-w-[200px] shrink-0" />
             <select
               value={sortOrder}
               onChange={e => setSortOrder(e.target.value as any)}
-              className="bg-ink/5 border border-hairline rounded-xl px-3 py-2 text-ink text-sm outline-none focus:border-accent"
+              className="bg-ink/5 border border-hairline rounded-xl px-3 py-2 text-ink text-sm outline-none focus:border-accent shrink-0"
             >
               <option value="newest">Newest First</option>
               <option value="oldest">Oldest First</option>
               <option value="alphabetical">A-Z</option>
             </select>
-            <button onClick={cc.fetchFiles} className="text-sm text-accent hover:text-ink flex items-center gap-1 bg-accent-soft px-3 py-2 rounded-xl border border-accent/20 transition-colors">
+            <button onClick={cc.fetchFiles} className="text-sm text-accent hover:text-ink flex items-center gap-1 bg-accent-soft px-3 py-2 rounded-xl border border-accent/20 transition-colors shrink-0">
               <RefreshCw size={14} className={cc.isLoading ? 'animate-spin' : ''} /> Refresh
             </button>
           </div>

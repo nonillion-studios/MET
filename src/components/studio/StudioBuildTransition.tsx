@@ -18,7 +18,7 @@ export function StudioBuildTransition({ onDone }: StudioBuildTransitionProps) {
 
   return (
     <div
-      className={`fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center gap-6 ${fadingOut ? 'animate-studio-build-fade-out' : ''}`}
+      className={`studio-shell fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center gap-6 ${fadingOut ? 'animate-studio-build-fade-out' : ''}`}
     >
       <div className="flex items-end gap-3">
         {CUBE_DELAYS.map((delay, i) => (

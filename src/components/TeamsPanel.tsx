@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
+import { useChatScroll } from '../hooks/useChatScroll';
 import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
@@ -6,6 +7,7 @@ import {
   Megaphone, AlertTriangle, ChevronDown,
 } from 'lucide-react';
 import { GlassCard, Button, Input, Textarea, Modal, Switch, SkeletonCard, SkeletonRow } from './ui';
+import { TeamUploadModal, type TeamUploadMeta } from './TeamUploadModal';
 import { swal, swalToast, confirmAction } from '../lib/swalTheme';
 import { readAvatarFile, readImageFile, uploadImageToStorage } from '../lib/image';
 import {
@@ -19,6 +21,9 @@ import {
   inviteMember, acceptInvite, declineInvite, listTeamMembers, updateMemberFields,
   promoteToLeader, demoteToMember, removeMember, getLeaderboard,
   updateTeamSettings, deleteTeam, broadcastToTeam, updateMyNotificationPrefs,
+  TeamCustomPermissionDef, TeamCustomPermissionGrant,
+  listCustomPermissionDefs, createCustomPermissionDef, deleteCustomPermissionDef,
+  listCustomPermissionGrants, grantCustomPermission, revokeCustomPermission,
 } from '../lib/teams';
 import {
   Task, TaskPriority, TaskStatus, TaskAttachment, createTaskWithWorkflow, listTeamTasks, listMyTasks, deleteTask, attachFileToTask, listTaskAttachments,
@@ -28,6 +33,7 @@ import {
   TaskHistoryEntry, listTaskHistory,
   TaskTimeEntry, listTimeEntries, getMyOpenTimeEntry, startTimer, stopTimer, totalTrackedMs,
   listDependencies, addDependency, removeDependency,
+  listTeamStageHistory,
 } from '../lib/tasks';
 import { TaskComment, listTaskComments, postTaskComment, subscribeToTaskComments } from '../lib/taskComments';
 import { TaskTemplate, listTemplates, saveAsTemplate } from '../lib/taskTemplates';
@@ -171,6 +177,8 @@ interface Perms {
   canManageVacations: boolean;
   canManageTasks: boolean; // delegable, in addition to blanket leader access
   canPreviewTasks: boolean; // view-only access to the full team task board
+  canManageCloudFiles: boolean; // delegable — NOT bundled into blanket canManage, same as bank/tasks perms
+  canManageMembers: boolean; // delegable roster editing (owner is otherwise the only one whose team_members writes pass RLS)
 }
 
 function SectionHeader({ icon: Icon, title, description }: { icon: typeof Users; title: string; description?: string }) {
@@ -219,6 +227,8 @@ function TeamWorkspace({
     canManageVacations: isOwner || !!myMember?.can_manage_vacations,
     canManageTasks: canManage || !!myMember?.can_manage_tasks,
     canPreviewTasks: canManage || !!myMember?.can_manage_tasks || !!myMember?.can_preview_tasks,
+    canManageCloudFiles: isOwner || !!myMember?.can_manage_cloud_files,
+    canManageMembers: isOwner || !!myMember?.can_manage_members,
   };
 
   const visibleSections = SECTIONS.filter(s => !s.forOwnerOnly || isOwner);
@@ -275,7 +285,7 @@ function TeamWorkspace({
       {activeSection === 'files' && (
         <div>
           <SectionHeader icon={FolderIcon} title="Files" description={SECTION_DESCRIPTIONS.files} />
-          <TeamFilesSection team={team} canManage={canManage} cc={cc} members={members} />
+          <TeamFilesSection team={team} canManage={canManage} canManageCloudFiles={perms.canManageCloudFiles} cc={cc} members={members} />
         </div>
       )}
 
@@ -289,7 +299,7 @@ function TeamWorkspace({
       {activeSection === 'roster' && (
         <div>
           <SectionHeader icon={Users} title="Roster" description={SECTION_DESCRIPTIONS.roster} />
-          <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} onChanged={onChanged} />
+          <TeamRoster team={team} members={members} isOwner={isOwner} canManageMembers={canManage} canEditMemberDetails={isOwner || perms.canManageMembers} onChanged={onChanged} />
         </div>
       )}
 
@@ -640,16 +650,18 @@ function MyJobsCard({ team }: { team: Team }) {
 // Roster
 // ---------------------------------------------------------------------------
 
-const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'can_preview_tasks'; label: string }[] = [
+const PERM_TOGGLES: { key: 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'can_preview_tasks' | 'can_manage_cloud_files' | 'can_manage_members'; label: string }[] = [
   { key: 'can_review_tasks', label: 'Review tasks' },
   { key: 'can_manage_bank', label: 'Manage bank' },
   { key: 'can_manage_join_requests', label: 'Manage join requests' },
   { key: 'can_manage_vacations', label: 'Manage vacations' },
   { key: 'can_manage_tasks', label: 'Create/manage tasks' },
   { key: 'can_preview_tasks', label: 'Preview tasks (view-only)' },
+  { key: 'can_manage_cloud_files', label: 'Manage Team Cloud folders/files' },
+  { key: 'can_manage_members', label: 'Edit roster / member permissions' },
 ];
 
-function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMember; teamId: string; onClose: () => void; onSaved: () => void }) {
+function EditMemberModal({ member, teamId, isOwner, onClose, onSaved }: { member: TeamMember; teamId: string; isOwner: boolean; onClose: () => void; onSaved: () => void }) {
   const [jobTitle, setJobTitle] = useState<JobTitle | ''>(member.job_title || '');
   const [priority, setPriority] = useState(String(member.priority ?? ''));
   const [balance, setBalance] = useState(String(member.balance ?? 0));
@@ -663,11 +675,33 @@ function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMem
     can_manage_vacations: member.can_manage_vacations,
     can_manage_tasks: member.can_manage_tasks,
     can_preview_tasks: member.can_preview_tasks,
+    can_manage_cloud_files: member.can_manage_cloud_files,
+    can_manage_members: member.can_manage_members,
   });
   const [memberJobs, setMemberJobs] = useState<TeamMemberJob[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [jobPick, setJobPick] = useState<JobTitle | ''>('');
   const [jobPriorityPick, setJobPriorityPick] = useState('1');
+  const [customDefs, setCustomDefs] = useState<TeamCustomPermissionDef[]>([]);
+  const [customGrants, setCustomGrants] = useState<TeamCustomPermissionGrant[]>([]);
+  const [grantBusyId, setGrantBusyId] = useState<string | null>(null);
+
+  const reloadCustomPerms = () => {
+    Promise.all([listCustomPermissionDefs(teamId), listCustomPermissionGrants(teamId)]).then(([defs, grants]) => {
+      setCustomDefs(defs);
+      setCustomGrants(grants);
+    });
+  };
+  useEffect(() => { reloadCustomPerms(); }, [teamId]);
+
+  const handleToggleCustomGrant = async (def: TeamCustomPermissionDef, grant: TeamCustomPermissionGrant | undefined) => {
+    if (!member.user_id) return;
+    setGrantBusyId(def.id);
+    const error = grant ? await revokeCustomPermission(grant.id) : await grantCustomPermission(teamId, def.id, member.user_id);
+    setGrantBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not update permission', text: error }); return; }
+    reloadCustomPerms();
+  };
 
   const reloadJobs = () => {
     if (!member.user_id) { setJobsLoading(false); return; }
@@ -771,7 +805,7 @@ function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMem
           )}
         </div>
 
-        {member.role === 'leader' && (
+        {isOwner && member.role === 'leader' && (
           <div className="space-y-1.5 pt-2 border-t border-hairline">
             <label className="text-xs text-accent font-semibold">Sub-admin permissions</label>
             {PERM_TOGGLES.map(p => (
@@ -796,6 +830,21 @@ function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMem
                 </div>
               )}
             </div>
+
+            {customDefs.length > 0 && (
+              <div className="pt-1.5 space-y-1.5">
+                <label className="text-[11px] text-ink-muted">Team-defined permissions (enforced)</label>
+                {customDefs.map(def => {
+                  const grant = customGrants.find(g => g.def_id === def.id && g.user_id === member.user_id);
+                  return (
+                    <div key={def.id} className="flex items-center justify-between py-1">
+                      <span className="text-xs text-ink">{def.label}</span>
+                      <Switch checked={!!grant} onChange={() => handleToggleCustomGrant(def, grant)} disabled={grantBusyId === def.id} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -804,12 +853,14 @@ function EditMemberModal({ member, teamId, onClose, onSaved }: { member: TeamMem
 }
 
 function TeamRoster({
-  team, members, isOwner, canManageMembers, onChanged,
+  team, members, isOwner, canManageMembers, canEditMemberDetails, onChanged,
 }: {
   team: Team;
   members: TeamMember[];
   isOwner: boolean;
   canManageMembers: boolean;
+  /** Owner, or a leader explicitly granted can_manage_members — separate from canManageMembers (invite/remove), gates the Edit Member dialog specifically. */
+  canEditMemberDetails: boolean;
   onChanged: () => void;
 }) {
   const [inviteEmail, setInviteEmail] = useState('');
@@ -884,7 +935,7 @@ function TeamRoster({
 
   return (
     <GlassCard className="overflow-hidden">
-      {editing && <EditMemberModal member={editing} teamId={team.id} onClose={() => setEditing(null)} onSaved={onChanged} />}
+      {editing && <EditMemberModal member={editing} teamId={team.id} isOwner={isOwner} onClose={() => setEditing(null)} onSaved={onChanged} />}
       {reassignFrom && (
         <ReassignTasksModal
           team={team}
@@ -958,7 +1009,7 @@ function TeamRoster({
                 <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${m.status === 'active' ? 'bg-accent-soft text-accent' : 'bg-ink/5 text-ink-faint'}`}>
                   {m.status === 'active' ? 'Active' : 'Pending'}
                 </span>
-                {isOwner && m.status === 'active' && (
+                {canEditMemberDetails && m.status === 'active' && (
                   <button onClick={() => setEditing(m)} aria-label="Edit member" title="Edit member" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
                     <Pencil size={13} />
                   </button>
@@ -1587,6 +1638,8 @@ function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [attachments, setAttachments] = useState<TaskAttachment[]>([]);
+  const { session } = useTeamAuth();
+  const myUserId = session?.user.id;
 
   const reload = () => { listTaskAttachments(task.id).then(setAttachments); };
   useEffect(reload, [task.id]);
@@ -1603,6 +1656,8 @@ function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team
     if (result) {
       await attachFileToTask(task.id, result, 'submission');
       await submitTask(task.id, 'file', result.name);
+      await upsertCloudFileMeta({ teamId: team.id, channelMsgId: result.msgId, folderMsgId: null, uploaderUserId: myUserId, isTaskSubmission: true });
+      if (task.creator_id && task.creator_id !== myUserId) notify(task.creator_id, 'Task submitted', `"${task.title}" was submitted: ${result.name}`);
     }
     setBusy(false);
     if (result) { swalToast({ icon: 'success', title: 'File submitted' }); reload(); onChanged(); }
@@ -1644,6 +1699,8 @@ function TaskAttachmentControl({ task, team, cc, onChanged }: { task: Task; team
 function SubmitLinkControl({ task, onChanged }: { task: Task; onChanged: () => void }) {
   const [link, setLink] = useState('');
   const [busy, setBusy] = useState(false);
+  const { session } = useTeamAuth();
+  const myUserId = session?.user.id;
 
   const handleSubmit = async () => {
     if (!link.trim().startsWith('http')) {
@@ -1654,6 +1711,7 @@ function SubmitLinkControl({ task, onChanged }: { task: Task; onChanged: () => v
     const error = await submitTask(task.id, 'link', link.trim());
     setBusy(false);
     if (error) { swal({ icon: 'error', title: 'Could not submit', text: error }); return; }
+    if (task.creator_id && task.creator_id !== myUserId) notify(task.creator_id, 'Task submitted', `"${task.title}" was submitted: ${link.trim()}`);
     swalToast({ icon: 'success', title: 'Link submitted' });
     onChanged();
   };
@@ -1677,6 +1735,7 @@ function RateSubmissionControl({ task, onChanged }: { task: Task; onChanged: () 
     const error = await approveTask(task.id, rating);
     setBusy(false);
     if (error) { swal({ icon: 'error', title: 'Could not approve', text: error }); return; }
+    if (task.assignee_id) notify(task.assignee_id, 'Task approved', `"${task.title}" was approved — reward paid.`);
     swalToast({ icon: 'success', title: `Approved · reward paid` });
     onChanged();
   };
@@ -1687,6 +1746,7 @@ function RateSubmissionControl({ task, onChanged }: { task: Task; onChanged: () 
     const error = await rejectSubmission(task.id, notes.trim());
     setBusy(false);
     if (error) { swal({ icon: 'error', title: 'Could not reject', text: error }); return; }
+    if (task.assignee_id) notify(task.assignee_id, 'Submission sent back', `"${task.title}" needs changes: ${notes.trim()}`);
     swalToast({ icon: 'success', title: 'Sent back for revision' });
     onChanged();
   };
@@ -1731,6 +1791,7 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, canPrevie
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all');
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | 'all'>('all');
+  const [viewMode, setViewMode] = useState<'list' | 'board'>('list');
   const [sortBy, setSortBy] = useState<'created' | 'due' | 'priority'>('created');
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [templateId, setTemplateId] = useState('');
@@ -1777,7 +1838,10 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, canPrevie
     setAttaching(true);
     const result = await cc.uploadTaskAttachment(team.telegram_channel_id, file);
     setAttaching(false);
-    if (result) setAttachment(result);
+    if (result) {
+      setAttachment(result);
+      await upsertCloudFileMeta({ teamId: team.id, channelMsgId: result.msgId, folderMsgId: null, uploaderUserId: myMember?.user_id ?? null, isTaskSubmission: true });
+    }
   };
 
   const refresh = async () => {
@@ -1994,9 +2058,13 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, canPrevie
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          {filteredTasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3 lg:col-span-2">{canManageTasks ? 'No tasks match.' : 'No tasks assigned to you.'}</p>}
-          {filteredTasks.map(t => {
+        <div className="flex items-center gap-1.5 -mt-1">
+          <button type="button" onClick={() => setViewMode('list')} className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-colors ${viewMode === 'list' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-accent-soft hover:text-accent'}`}>List</button>
+          <button type="button" onClick={() => setViewMode('board')} className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg transition-colors ${viewMode === 'board' ? 'bg-accent text-white' : 'bg-ink/5 text-ink-muted hover:bg-accent-soft hover:text-accent'}`}>Board</button>
+        </div>
+
+        {(() => {
+          const renderTaskCard = (t: Task) => {
             const isMine = myMember && t.assignee_id === myMember.user_id;
             return (
               <div key={t.id} className={`p-3 rounded-xl border transition-colors ${t.status === 'done' || t.status === 'cancelled' ? 'border-hairline bg-ink/[0.02]' : 'border-hairline hover:border-accent/20'}`}>
@@ -2079,8 +2147,40 @@ function TasksSection({ team, members, canManageTasks, canReviewTasks, canPrevie
                 {expandedId === t.id && <TaskDetailPanel task={t} canManage={canManageTasks || !!isMine} allTasks={tasks} />}
               </div>
             );
-          })}
-        </div>
+          };
+
+          if (viewMode === 'list') {
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                {filteredTasks.length === 0 && <p className="text-xs text-ink-faint text-center py-3 lg:col-span-2">{canManageTasks ? 'No tasks match.' : 'No tasks assigned to you.'}</p>}
+                {filteredTasks.map(renderTaskCard)}
+              </div>
+            );
+          }
+
+          const columns: { status: TaskStatus; label: string }[] = [
+            { status: 'todo', label: STATUS_LABEL.todo },
+            { status: 'in_progress', label: STATUS_LABEL.in_progress },
+            { status: 'under_review', label: STATUS_LABEL.under_review },
+            { status: 'done', label: STATUS_LABEL.done },
+          ];
+          return (
+            <div className="flex gap-3 overflow-x-auto pb-2">
+              {columns.map(col => {
+                const colTasks = filteredTasks.filter(t => t.status === col.status);
+                return (
+                  <div key={col.status} className="w-72 shrink-0 space-y-2">
+                    <p className="text-[11px] font-bold text-ink-faint uppercase tracking-wide px-1">{col.label} · {colTasks.length}</p>
+                    <div className="space-y-2 min-h-[40px]">
+                      {colTasks.map(renderTaskCard)}
+                      {colTasks.length === 0 && <p className="text-[11px] text-ink-faint px-1">No tasks</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
     </GlassCard>
   );
@@ -2572,13 +2672,14 @@ function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests
 function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[] }) {
   const [top, setTop] = useState<TeamMember[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [stageHistory, setStageHistory] = useState<Awaited<ReturnType<typeof listTeamStageHistory>>>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [t, tk] = await Promise.all([getLeaderboard(team.id), listTeamTasks(team.id)]);
-      setTop(t); setTasks(tk); setLoading(false);
+      const [t, tk, sh] = await Promise.all([getLeaderboard(team.id), listTeamTasks(team.id), listTeamStageHistory(team.id)]);
+      setTop(t); setTasks(tk); setStageHistory(sh); setLoading(false);
     })();
   }, [team.id]);
 
@@ -2617,6 +2718,31 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
     .filter(m => m.assigned > 0)
     .sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0));
 
+  // Time-in-stage: each entry's duration is the gap since the previous stage
+  // completed for that task (or since task creation, for the first stage).
+  const byTask = new Map<string, typeof stageHistory>();
+  for (const entry of stageHistory) {
+    const list = byTask.get(entry.task_id) ?? [];
+    list.push(entry);
+    byTask.set(entry.task_id, list);
+  }
+  const stageDurations = new Map<string, number[]>();
+  for (const entries of byTask.values()) {
+    let prevAt = entries[0]?.task_created_at;
+    for (const entry of entries) {
+      const durationMs = new Date(entry.completed_at).getTime() - new Date(prevAt).getTime();
+      if (durationMs >= 0) {
+        const list = stageDurations.get(entry.job_type) ?? [];
+        list.push(durationMs);
+        stageDurations.set(entry.job_type, list);
+      }
+      prevAt = entry.completed_at;
+    }
+  }
+  const avgTimeInStage = Array.from(stageDurations.entries())
+    .map(([jobType, durations]) => ({ jobType, avgDays: durations.reduce((a, b) => a + b, 0) / durations.length / 86400000, count: durations.length }))
+    .sort((a, b) => b.avgDays - a.avgDays);
+
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <GlassCard className="p-6 space-y-2">
@@ -2641,6 +2767,17 @@ function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[]
           <div key={m.name} className="flex items-center justify-between p-2.5 rounded-xl border border-hairline">
             <span className="text-sm text-ink">{m.name}</span>
             <span className="text-sm font-bold text-accent">{m.rate}%</span>
+          </div>
+        ))}
+      </GlassCard>
+
+      <GlassCard className="p-6 space-y-2">
+        <h3 className="text-sm font-semibold text-ink">Avg Time in Stage</h3>
+        {avgTimeInStage.length === 0 && <p className="text-xs text-ink-faint text-center py-3">No completed pipeline stages yet.</p>}
+        {avgTimeInStage.map(s => (
+          <div key={s.jobType} className="flex items-center justify-between p-2.5 rounded-xl border border-hairline">
+            <span className="text-sm text-ink">{s.jobType} <span className="text-ink-faint text-xs">({s.count})</span></span>
+            <span className="text-sm font-bold text-accent">{s.avgDays.toFixed(1)}d</span>
           </div>
         ))}
       </GlassCard>
@@ -2715,7 +2852,7 @@ async function ensurePrivateFolderId(cc: CloudClient, team: Team, userId: string
   return refreshed.find(f => f.parentId === null && f.name === name)?.id ?? null;
 }
 
-function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canManage: boolean; cc: CloudClient; members: TeamMember[] }) {
+function TeamFilesSection({ team, canManage, canManageCloudFiles, cc, members }: { team: Team; canManage: boolean; canManageCloudFiles: boolean; cc: CloudClient; members: TeamMember[] }) {
   const [files, setFiles] = useState<CloudFile[]>([]);
   const [folders, setFolders] = useState<CloudFolder[]>([]);
   const [fileMeta, setFileMeta] = useState<TeamCloudFileMeta[]>([]);
@@ -2727,6 +2864,7 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
   const [uploading, setUploading] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [coverBusyId, setCoverBusyId] = useState<number | null>(null);
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const coverTargetRef = useRef<CloudFile | null>(null);
@@ -2759,6 +2897,14 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
       if (member?.profile?.name) return member.profile.name;
     }
     return f.sender;
+  };
+
+  const commenterName = (c: CloudFileComment): string => {
+    if (c.authorUserId) {
+      const member = members.find(m => m.user_id === c.authorUserId);
+      if (member?.profile?.name) return member.profile.name;
+    }
+    return c.author;
   };
 
   const canSeeFile = (f: CloudFile): boolean => {
@@ -2810,10 +2956,10 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
     refresh();
   };
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (file: File, meta: TeamUploadMeta) => {
     if (!canUploadHere) { swal({ icon: 'error', title: 'Not allowed', text: 'You are not a member of this folder.' }); return; }
     setUploading(true);
-    const msgId = await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId);
+    const msgId = await cc.uploadChannelFile(team.telegram_channel_id, file, currentFolderId, undefined, { name: meta.displayName, description: meta.description });
     if (msgId && myUserId) {
       const isPrivate = currentFolder?.name?.startsWith('Private: ');
       await upsertCloudFileMeta({
@@ -2821,9 +2967,14 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
         uploaderUserId: myUserId,
         visibility: isPrivate ? 'private' : 'team',
         ownerUserId: isPrivate ? myUserId : null,
+        displayName: meta.displayName,
       });
+      if (meta.coverDataUrl) {
+        await uploadCloudFileCover(team.id, msgId, meta.coverDataUrl);
+      }
     }
     setUploading(false);
+    setPendingUploadFile(null);
     swalToast({ icon: 'success', title: 'File uploaded' });
     refresh();
   };
@@ -2888,23 +3039,41 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
   }
 
   const visibleFolders = folders.filter(f => canManage || !folderMetaByMsgId.get(f.id)?.is_secret);
-  const filesInFolder = files.filter(f => f.folderId === currentFolderId && canSeeFile(f));
+  // Only genuine "Upload File" uploads belong here — chat attachments and
+  // task-submission/reference files land in the same Telegram channel but
+  // aren't deliberate Team Cloud uploads, so they're excluded by the flags
+  // set at their own upload call sites (see upsertCloudFileMeta callers).
+  const filesInFolder = files.filter(f => {
+    if (f.folderId !== currentFolderId) return false;
+    if (!canSeeFile(f)) return false;
+    const meta = metaByMsgId.get(f.id);
+    if (meta?.is_chat_upload || meta?.is_task_submission) return false;
+    return true;
+  });
   const inFinished = currentFolder?.name === 'Finished';
 
   return (
     <div className="space-y-4">
-      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(f); }} />
+      <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) setPendingUploadFile(f); e.target.value = ''; }} />
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCoverFile(f); e.target.value = ''; }} />
+      {pendingUploadFile && (
+        <TeamUploadModal
+          file={pendingUploadFile}
+          uploading={uploading}
+          onClose={() => setPendingUploadFile(null)}
+          onConfirm={(meta) => handleUpload(pendingUploadFile, meta)}
+        />
+      )}
 
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <CloudFolders
           folders={visibleFolders}
           currentFolderId={currentFolderId}
           onNavigate={setCurrentFolderId}
-          onCreateFolder={canManage ? handleCreateFolder : () => {}}
-          onDeleteFolder={canManage ? handleDeleteFolder : () => {}}
+          onCreateFolder={(canManage || canManageCloudFiles) ? handleCreateFolder : () => {}}
+          onDeleteFolder={(canManage || canManageCloudFiles) ? handleDeleteFolder : () => {}}
           fileCountFor={(folderId) => files.filter(f => f.folderId === folderId).length}
-          onEditMembers={canManage ? handleEditFolderMembers : undefined}
+          onEditMembers={(canManage || canManageCloudFiles) ? handleEditFolderMembers : undefined}
         />
         <Button size="sm" variant="secondary" onClick={handleOpenMyPrivateFolder}>
           <Lock size={12} /> My Private Folder
@@ -2944,7 +3113,7 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
                     </p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {canManage && (
+                    {(canManage || canManageCloudFiles) && (
                       <button onClick={() => handleCoverPick(f)} disabled={coverBusyId === f.id} aria-label={`Set cover for ${displayName}`} className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
                         <ImagePlus size={14} />
                       </button>
@@ -2955,7 +3124,7 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
                   </div>
                 </div>
 
-                {canManage && (
+                {(canManage || canManageCloudFiles) && (
                   <div className="flex items-center gap-1.5">
                     {(['team', 'public', 'private'] as CloudFileVisibility[]).map(v => (
                       <button
@@ -2969,7 +3138,7 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
                     ))}
                   </div>
                 )}
-                {!canManage && visibility === 'private' && (
+                {!(canManage || canManageCloudFiles) && visibility === 'private' && (
                   <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-ink/5 text-ink-faint inline-flex items-center gap-1"><Lock size={9} /> Private</span>
                 )}
 
@@ -2979,7 +3148,7 @@ function TeamFilesSection({ team, canManage, cc, members }: { team: Team; canMan
                     {fileComments.length === 0 && <p className="text-[10px] text-ink-faint">No comments yet.</p>}
                     {fileComments.map(c => (
                       <div key={c.id} className="p-1.5 rounded-lg bg-ink/[0.03]">
-                        <p className="text-[9px] font-semibold text-accent">{c.author}</p>
+                        <p className="text-[9px] font-semibold text-accent">{commenterName(c)}</p>
                         <p className="text-[11px] text-ink whitespace-pre-line">{c.body}</p>
                       </div>
                     ))}
@@ -3102,6 +3271,7 @@ function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
 }
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉'];
+const EMPTY_REACTIONS: MessageReaction[] = [];
 
 function ReactionBar({ reactions, myUserId, onToggle }: { reactions: MessageReaction[]; myUserId: string | undefined; onToggle: (emoji: string) => void }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -3139,6 +3309,153 @@ function ReactionBar({ reactions, myUserId, onToggle }: { reactions: MessageReac
   );
 }
 
+/** Reactions are refetched wholesale on any team-wide reaction change, so the array reference always changes; compare by signature instead of identity so unrelated bubbles skip re-rendering. */
+function reactionsSignatureEqual(a: MessageReaction[], b: MessageReaction[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id) return false;
+  }
+  return true;
+}
+
+const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, isMine, canManage, reactions, myUserId, teamId, telegramChannelId, onOpenProfile, onReply, onEdit, onDelete, onPin, onDownloadAttachment, onToggleReaction }: {
+  message: TeamMessage;
+  replied: TeamMessage | null;
+  isMine: boolean;
+  canManage: boolean;
+  reactions: MessageReaction[];
+  myUserId: string | undefined;
+  teamId: string;
+  telegramChannelId: string;
+  onOpenProfile: (userId: string) => void;
+  onReply: (m: TeamMessage) => void;
+  onEdit: (m: TeamMessage) => void;
+  onDelete: (id: string) => void;
+  onPin: (id: string, pinned: boolean) => void;
+  onDownloadAttachment: (channelId: string, msgId: number, name: string) => void;
+  onToggleReaction: (teamId: string, table: 'team_messages', messageId: string, emoji: string) => void;
+}) {
+  const m = message;
+  return (
+    <div className={`flex items-start gap-2 max-w-md group ${isMine ? 'ml-auto flex-row-reverse' : ''}`}>
+      <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="shrink-0">
+        <ChatAvatar name={m.sender?.name || 'Member'} avatar={m.sender?.avatar} />
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className={`p-2.5 rounded-2xl min-w-0 backdrop-blur-sm shadow-sm transition-all duration-200 ${isMine ? 'bg-gradient-to-br from-accent-soft to-accent-soft/60 rounded-tr-sm' : 'bg-gradient-to-br from-ink/[0.04] to-ink/[0.02] rounded-tl-sm'}`}>
+          <div className={`flex items-center gap-2 ${isMine ? 'flex-row-reverse' : ''}`}>
+            <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="text-[10px] font-semibold text-accent hover:underline">{m.sender?.name || 'Member'}</button>
+            {m.pinned && <span className="text-[9px] text-ink-faint">📌</span>}
+            {m.edited_at && !m.deleted && <span className="text-[9px] text-ink-faint">(edited)</span>}
+            <span className={`text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5 ${isMine ? 'mr-auto' : 'ml-auto'}`}>
+              {!m.deleted && <button onClick={() => onReply(m)} className="hover:text-accent">Reply</button>}
+              {!m.deleted && isMine && <button onClick={() => onEdit(m)} className="hover:text-accent">Edit</button>}
+              {!m.deleted && isMine && <button onClick={() => onDelete(m.id)} className="hover:text-danger">Delete</button>}
+              {!m.deleted && canManage && <button onClick={() => onPin(m.id, !m.pinned)} className="hover:text-accent">{m.pinned ? 'Unpin' : 'Pin'}</button>}
+            </span>
+          </div>
+          {replied && (
+            <div className="mt-1 mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
+              {replied.sender?.name}: {replied.deleted ? 'Message deleted' : replied.body}
+            </div>
+          )}
+          {m.deleted ? (
+            <p className="text-sm text-ink-faint italic">This message was deleted</p>
+          ) : (
+            <>
+              <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+              {m.attachment_msg_id && (
+                <button
+                  onClick={() => onDownloadAttachment(telegramChannelId, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                  className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
+                >
+                  <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {!m.deleted && <ReactionBar reactions={reactions} myUserId={myUserId} onToggle={emoji => onToggleReaction(teamId, 'team_messages', m.id, emoji)} />}
+      </div>
+    </div>
+  );
+}, (prev, next) => (
+  prev.message === next.message &&
+  prev.replied === next.replied &&
+  prev.isMine === next.isMine &&
+  prev.canManage === next.canManage &&
+  prev.myUserId === next.myUserId &&
+  reactionsSignatureEqual(prev.reactions, next.reactions)
+));
+
+const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied, isMine, partnerId, reactions, myUserId, teamId, telegramChannelId, partnerName, partnerAvatar, onDownloadAttachment, onReply, onEdit, onDelete, onToggleReaction }: {
+  message: DirectMessage;
+  replied: DirectMessage | null;
+  isMine: boolean;
+  partnerId: string;
+  reactions: MessageReaction[];
+  myUserId: string | undefined;
+  teamId: string;
+  telegramChannelId: string;
+  partnerName: string;
+  partnerAvatar?: string;
+  onDownloadAttachment: (channelId: string, msgId: number, name: string) => void;
+  onReply: (m: DirectMessage) => void;
+  onEdit: (m: DirectMessage) => void;
+  onDelete: (id: string) => void;
+  onToggleReaction: (teamId: string, table: 'direct_messages', messageId: string, emoji: string) => void;
+}) {
+  const m = message;
+  return (
+    <div className={`flex items-end gap-2 max-w-md group ${isMine ? 'ml-auto flex-row-reverse' : ''}`}>
+      <ChatAvatar name={partnerName} avatar={m.sender_id === partnerId ? partnerAvatar : undefined} size={22} />
+      <div className="min-w-0">
+        <div className={`p-2.5 rounded-2xl min-w-0 backdrop-blur-sm shadow-sm transition-all duration-200 ${!isMine ? 'bg-gradient-to-br from-ink/[0.04] to-ink/[0.02] rounded-bl-sm' : 'bg-gradient-to-br from-accent-soft to-accent-soft/60 rounded-br-sm'}`}>
+          {(m.edited_at || isMine) && !m.deleted && (
+            <div className="flex items-center gap-1.5 justify-end mb-0.5">
+              {m.edited_at && <span className="text-[9px] text-ink-faint">(edited)</span>}
+              <span className="text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
+                <button onClick={() => onReply(m)} className="hover:text-accent">Reply</button>
+                {isMine && <button onClick={() => onEdit(m)} className="hover:text-accent">Edit</button>}
+                {isMine && <button onClick={() => onDelete(m.id)} className="hover:text-danger">Delete</button>}
+              </span>
+            </div>
+          )}
+          {replied && (
+            <div className="mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
+              {replied.deleted ? 'Message deleted' : replied.body}
+            </div>
+          )}
+          {m.deleted ? (
+            <p className="text-sm text-ink-faint italic">This message was deleted</p>
+          ) : (
+            <>
+              <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
+              {m.attachment_msg_id && (
+                <button
+                  onClick={() => onDownloadAttachment(telegramChannelId, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                  className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
+                >
+                  <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {!m.deleted && <ReactionBar reactions={reactions} myUserId={myUserId} onToggle={emoji => onToggleReaction(teamId, 'direct_messages', m.id, emoji)} />}
+      </div>
+    </div>
+  );
+}, (prev, next) => (
+  prev.message === next.message &&
+  prev.replied === next.replied &&
+  prev.isMine === next.isMine &&
+  prev.myUserId === next.myUserId &&
+  prev.partnerAvatar === next.partnerAvatar &&
+  reactionsSignatureEqual(prev.reactions, next.reactions)
+));
+
 function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc }: {
   team: Team; members: TeamMember[]; myMember: TeamMember | null; canManage: boolean; onOpenProfile: (userId: string) => void; cc: CloudClient;
 }) {
@@ -3151,10 +3468,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
   const [search, setSearch] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [attaching, setAttaching] = useState(false);
-  const [showJumpToEnd, setShowJumpToEnd] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const nearBottomRef = useRef(true);
+  const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const typingRef = useRef<ReturnType<typeof subscribeToTyping> | null>(null);
   const typingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3184,31 +3498,18 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     return () => { mounted = false; unsubMsgs(); unsubReactions(); typingRef.current?.unsubscribe(); };
   }, [team.id, search]);
 
-  useLayoutEffect(() => {
-    if (nearBottomRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
-    else setShowJumpToEnd(true);
-  }, [messages.length]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    nearBottomRef.current = near;
-    if (near) setShowJumpToEnd(false);
-  };
-
-  const jumpToEnd = () => {
-    bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    nearBottomRef.current = true;
-    setShowJumpToEnd(false);
-  };
-
   useEffect(() => {
     if (messages.length > 0 && myUserId) markTeamChatRead(team.id, messages[messages.length - 1].id);
   }, [messages.length, team.id, myUserId]);
 
   const pinned = messages.filter(m => m.pinned && !m.deleted).slice(0, 3);
   const messageById = new Map(messages.map(m => [m.id, m]));
+  const reactionsByMessageId = new Map<string, MessageReaction[]>();
+  for (const r of reactions) {
+    const list = reactionsByMessageId.get(r.message_id) ?? [];
+    list.push(r);
+    reactionsByMessageId.set(r.message_id, list);
+  }
 
   const handleBodyChange = (v: string) => {
     setBody(v);
@@ -3235,7 +3536,17 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     }
     setAttaching(false);
     if (result) {
-      await sendTeamMessage(team.id, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      const id = crypto.randomUUID();
+      const text = body.trim() || `📎 ${result.name}`;
+      pinToBottom();
+      setMessages(prev => upsertById(prev, {
+        id, team_id: team.id, sender_id: myUserId || '', body: text,
+        created_at: new Date().toISOString(), reply_to_id: replyTo?.id ?? null,
+        edited_at: null, deleted: false, pinned: false,
+        attachment_msg_id: result.msgId, attachment_name: result.name, attachment_size: result.size,
+        sender: myMember?.profile ? { name: myMember.profile.name, avatar: myMember.profile.avatar } : null,
+      }));
+      await sendTeamMessage(team.id, text, { id, attachment: result, replyToId: replyTo?.id });
       setBody(''); setReplyTo(null);
     }
   };
@@ -3249,9 +3560,23 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       setEditingId(null);
       return;
     }
-    nearBottomRef.current = true;
-    await sendTeamMessage(team.id, text, { replyToId: replyTo?.id });
+    const id = crypto.randomUUID();
+    const replyToId = replyTo?.id;
+    pinToBottom();
+    setMessages(prev => upsertById(prev, {
+      id, team_id: team.id, sender_id: myUserId || '', body: text,
+      created_at: new Date().toISOString(), reply_to_id: replyToId ?? null,
+      edited_at: null, deleted: false, pinned: false,
+      attachment_msg_id: null, attachment_name: null, attachment_size: null,
+      sender: myMember?.profile ? { name: myMember.profile.name, avatar: myMember.profile.avatar } : null,
+    }));
     setReplyTo(null);
+    const error = await sendTeamMessage(team.id, text, { id, replyToId });
+    if (error) {
+      swal({ icon: 'error', title: 'Message failed to send', text: error });
+      setMessages(prev => prev.filter(m => m.id !== id));
+      return;
+    }
 
     const mentioned = parseMentions(text, members);
     for (const userId of mentioned) {
@@ -3267,8 +3592,6 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     ? members.filter(m => m.status === 'active' && (m.profile?.name || m.invited_email).toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 5)
     : [];
 
-  const reactionsFor = (id: string) => reactions.filter(r => r.message_id === id);
-
   return (
     <>
       {pinned.length > 0 && (
@@ -3281,56 +3604,28 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       <div className="px-3 py-2 border-b border-hairline shrink-0">
         <Input placeholder="Search messages..." value={search} onChange={e => setSearch(e.target.value)} className="text-xs" />
       </div>
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="chat-scroll" className="flex-1 overflow-y-auto p-4 space-y-3 relative">
         {messages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
-        {messages.map(m => {
-          const replied = m.reply_to_id ? messageById.get(m.reply_to_id) : null;
-          const isMine = m.sender_id === myUserId;
-          return (
-            <div key={m.id} className={`flex items-start gap-2 max-w-md group ${isMine ? 'ml-auto flex-row-reverse' : ''}`}>
-              <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="shrink-0">
-                <ChatAvatar name={m.sender?.name || 'Member'} avatar={m.sender?.avatar} />
-              </button>
-              <div className="min-w-0 flex-1">
-                <div className={`p-2.5 rounded-2xl min-w-0 backdrop-blur-sm shadow-sm transition-all duration-200 ${isMine ? 'bg-gradient-to-br from-accent-soft to-accent-soft/60 rounded-tr-sm' : 'bg-gradient-to-br from-ink/[0.04] to-ink/[0.02] rounded-tl-sm'}`}>
-                  <div className={`flex items-center gap-2 ${isMine ? 'flex-row-reverse' : ''}`}>
-                    <button type="button" onClick={() => onOpenProfile(m.sender_id)} className="text-[10px] font-semibold text-accent hover:underline">{m.sender?.name || 'Member'}</button>
-                    {m.pinned && <span className="text-[9px] text-ink-faint">📌</span>}
-                    {m.edited_at && !m.deleted && <span className="text-[9px] text-ink-faint">(edited)</span>}
-                    <span className={`text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5 ${isMine ? 'mr-auto' : 'ml-auto'}`}>
-                      {!m.deleted && <button onClick={() => setReplyTo(m)} className="hover:text-accent">Reply</button>}
-                      {!m.deleted && isMine && <button onClick={() => { setEditingId(m.id); setBody(m.body); }} className="hover:text-accent">Edit</button>}
-                      {!m.deleted && isMine && <button onClick={() => deleteTeamMessage(m.id)} className="hover:text-danger">Delete</button>}
-                      {!m.deleted && canManage && <button onClick={() => pinTeamMessage(m.id, !m.pinned)} className="hover:text-accent">{m.pinned ? 'Unpin' : 'Pin'}</button>}
-                    </span>
-                  </div>
-                  {replied && (
-                    <div className="mt-1 mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
-                      {replied.sender?.name}: {replied.deleted ? 'Message deleted' : replied.body}
-                    </div>
-                  )}
-                  {m.deleted ? (
-                    <p className="text-sm text-ink-faint italic">This message was deleted</p>
-                  ) : (
-                    <>
-                      <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
-                      {m.attachment_msg_id && (
-                        <button
-                          onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, m.attachment_msg_id!, m.attachment_name || 'attachment')}
-                          className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
-                        >
-                          <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-                {!m.deleted && <ReactionBar reactions={reactionsFor(m.id)} myUserId={myUserId} onToggle={emoji => toggleReaction(team.id, 'team_messages', m.id, emoji)} />}
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
+        {messages.map(m => (
+          <TeamMessageBubble
+            key={m.id}
+            message={m}
+            replied={m.reply_to_id ? messageById.get(m.reply_to_id) ?? null : null}
+            isMine={m.sender_id === myUserId}
+            canManage={canManage}
+            reactions={reactionsByMessageId.get(m.id) ?? EMPTY_REACTIONS}
+            myUserId={myUserId}
+            teamId={team.id}
+            telegramChannelId={team.telegram_channel_id}
+            onOpenProfile={onOpenProfile}
+            onReply={setReplyTo}
+            onEdit={(msg) => { setEditingId(msg.id); setBody(msg.body); }}
+            onDelete={deleteTeamMessage}
+            onPin={pinTeamMessage}
+            onDownloadAttachment={(channelId, msgId, name) => cc.downloadTaskAttachment(channelId, msgId, name)}
+            onToggleReaction={toggleReaction}
+          />
+        ))}
         {showJumpToEnd && (
           <button
             onClick={jumpToEnd}
@@ -3437,10 +3732,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
   const [replyTo, setReplyTo] = useState<DirectMessage | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
-  const [showJumpToEnd, setShowJumpToEnd] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const nearBottomRef = useRef(true);
+  const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { session } = useTeamAuth();
   const myUserId = session?.user.id;
@@ -3457,27 +3749,13 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     return () => { mounted = false; unsubscribe(); unsubReactions(); };
   }, [team.id, partnerId]);
 
-  useLayoutEffect(() => {
-    if (nearBottomRef.current) bottomRef.current?.scrollIntoView({ block: 'end' });
-    else setShowJumpToEnd(true);
-  }, [messages.length]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    nearBottomRef.current = near;
-    if (near) setShowJumpToEnd(false);
-  };
-
-  const jumpToEnd = () => {
-    bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-    nearBottomRef.current = true;
-    setShowJumpToEnd(false);
-  };
-
   const messageById = new Map(messages.map(m => [m.id, m]));
-  const reactionsFor = (id: string) => reactions.filter(r => r.message_id === id);
+  const reactionsByMessageId = new Map<string, MessageReaction[]>();
+  for (const r of reactions) {
+    const list = reactionsByMessageId.get(r.message_id) ?? [];
+    list.push(r);
+    reactionsByMessageId.set(r.message_id, list);
+  }
 
   const handleAttach = async (file: File) => {
     if (!team.telegram_channel_id || !cc.isConnected) {
@@ -3492,7 +3770,15 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     }
     setAttaching(false);
     if (result) {
-      await sendDirectMessage(team.id, partnerId, body.trim() || `📎 ${result.name}`, { attachment: result, replyToId: replyTo?.id });
+      const id = crypto.randomUUID();
+      const text = body.trim() || `📎 ${result.name}`;
+      pinToBottom();
+      setMessages(prev => upsertById(prev, {
+        id, team_id: team.id, sender_id: myUserId || '', receiver_id: partnerId, body: text, read: false,
+        created_at: new Date().toISOString(), reply_to_id: replyTo?.id ?? null, edited_at: null, deleted: false,
+        attachment_msg_id: result.msgId, attachment_name: result.name, attachment_size: result.size,
+      }));
+      await sendDirectMessage(team.id, partnerId, text, { id, attachment: result, replyToId: replyTo?.id });
       setBody(''); setReplyTo(null);
     }
   };
@@ -3506,9 +3792,21 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
       setEditingId(null);
       return;
     }
-    nearBottomRef.current = true;
-    await sendDirectMessage(team.id, partnerId, text, { replyToId: replyTo?.id });
+    const id = crypto.randomUUID();
+    const replyToId = replyTo?.id;
+    pinToBottom();
+    setMessages(prev => upsertById(prev, {
+      id, team_id: team.id, sender_id: myUserId || '', receiver_id: partnerId, body: text, read: false,
+      created_at: new Date().toISOString(), reply_to_id: replyToId ?? null, edited_at: null, deleted: false,
+      attachment_msg_id: null, attachment_name: null, attachment_size: null,
+    }));
     setReplyTo(null);
+    const error = await sendDirectMessage(team.id, partnerId, text, { id, replyToId });
+    if (error) {
+      swal({ icon: 'error', title: 'Message failed to send', text: error });
+      setMessages(prev => prev.filter(m => m.id !== id));
+      return;
+    }
     notify(partnerId, `New message from ${session?.user.email || 'a teammate'}`, text.slice(0, 80));
   };
 
@@ -3523,52 +3821,27 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
           <p className="text-sm font-semibold text-ink">{partnerName}</p>
         </button>
       </div>
-      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-3 relative">
-        {messages.map(m => {
-          const replied = m.reply_to_id ? messageById.get(m.reply_to_id) : null;
-          const isMine = m.sender_id !== partnerId;
-          return (
-            <div key={m.id} className={`flex items-end gap-2 max-w-md group ${isMine ? 'ml-auto flex-row-reverse' : ''}`}>
-              <ChatAvatar name={partnerName} avatar={m.sender_id === partnerId ? partnerAvatar : undefined} size={22} />
-              <div className="min-w-0">
-                <div className={`p-2.5 rounded-2xl min-w-0 backdrop-blur-sm shadow-sm transition-all duration-200 ${m.sender_id === partnerId ? 'bg-gradient-to-br from-ink/[0.04] to-ink/[0.02] rounded-bl-sm' : 'bg-gradient-to-br from-accent-soft to-accent-soft/60 rounded-br-sm'}`}>
-                  {(m.edited_at || isMine) && !m.deleted && (
-                    <div className="flex items-center gap-1.5 justify-end mb-0.5">
-                      {m.edited_at && <span className="text-[9px] text-ink-faint">(edited)</span>}
-                      <span className="text-[9px] text-ink-faint opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
-                        <button onClick={() => setReplyTo(m)} className="hover:text-accent">Reply</button>
-                        {isMine && <button onClick={() => { setEditingId(m.id); setBody(m.body); }} className="hover:text-accent">Edit</button>}
-                        {isMine && <button onClick={() => deleteDirectMessage(m.id)} className="hover:text-danger">Delete</button>}
-                      </span>
-                    </div>
-                  )}
-                  {replied && (
-                    <div className="mb-1 pl-2 border-l-2 border-accent/40 text-[10px] text-ink-faint truncate">
-                      {replied.deleted ? 'Message deleted' : replied.body}
-                    </div>
-                  )}
-                  {m.deleted ? (
-                    <p className="text-sm text-ink-faint italic">This message was deleted</p>
-                  ) : (
-                    <>
-                      <p className="text-sm text-ink whitespace-pre-line">{m.body}</p>
-                      {m.attachment_msg_id && (
-                        <button
-                          onClick={() => cc.downloadTaskAttachment(team.telegram_channel_id, m.attachment_msg_id!, m.attachment_name || 'attachment')}
-                          className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1"
-                        >
-                          <Paperclip size={11} /> {m.attachment_name || 'Attachment'}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-                {!m.deleted && <ReactionBar reactions={reactionsFor(m.id)} myUserId={myUserId} onToggle={emoji => toggleReaction(team.id, 'direct_messages', m.id, emoji)} />}
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
+      <div ref={scrollRef} onScroll={handleScroll} data-testid="chat-scroll" className="flex-1 overflow-y-auto p-4 space-y-3 relative">
+        {messages.map(m => (
+          <DirectMessageBubble
+            key={m.id}
+            message={m}
+            replied={m.reply_to_id ? messageById.get(m.reply_to_id) ?? null : null}
+            isMine={m.sender_id !== partnerId}
+            partnerId={partnerId}
+            reactions={reactionsByMessageId.get(m.id) ?? EMPTY_REACTIONS}
+            myUserId={myUserId}
+            teamId={team.id}
+            telegramChannelId={team.telegram_channel_id}
+            partnerName={partnerName}
+            partnerAvatar={partnerAvatar}
+            onDownloadAttachment={(channelId, msgId, name) => cc.downloadTaskAttachment(channelId, msgId, name)}
+            onReply={setReplyTo}
+            onEdit={(msg) => { setEditingId(msg.id); setBody(msg.body); }}
+            onDelete={deleteDirectMessage}
+            onToggleReaction={toggleReaction}
+          />
+        ))}
         {showJumpToEnd && (
           <button
             onClick={jumpToEnd}
@@ -3715,6 +3988,33 @@ function AdminSection({ team, members, onChanged }: { team: Team; members: TeamM
 
   const [deleting, setDeleting] = useState(false);
 
+  const [customDefs, setCustomDefs] = useState<TeamCustomPermissionDef[]>([]);
+  const [newPermKey, setNewPermKey] = useState('');
+  const [newPermLabel, setNewPermLabel] = useState('');
+  const [creatingPerm, setCreatingPerm] = useState(false);
+
+  const reloadCustomDefs = () => { listCustomPermissionDefs(team.id).then(setCustomDefs); };
+  useEffect(() => { reloadCustomDefs(); }, [team.id]);
+
+  const handleCreatePermDef = async () => {
+    const key = newPermKey.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+    if (!key || !newPermLabel.trim()) { swal({ icon: 'error', title: 'Key and label are both required' }); return; }
+    setCreatingPerm(true);
+    const error = await createCustomPermissionDef(team.id, key, newPermLabel.trim());
+    setCreatingPerm(false);
+    if (error) { swal({ icon: 'error', title: 'Could not create permission', text: error }); return; }
+    setNewPermKey(''); setNewPermLabel('');
+    reloadCustomDefs();
+  };
+
+  const handleDeletePermDef = async (def: TeamCustomPermissionDef) => {
+    const result = await swal({ icon: 'warning', title: `Delete "${def.label}"?`, text: 'Revokes it from everyone it was granted to.', showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
+    if (!result.isConfirmed) return;
+    const error = await deleteCustomPermissionDef(def.id);
+    if (error) { swal({ icon: 'error', title: 'Could not delete permission', text: error }); return; }
+    reloadCustomDefs();
+  };
+
   const handleSaveSettings = async () => {
     if (!name.trim()) { swal({ icon: 'error', title: 'Team name is required' }); return; }
     setSavingSettings(true);
@@ -3840,6 +4140,25 @@ function AdminSection({ team, members, onChanged }: { team: Team; members: TeamM
           ))}
         </select>
         <Button className="w-full" onClick={handleTransfer} disabled={transferring || !transferTo}>{transferring ? 'Sending...' : 'Propose Transfer'}</Button>
+      </GlassCard>
+
+      <GlassCard className="p-6 space-y-3 lg:col-span-2">
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><ShieldCheck size={16} className="text-accent" /> Custom Permissions</h3>
+        <p className="text-xs text-ink-muted">Define your own enforced permissions (beyond the built-in list) and grant them to specific leaders from the Roster's Edit Member dialog.</p>
+        <div className="flex flex-wrap gap-1.5">
+          {customDefs.map(def => (
+            <span key={def.id} className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-ink/5 text-ink-muted flex items-center gap-1.5">
+              {def.label} <span className="text-ink-faint">({def.key})</span>
+              <button type="button" onClick={() => handleDeletePermDef(def)} className="hover:text-danger">✕</button>
+            </span>
+          ))}
+          {customDefs.length === 0 && <p className="text-[11px] text-ink-faint">No custom permissions defined yet.</p>}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Input placeholder="key (e.g. can_edit_covers)" value={newPermKey} onChange={e => setNewPermKey(e.target.value)} className="flex-1 min-w-[160px]" />
+          <Input placeholder="Label (e.g. Edit Covers)" value={newPermLabel} onChange={e => setNewPermLabel(e.target.value)} className="flex-1 min-w-[160px]" />
+          <Button type="button" variant="secondary" size="sm" onClick={handleCreatePermDef} disabled={creatingPerm}>{creatingPerm ? 'Adding...' : 'Add Permission'}</Button>
+        </div>
       </GlassCard>
 
       <GlassCard className="p-6 space-y-3 border-danger/30 lg:col-span-2">

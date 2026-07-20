@@ -39,6 +39,8 @@ export interface TeamMember {
   can_manage_vacations: boolean;
   can_manage_tasks: boolean;
   can_preview_tasks: boolean;
+  can_manage_cloud_files: boolean;
+  can_manage_members: boolean;
   custom_permissions: string[];
   custom_title: string | null;
   notification_prefs: { broadcasts?: boolean; tasks?: boolean; chat?: boolean };
@@ -56,9 +58,64 @@ export async function updateMyNotificationPrefs(teamId: string, prefs: { broadca
 }
 
 export async function updateMemberFields(memberRowId: string, fields: Partial<Pick<TeamMember,
-  'job_title' | 'priority' | 'balance' | 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'can_preview_tasks' | 'custom_permissions' | 'custom_title'
+  'job_title' | 'priority' | 'balance' | 'can_review_tasks' | 'can_manage_bank' | 'can_manage_join_requests' | 'can_manage_vacations' | 'can_manage_tasks' | 'can_preview_tasks' | 'can_manage_cloud_files' | 'can_manage_members' | 'custom_permissions' | 'custom_title'
 >>): Promise<string | null> {
   const { error } = await supabase.from('team_members').update(fields).eq('id', memberRowId);
+  return error ? error.message : null;
+}
+
+// ---------------------------------------------------------------------------
+// Custom permissions: per-team-defined, real grants (unlike the decorative
+// custom_permissions/custom_title fields on TeamMember above) — an owner
+// declares a named permission once, then grants it to specific leaders.
+// Enforced server-side via team_member_has_custom_perm (0051_custom_permissions_enforcement.sql).
+// ---------------------------------------------------------------------------
+
+export interface TeamCustomPermissionDef {
+  id: string;
+  team_id: string;
+  key: string;
+  label: string;
+  created_at: string;
+}
+
+export interface TeamCustomPermissionGrant {
+  id: string;
+  team_id: string;
+  def_id: string;
+  user_id: string;
+  created_at: string;
+}
+
+export async function listCustomPermissionDefs(teamId: string): Promise<TeamCustomPermissionDef[]> {
+  const { data, error } = await supabase.from('team_custom_permission_defs').select().eq('team_id', teamId).order('created_at');
+  if (error) return [];
+  return (data as TeamCustomPermissionDef[]) ?? [];
+}
+
+export async function createCustomPermissionDef(teamId: string, key: string, label: string): Promise<string | null> {
+  const { error } = await supabase.from('team_custom_permission_defs').insert({ team_id: teamId, key, label });
+  return error ? error.message : null;
+}
+
+export async function deleteCustomPermissionDef(defId: string): Promise<string | null> {
+  const { error } = await supabase.from('team_custom_permission_defs').delete().eq('id', defId);
+  return error ? error.message : null;
+}
+
+export async function listCustomPermissionGrants(teamId: string): Promise<TeamCustomPermissionGrant[]> {
+  const { data, error } = await supabase.from('team_custom_permission_grants').select().eq('team_id', teamId);
+  if (error) return [];
+  return (data as TeamCustomPermissionGrant[]) ?? [];
+}
+
+export async function grantCustomPermission(teamId: string, defId: string, userId: string): Promise<string | null> {
+  const { error } = await supabase.from('team_custom_permission_grants').insert({ team_id: teamId, def_id: defId, user_id: userId });
+  return error ? error.message : null;
+}
+
+export async function revokeCustomPermission(grantId: string): Promise<string | null> {
+  const { error } = await supabase.from('team_custom_permission_grants').delete().eq('id', grantId);
   return error ? error.message : null;
 }
 

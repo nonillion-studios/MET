@@ -47,6 +47,19 @@ export async function listTaskStageHistory(taskId: string): Promise<TaskStageHis
   return (data as TaskStageHistoryEntry[]) ?? [];
 }
 
+/** Team-wide stage history for analytics (avg time-in-stage) — joins through tasks.team_id rather than N+1 per-task calls. */
+export async function listTeamStageHistory(teamId: string): Promise<(TaskStageHistoryEntry & { task_created_at: string })[]> {
+  const { data } = await supabase
+    .from('task_stage_history')
+    .select('*, tasks!inner(team_id, created_at)')
+    .eq('tasks.team_id', teamId)
+    .order('completed_at', { ascending: true });
+  return ((data as any[]) ?? []).map(row => ({
+    id: row.id, task_id: row.task_id, job_type: row.job_type, assignee_id: row.assignee_id, completed_at: row.completed_at,
+    task_created_at: row.tasks?.created_at,
+  }));
+}
+
 async function rpc(fn: string, args: Record<string, unknown>): Promise<string | null> {
   const { error } = await supabase.rpc(fn, args);
   return error ? error.message : null;

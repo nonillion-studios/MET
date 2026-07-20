@@ -393,7 +393,7 @@ Project Save:
 •	Native project format 
 •	Auto Save 
 •	Incremental versions 
-________________________________________
+_______________________________
 Fonts
 Support:
 •	Install fonts 

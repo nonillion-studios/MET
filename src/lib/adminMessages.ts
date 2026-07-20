@@ -50,3 +50,12 @@ export async function deleteAdminMessage(id: string): Promise<string | null> {
   const { error } = await supabase.rpc('delete_admin_message', { _id: id });
   return error ? error.message : null;
 }
+
+export async function isAllowedAnnouncementSender(): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('admin_message_senders')
+    .select('email')
+    .maybeSingle();
+  if (error) return false;
+  return !!data;
+}

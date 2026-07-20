@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { Page } from '../../types';
 import { cn, IconButton } from '../ui';
+import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
+import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
+import { PagesManagePanel } from './PagesManagePanel';
+import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { RightDock } from './RightDock';
 import { LayersPanel } from './LayersPanel';
@@ -20,8 +23,8 @@ import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
 } from './layerTree';
-import { NO_SELECTION, hasSelection, featherSelection, growSelection, type Selection } from './paint/selection';
-import type { PaintSettings, LiquifyMode, SymmetryMode } from './paint/paintEngine';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, type Selection } from './paint/selection';
+import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
@@ -33,10 +36,12 @@ import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
+import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
+import JSZip from 'jszip';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, parseTyperScript,
-  DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, type StudioLayer, type TextLayerData, type TyperStyle,
-  type TyperFolder, type AdjustmentLayerData, type LayerSelectMode,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, parseTyperScript,
+  createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
+  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type LayerSelectMode,
 } from './studioTypes';
 import { layoutText } from './textLayout';
 import { FontsPanel } from './FontsPanel';
@@ -243,6 +248,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onTextSizeStep: handleTextSizeStep,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
+  const [pagesManagerOpen, setPagesManagerOpen] = useState(pages.length === 0);
   const [activeTool, setActiveTool] = useState('select');
   const [showCleaned, setShowCleaned] = useState(false);
   const [overlayOpacity, setOverlayOpacity] = useState(0);
@@ -297,6 +303,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    * same click that navigated away from it, and the row was collapsed again on return.
    */
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
+  /** The layer whose *mask* is the current paint target (clicked its mask thumbnail in the Layers
+   *  panel), or null while painting normally. Cleared on layer (re)selection. */
+  const [activeMaskLayerId, setActiveMaskLayerId] = useState<string | null>(null);
   // The character range selected inside the text layer currently being edited on canvas. Lives here
   // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
   // character styling to it.
@@ -388,6 +397,45 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     swalToast({ icon: 'success', title: `Placed ${newLayers.length} line${newLayers.length === 1 ? '' : 's'}` });
   }
 
+  // Slice tool: draw a rect per slice (reuses the Rectangular-Marquee-style drag via MARQUEE_TOOLS),
+  // queue it, then export every queued rect as one cropped PNG each, bundled into a zip — mirrors
+  // the Multi-Bubble queue above.
+  const [sliceRects, setSliceRects] = useState<{ x: number; y: number; width: number; height: number }[]>([]);
+
+  function handleAddSliceRect() {
+    if (selection.kind !== 'rect') {
+      swalToast({ icon: 'info', title: 'Draw a rectangle first' });
+      return;
+    }
+    setSliceRects(prev => [...prev, selection]);
+    setSelection(NO_SELECTION);
+  }
+
+  async function handleExportSlices() {
+    if (sliceRects.length === 0) return;
+    const snapshot = canvasRef.current?.getExportSnapshot();
+    if (!snapshot) {
+      swalToast({ icon: 'warning', title: 'Nothing to export' });
+      return;
+    }
+    try {
+      const fullCanvas = await renderFlattenedPage(snapshot);
+      const zip = new JSZip();
+      for (let i = 0; i < sliceRects.length; i++) {
+        const blob = await compositeFlattenedSlice(fullCanvas, sliceRects[i]);
+        zip.file(`slice-${String(i + 1).padStart(2, '0')}.png`, blob);
+      }
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+      const baseName = `${chapterName}${activePage ? `_${activePage.original.filename.replace(/\.[^.]+$/, '')}` : ''}`.replace(/\s+/g, '_');
+      downloadBlob(zipBlob, `${baseName}-slices.zip`);
+      setSliceRects([]);
+      swalToast({ icon: 'success', title: `Exported ${sliceRects.length} slice${sliceRects.length === 1 ? '' : 's'}` });
+    } catch (err) {
+      console.error(err);
+      swalToast({ icon: 'error', title: 'Slice export failed' });
+    }
+  }
+
   // Pick up text sent from the Text Editor's "Send to TypeR" button, if any is waiting.
   useEffect(() => {
     if (pendingTyperScript == null) return;
@@ -420,6 +468,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // main page/chapter library so painting doesn't trigger a full-library rewrite per stroke.
   const loadedRef = useRef(false);
   const rasterByPageRef = useRef<Record<string, Record<string, string>>>({});
+  /** Mirrors `rasterByPageRef`, but for mask pixels — keyed by the *mask's own* id, alongside the
+   *  owning layer's id (needed to redraw its Konva node once the mask's pixels are hydrated). */
+  const maskByPageRef = useRef<Record<string, { layerId: string; maskId: string; dataUrl: string }[]>>({});
   const hydratedPagesRef = useRef<Set<string>>(new Set());
   const dirtyRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -443,20 +494,27 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     loadedRef.current = false;
     hydratedPagesRef.current = new Set();
     rasterByPageRef.current = {};
+    maskByPageRef.current = {};
     (async () => {
       const saved = await loadChapterStudioData(chapterId);
       if (cancelled) return;
       if (saved) {
         const nextLayersByPage: Record<string, StudioLayer[]> = {};
         const nextRasterByPage: Record<string, Record<string, string>> = {};
+        const nextMaskByPage: Record<string, { layerId: string; maskId: string; dataUrl: string }[]> = {};
         for (const [pageId, serialized] of Object.entries(saved.layersByPage)) {
-          // Strip pixels out of the layer objects and into the raster side-map. Both walk the whole
-          // tree: a group's descendants carry pixels too, and the registry is keyed by layer id,
-          // flat, so nesting never reaches it.
-          nextLayersByPage[pageId] = mapTree(serialized, ({ raster: _raster, ...layer }) => layer) as StudioLayer[];
+          // Strip pixels out of the layer objects and into the raster/mask side-maps. Both walk the
+          // whole tree: a group's descendants carry pixels too, and the registries are keyed by
+          // layer/mask id, flat, so nesting never reaches them.
+          nextLayersByPage[pageId] = mapTree(serialized, ({ raster: _raster, maskRaster: _maskRaster, ...layer }) => layer) as StudioLayer[];
           const rasterMap: Record<string, string> = {};
-          for (const l of flattenTree(serialized)) if (l.raster) rasterMap[l.id] = l.raster;
+          const maskList: { layerId: string; maskId: string; dataUrl: string }[] = [];
+          for (const l of flattenTree(serialized)) {
+            if (l.raster) rasterMap[l.id] = l.raster;
+            if (l.mask && l.maskRaster) maskList.push({ layerId: l.id, maskId: l.mask.id, dataUrl: l.maskRaster });
+          }
           if (Object.keys(rasterMap).length > 0) nextRasterByPage[pageId] = rasterMap;
+          if (maskList.length > 0) nextMaskByPage[pageId] = maskList;
         }
         setLayersByPage(nextLayersByPage);
         setTyperScript(saved.typerScript);
@@ -466,6 +524,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         setIgnoreTags(saved.ignoreTags ?? []);
         setDefaultStyleId(saved.defaultStyleId ?? null);
         rasterByPageRef.current = nextRasterByPage;
+        maskByPageRef.current = nextMaskByPage;
       }
       loadedRef.current = true;
     })();
@@ -478,16 +537,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setSelection(NO_SELECTION);
   }, [activePageId]);
 
-  // Hydrate the active page's raster (painted pixel) layers once its canvas is ready.
+  // Hydrate the active page's raster (painted pixel) layers and masks once its canvas is ready.
   useEffect(() => {
     if (!loadedRef.current || !activePageId) return;
     if (hydratedPagesRef.current.has(activePageId)) return;
     hydratedPagesRef.current.add(activePageId);
     const raster = rasterByPageRef.current[activePageId];
-    if (!raster) return;
+    const masks = maskByPageRef.current[activePageId];
+    if (!raster && !masks) return;
     (async () => {
-      for (const [layerId, dataUrl] of Object.entries(raster)) {
+      for (const [layerId, dataUrl] of Object.entries(raster ?? {})) {
         await canvasRef.current?.loadRasterLayer(layerId, dataUrl);
+      }
+      for (const { layerId, maskId, dataUrl } of masks ?? []) {
+        await canvasRef.current?.loadMaskLayer(layerId, maskId, dataUrl);
       }
     })();
   }, [activePageId, layersByPage]);
@@ -501,14 +564,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   function flushAutosave() {
     if (!dirtyRef.current || !loadedRef.current) return;
     dirtyRef.current = false;
-    // Covers every raster layer touched so far this session (any page, not just the active one —
-    // the paint canvas registry keeps every visited page's canvases alive until its layer is deleted).
+    // Covers every raster layer (and mask) touched so far this session (any page, not just the
+    // active one — both registries keep every visited page's canvases alive until deleted).
     const liveRaster = canvasRef.current?.exportRasterLayers() ?? {};
+    const liveMasks = canvasRef.current?.exportMaskLayers() ?? {};
     const mergedLayersByPage: Record<string, SerializedStudioLayer[]> = {};
     for (const [pageId, pageLayers] of Object.entries(layersByPageRef.current)) {
       mergedLayersByPage[pageId] = mapTree<SerializedStudioLayer>(pageLayers, (l) => {
         const raster = liveRaster[l.id] ?? rasterByPageRef.current[pageId]?.[l.id];
-        return raster ? { ...l, raster } : l;
+        const maskRaster = l.mask
+          ? liveMasks[l.mask.id] ?? maskByPageRef.current[pageId]?.find(m => m.maskId === l.mask!.id)?.dataUrl
+          : undefined;
+        if (!raster && !maskRaster) return l;
+        return { ...l, ...(raster ? { raster } : {}), ...(maskRaster ? { maskRaster } : {}) };
       });
     }
     const data: ChapterStudioData = {
@@ -554,9 +622,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   /** General primitive: edit any page's layer stack, not just the active one — the Translation
    *  Preview panel needs to edit dialogue text across every page in the chapter at once. */
   function updateLayersOnPage(pageId: string, updater: (current: StudioLayer[]) => StudioLayer[], historyLabel?: string) {
-    const before = layersByPage[pageId] ?? [createBackgroundLayer()];
-    const after = updater(before);
-    setLayersByPage(prev => ({ ...prev, [pageId]: after }));
+    // `before`/`after` are computed *inside* the functional updater, against React's own pending
+    // state, not the `layersByPage` closure above — two updates fired in quick succession (e.g. a
+    // toggle clicked twice before a re-render lands) would otherwise both read the same stale
+    // `before` and the second would silently overwrite the first's effect instead of building on it.
+    let before: StudioLayer[] = [];
+    let after: StudioLayer[] = [];
+    setLayersByPage(prev => {
+      before = prev[pageId] ?? [createBackgroundLayer()];
+      after = updater(before);
+      return { ...prev, [pageId]: after };
+    });
     if (historyLabel) {
       history.push({
         label: historyLabel,
@@ -579,6 +655,31 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     // "duplicate scan, clean the duplicate" manga workflow and gives clone/heal/filter-brush/
     // liquify tools real pixels to act on immediately instead of an empty transparent canvas.
     canvasRef.current?.seedLayerWithBackground(layer.id);
+  }
+
+  async function handleCreateWhitedPatchLayer(page: Page, whited: ProcessedImage) {
+    try {
+      const [originalImg, whitedImg] = await Promise.all([
+        loadImageFromSrc(page.original.dataUrl),
+        loadImageFromSrc(whited.dataUrl),
+      ]);
+      const { maskCanvas, changedRatio } = computeWhitedDiffMask(originalImg, whitedImg);
+      if (changedRatio < 0.001) {
+        swalToast({ icon: 'warning', title: 'No differences detected', text: 'The whited image looks identical to the original.' });
+        return;
+      }
+      if (page.id !== activePageId) setActivePageId(page.id);
+      const layer = createLayer('clean-patch', 'Whited Patch');
+      updateLayersOnPage(page.id, current => [...current, layer], 'Add Whited Patch Layer');
+      setActiveLayerId(layer.id);
+      setSelection(alphaMaskToSelection(maskCanvas));
+      canvasRef.current?.seedLayerWithMaskedImage(layer.id, maskCanvas);
+      swalToast({ icon: 'success', title: 'Patch layer created', text: `${Math.round(changedRatio * 100)}% of the page differed from the original.` });
+    } catch (err) {
+      console.error(err);
+      const detail = err instanceof Error && err.message ? err.message : 'Could not diff the whited image against the original.';
+      swal({ icon: 'error', title: 'Diff Failed', text: detail });
+    }
   }
 
   function handleAddAdjustmentLayer() {
@@ -615,6 +716,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     } else {
       setSelectedLayerIds([id]);
     }
+    setActiveMaskLayerId(null);
+    const type = findLayer(layers, id)?.type;
+    if (type === 'text') dock.selectTab('text');
+    if (type === 'adjustment') dock.selectTab('adjustment');
   }
 
   /** Replaces the whole selection at once — used by the canvas's drag-a-box object marquee. */
@@ -628,15 +733,26 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const type = findLayer(layers, id)?.type;
     if (type === 'text') dock.selectTab('text');
     if (type === 'adjustment') dock.selectTab('adjustment');
+    setActiveMaskLayerId(null);
+    if (ids.length === 1 && findLayer(layers, ids[0])?.type === 'text') dock.selectTab('text');
+  }
+
+  /** Clicking a mask's thumbnail makes it the paint target; clicking it again (or the layer's own
+   *  thumbnail) returns to painting the layer itself. */
+  function selectMask(id: string) {
+    setSelectedLayerIds([id]);
+    setActiveMaskLayerId(current => (current === id ? null : id));
   }
 
   function handleDuplicateLayer(id: string) {
     const source = findLayer(layers, id);
     if (!source || source.isBackground) return;
-    // cloneSubtree regenerates ids for the layer *and* every descendant, and hands back the map the
-    // registry needs — the pixels live under the old ids, so a copy without this is silently blank.
+    // cloneSubtree regenerates ids for the layer *and* every descendant (masks included), and hands
+    // back the map both registries need — the pixels live under the old ids, so a copy without this
+    // is silently blank.
     const { copy, idMap } = cloneSubtree(source);
     canvasRef.current?.clonePaintCanvases(idMap);
+    canvasRef.current?.cloneMaskCanvases(idMap);
     updateLayers(current => insertAfter(current, id, copy), 'Duplicate Layer');
     setActiveLayerId(copy.id);
   }
@@ -701,6 +817,42 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, clipped: true })), 'Create Clipping Mask');
   }
 
+  /**
+   * Adds a raster mask to any layer type (groups included — see `StudioLayer.mask`'s doc comment),
+   * except adjustments: they have no paintable content to trim, and their own `filters()` slot is
+   * already owned by the adjustment effect in `StudioCanvas.tsx`.
+   * Seeded from the active selection if one exists, otherwise fully opaque (reveal everything),
+   * matching Photoshop's "Add Layer Mask" default.
+   */
+  function handleAddMask(id: string) {
+    const layer = findLayer(layers, id);
+    if (!layer || layer.mask || layer.type === 'adjustment') return;
+    const mask = createLayerMask();
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, mask })), 'Add Layer Mask');
+    canvasRef.current?.createMask(mask.id);
+  }
+
+  function handleDeleteMask(id: string) {
+    const layer = findLayer(layers, id);
+    if (!layer?.mask) return;
+    canvasRef.current?.deleteMaskCanvas(layer.mask.id);
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, mask: undefined })), 'Delete Layer Mask');
+    if (activeMaskLayerId === id) setActiveMaskLayerId(null);
+  }
+
+  function handleToggleMaskEnabled(id: string) {
+    updateLayers(current => updateLayer(current, id, l =>
+      l.mask ? { ...l, mask: { ...l.mask, enabled: !l.mask.enabled } } : l
+    ), 'Toggle Layer Mask');
+  }
+
+  /** Add/Delete Mask toggle for the Layers panel button — mirrors `handleToggleClipped`'s shape. */
+  function handleToggleMaskExistence(id: string) {
+    const layer = findLayer(layers, id);
+    if (layer?.mask) handleDeleteMask(id);
+    else handleAddMask(id);
+  }
+
   function handleToggleGroupCollapsed(id: string) {
     updateLayers(current => updateLayer(current, id, l => ({ ...l, collapsed: !l.collapsed })));
   }
@@ -720,21 +872,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     if (doomed.length === 0) return;
     const doomedIds = doomed.map(l => l.id);
     updateLayers(current => removeLayers(current, doomedIds), doomed.length > 1 ? `Delete ${doomed.length} Layers` : 'Delete Layer');
-    // Deleting a group takes its whole subtree with it, so every descendant's canvas has to go too
-    // or the registry leaks them for the rest of the session (and into the next autosave).
-    doomed.flatMap(collectSubtree).forEach(l => canvasRef.current?.deletePaintCanvas(l.id));
+    // Deleting a group takes its whole subtree with it, so every descendant's canvas — and its mask,
+    // if it has one — has to go too or the registry leaks them for the rest of the session (and into
+    // the next autosave).
+    const subtree = doomed.flatMap(collectSubtree);
+    subtree.forEach(l => canvasRef.current?.deletePaintCanvas(l.id));
+    subtree.forEach(l => { if (l.mask) canvasRef.current?.deleteMaskCanvas(l.mask.id); });
+    if (subtree.some(l => l.id === activeMaskLayerId)) setActiveMaskLayerId(null);
     setActiveLayerId('background');
   }
 
-  /** Paint strokes are committed by the time this fires; `before` is the layer's pixels just prior. */
-  function handlePaintStrokeEnd(layerId: string, before: ImageData) {
-    const canvas = canvasRef.current?.getPaintCanvas(layerId);
+  /**
+   * Paint strokes are committed by the time this fires; `before` is the pixels just prior. `maskId`
+   * is set when the stroke landed on a layer's mask rather than its own raster canvas — `layerId`
+   * is still the owning layer either way, since masks have no Konva node of their own to redraw.
+   */
+  function handlePaintStrokeEnd(layerId: string, before: ImageData, maskId?: string) {
+    const canvas = maskId ? canvasRef.current?.getMaskCanvas(maskId) : canvasRef.current?.getPaintCanvas(layerId);
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const after = ctx.getImageData(0, 0, canvas.width, canvas.height);
     history.push({
-      label: 'Paint Stroke',
+      label: maskId ? 'Paint Mask' : 'Paint Stroke',
       undo: () => { ctx.putImageData(before, 0, 0); canvasRef.current?.redrawLayer(layerId); },
       redo: () => { ctx.putImageData(after, 0, 0); canvasRef.current?.redrawLayer(layerId); },
     });
@@ -815,6 +975,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     ));
   }
 
+  function handleUpdatePathLayer(id: string, patch: Partial<PathLayerData>) {
+    updateLayers(current => updateLayer(current, id, l =>
+      l.type === 'path' && l.path ? { ...l, path: { ...l.path, ...patch } } : l
+    ));
+  }
+
+  function handleAddPathLayer(anchors: PathAnchor[], closed: boolean) {
+    const layer = createPathLayer(anchors, closed, { strokeColor: paintSettings.color, strokeWidth: Math.max(2, paintSettings.size / 6) });
+    updateLayers(current => [...current, layer], 'Add Path Layer');
+    setActiveLayerId(layer.id);
+    setActiveTool('path-select');
+  }
+
   /** Cross-page text edit, for the Translation Preview panel (search/replace, status, comments). */
   function handleUpdateTextLayerOnPage(pageId: string, id: string, patch: Partial<TextLayerData>) {
     updateLayersOnPage(pageId, current => updateLayer(current, id, l =>
@@ -851,6 +1024,36 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
+
+  /** Stroke/Fill Path's bake target — same "topmost existing raster layer" convention the
+   *  paint-tool raster-auto-create effect below already uses, so both features pick the same
+   *  layer a user would expect a paint-family action to land on. */
+  function topmostRasterLayer(): StudioLayer | null {
+    return [...layers].reverse().find(l => l.type === 'clean-patch') ?? null;
+  }
+
+  function bakeActivePath(bake: (ctx: CanvasRenderingContext2D, path: NonNullable<StudioLayer['path']>, selection: Selection) => void) {
+    const pathLayer = activeLayer?.type === 'path' ? activeLayer : null;
+    const target = topmostRasterLayer();
+    if (!pathLayer?.path || !target) return;
+    const canvas = canvasRef.current?.getPaintCanvas(target.id);
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    bake(ctx, pathLayer.path, selection);
+    canvasRef.current?.redrawLayer(target.id);
+    handlePaintStrokeEnd(target.id, before);
+  }
+
+  const handleStrokeActivePath = () => bakeActivePath(strokePathOntoCanvas);
+  const handleFillActivePath = () => bakeActivePath(fillPathOntoCanvas);
+  const canBakePath = activeLayer?.type === 'path' && !!topmostRasterLayer();
+
+  function handleMakeSelectionFromPath() {
+    if (activeLayer?.type !== 'path' || !activeLayer.path) return;
+    setSelection(pathToSelection(activeLayer.path));
+  }
+
   /** The layer directly beneath the active one among its siblings — its clip base, if it can be one. */
   const layerBelowActive = (() => {
     if (!activeLayerId) return null;
@@ -866,7 +1069,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   useEffect(() => {
     // Quick Mask paints onto its own scratch buffer regardless of the active layer — forcing a
     // layer switch here would be pointless churn (and could create an unwanted layer) mid-edit.
-    if (quickMaskActive) return;
+    // A layer mask being edited is the same story: it has its own canvas regardless of the active
+    // layer's type, so force-switching to a raster layer would just kick the user out of the mask.
+    if (quickMaskActive || activeMaskLayerId) return;
     if (!(PAINT_TOOLS as readonly string[]).includes(activeTool) || !activeLayer) return;
     if (activeLayer.type === 'clean-patch') return;
     const existing = [...layers].reverse().find(l => l.type === 'clean-patch');
@@ -909,6 +1114,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onToggleClipped={handleToggleClipped}
       onRename={handleRenameLayer}
       onOpenSettings={openLayerSettings}
+      onToggleMask={handleToggleMaskExistence}
+      onToggleMaskEnabled={handleToggleMaskEnabled}
+      onSelectMask={selectMask}
+      activeMaskLayerId={activeMaskLayerId}
       expandedLayerId={expandedLayerId}
       onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
       panelCollapsed={layersPanelCollapsed}
@@ -1014,10 +1223,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // the tab-switched dock — that's what stops selecting a layer from evicting the Layers panel.
   const toolTabs = allTabs.filter(t => t.id !== 'pages' && t.id !== 'color' && t.id !== 'layers');
   const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" />;
+  const toolTabs = allTabs.filter(t => t.id !== 'pages');
+  const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
 
   const menus = buildMenus({
     onBack: onBack,
     onExport: () => setExportOpen(true),
+    onExportSlices: handleExportSlices,
+    hasSliceRects: sliceRects.length > 0,
     undo: history.undo,
     redo: history.redo,
     canUndo: history.canUndo,
@@ -1039,7 +1252,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     isGroupActive: activeLayer?.type === 'group',
     toggleClipped: () => { if (activeLayerId) handleToggleClipped(activeLayerId); },
     canClip: !!activeLayer && !activeLayer.isBackground && canBeClipBase(layerBelowActive),
+    strokeActivePath: handleStrokeActivePath,
+    fillActivePath: handleFillActivePath,
+    canBakePath,
+    makeSelectionFromPath: handleMakeSelectionFromPath,
+    hasActivePathLayer: activeLayer?.type === 'path',
     isClipped: activeLayer?.clipped === true,
+    toggleMask: () => {
+      if (!activeLayerId) return;
+      if (activeLayer?.mask) handleDeleteMask(activeLayerId);
+      else handleAddMask(activeLayerId);
+    },
+    canMask: !!activeLayer && !activeLayer.isBackground && activeLayer.type !== 'adjustment',
+    hasMask: activeLayer?.mask != null,
     addTextLayer: () => setActiveTool('text'),
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
     increaseTextSize: () => handleTextSizeStep(1),
@@ -1140,6 +1365,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSelectLayers={selectLayers}
       onAddTextLayer={handleAddTextLayer}
       onUpdateTextLayer={handleUpdateTextLayer}
+      onUpdatePathLayer={handleUpdatePathLayer}
+      onAddPathLayer={handleAddPathLayer}
       onTextSelectionChange={setTextSelection}
       paintSettings={paintSettings}
       selection={selection}
@@ -1148,9 +1375,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onEyedropperPick={setForeground}
       onCommitCrop={handleCommitCrop}
       queuedBubbleRects={multiBubbleRects}
+      queuedSliceRects={sliceRects}
       transformingSelection={transformingSelection}
       onExitTransformSelection={() => setTransformingSelection(false)}
       quickMaskActive={quickMaskActive}
+      activeMaskLayerId={activeMaskLayerId}
     />
   );
 
@@ -1179,7 +1408,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   );
 
   return (
-    <div ref={studioRootRef} className="fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {!panelsHidden && (
         <div className="relative z-40 overflow-x-auto">
           <MenuBar menus={menus} />
@@ -1230,6 +1459,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onScatterChange={setScatter}
           smoothing={smoothing}
           onSmoothingChange={setSmoothing}
+          sliceRectCount={sliceRects.length}
+          onAddSliceRect={handleAddSliceRect}
+          onExportSlices={handleExportSlices}
         />
       )}
 
@@ -1239,7 +1471,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       <div className="flex-1 flex min-h-0 relative">
         {!panelsHidden && isDesktop && leftOpen && (
           <div className="h-full shrink-0 relative z-30">
-            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" onManagePages={() => setPagesManagerOpen(true)} />
           </div>
         )}
 
@@ -1255,7 +1487,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
         {!panelsHidden && layoutMode === 'tablet' && leftOpen && (
           <div ref={leftSidebarRef} className="absolute inset-y-0 left-0 z-20 w-72 max-w-[75vw] h-full liquid-glass-heavy border-r border-hairline shadow-2xl">
-            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" />
+            <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="vertical" onManagePages={() => setPagesManagerOpen(true)} />
           </div>
         )}
         {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
@@ -1265,7 +1497,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         )}
 
         {!panelsHidden && layoutMode === 'phone' && leftOpen && (
-          <div ref={leftSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+          <div ref={leftSidebarRef} className="studio-sheet absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet rounded-t-2xl overflow-hidden">
             <button
               aria-label="Close panel"
               onClick={() => setLeftOpen(false)}
@@ -1277,7 +1509,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
         {!panelsHidden && layoutMode === 'phone' && rightOpen && (
-          <div ref={rightSidebarRef} className="absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet">
+          <div ref={rightSidebarRef} className="studio-sheet absolute inset-x-0 bottom-0 top-[8vh] z-20 flex flex-col animate-slide-up-sheet rounded-t-2xl overflow-hidden">
             <button
               aria-label="Close panel"
               onClick={() => setRightOpen(false)}
@@ -1304,6 +1536,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         fileBaseName={`${chapterName}${activePage ? `_${activePage.original.filename.replace(/\.[^.]+$/, '')}` : ''}`.replace(/\s+/g, '_')}
         getSnapshot={() => canvasRef.current?.getExportSnapshot() ?? null}
         exportPsd={exportPsd}
+      />
+      <PagesManagePanel
+        open={pagesManagerOpen}
+        onClose={() => setPagesManagerOpen(false)}
+        chapterName={chapterName}
+        pages={pages}
+        onChange={(newPages) => onPagesChange?.(newPages)}
+        onCreateWhitedPatchLayer={handleCreateWhitedPatchLayer}
       />
     </div>
   );

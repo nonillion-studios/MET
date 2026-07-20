@@ -47,7 +47,7 @@ export function AdminAnnouncementsPanel() {
   return (
     <GlassCard className="p-6 space-y-4">
       <h3 className="text-base font-semibold text-ink font-display flex items-center gap-2">
-        <Megaphone size={16} className="text-success" /> Announcements
+        <Megaphone size={16} className="text-accent" /> Announcements
       </h3>
       <p className="text-xs text-ink-faint -mt-2">Posted here appears as a banner above the Library tab for every signed-in user.</p>
 

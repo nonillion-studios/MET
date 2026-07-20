@@ -3,7 +3,7 @@ import {
   MousePointer2, Hand, Square, Circle, Rows, Columns, Lasso, Spline, Wand2,
   Crop, Scissors, Pipette, Bandage, Stamp, Sparkles, Paintbrush, Pencil, Eraser,
   Blend, PaintBucket, Droplets, SunDim, Sun, Flame, Waves, PenTool, Type,
-  ZoomIn, Minus, Wind,
+  ZoomIn, Minus, Wind, MousePointerClick, Pointer,
 } from 'lucide-react';
 
 export interface StudioToolDef {
@@ -40,7 +40,7 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     tools: [
       { id: 'lasso-freehand', label: 'Lasso', icon: Lasso, enabled: true, shortcut: 'l' },
       { id: 'lasso-polygon', label: 'Polygonal Lasso', icon: Spline, enabled: true },
-      { id: 'lasso-magnetic', label: 'Magnetic Lasso', icon: Spline, enabled: false },
+      { id: 'lasso-magnetic', label: 'Magnetic Lasso', icon: Spline, enabled: true },
     ],
   },
   {
@@ -54,7 +54,7 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     id: 'crop', groupStart: true,
     tools: [
       { id: 'crop', label: 'Crop', icon: Crop, enabled: true, shortcut: 'c' },
-      { id: 'slice', label: 'Slice', icon: Scissors, enabled: false },
+      { id: 'slice', label: 'Slice', icon: Scissors, enabled: true },
     ],
   },
   { id: 'eyedropper', tools: [{ id: 'eyedropper', label: 'Eyedropper', icon: Pipette, enabled: true, shortcut: 'i' }] },
@@ -63,8 +63,8 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     id: 'healing', groupStart: true,
     tools: [
       { id: 'spot-heal', label: 'Spot Healing Brush', icon: Bandage, enabled: true },
-      { id: 'heal', label: 'Healing Brush', icon: Bandage, enabled: false },
-      { id: 'patch', label: 'Patch Tool', icon: Sparkles, enabled: false },
+      { id: 'heal', label: 'Healing Brush', icon: Bandage, enabled: true },
+      { id: 'patch', label: 'Patch Tool', icon: Sparkles, enabled: true },
       { id: 'contentAware', label: 'Content-Aware Fill', icon: Sparkles, enabled: true },
     ],
   },
@@ -107,9 +107,9 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     id: 'pen', groupStart: true,
     tools: [
       { id: 'pen', label: 'Pen', icon: PenTool, enabled: true, shortcut: 'p' },
-      { id: 'curvature-pen', label: 'Curvature Pen', icon: PenTool, enabled: false },
-      { id: 'path-select', label: 'Path Selection', icon: MousePointer2, enabled: false },
-      { id: 'direct-select', label: 'Direct Selection', icon: MousePointer2, enabled: false },
+      { id: 'curvature-pen', label: 'Curvature Pen', icon: PenTool, enabled: true },
+      { id: 'path-select', label: 'Path Selection', icon: MousePointerClick, enabled: true },
+      { id: 'direct-select', label: 'Direct Selection', icon: Pointer, enabled: true },
     ],
   },
   {

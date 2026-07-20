@@ -15,6 +15,7 @@ export interface TeamCloudFileMeta {
   cover_version: number;
   display_name: string | null;
   is_chat_upload: boolean;
+  is_task_submission: boolean;
   created_at: string;
 }
 
@@ -47,6 +48,7 @@ export async function upsertCloudFileMeta(input: {
   ownerUserId?: string | null;
   displayName?: string | null;
   isChatUpload?: boolean;
+  isTaskSubmission?: boolean;
 }): Promise<string | null> {
   const { error } = await supabase.from('team_cloud_files').upsert(
     {
@@ -58,6 +60,7 @@ export async function upsertCloudFileMeta(input: {
       ...(input.ownerUserId !== undefined ? { owner_user_id: input.ownerUserId } : {}),
       ...(input.displayName !== undefined ? { display_name: input.displayName } : {}),
       ...(input.isChatUpload !== undefined ? { is_chat_upload: input.isChatUpload } : {}),
+      ...(input.isTaskSubmission !== undefined ? { is_task_submission: input.isTaskSubmission } : {}),
     },
     { onConflict: 'team_id,channel_msg_id' }
   );

@@ -1,3 +1,6 @@
+import { flattenPathToPolygon } from '../pathGeometry';
+import type { PathLayerData } from '../studioTypes';
+
 /** A point in page-image pixel space. */
 export interface Point {
   x: number;
@@ -458,4 +461,16 @@ export function alphaMaskToSelection(canvas: HTMLCanvasElement): Selection {
   const bounds = boundsOfMask(data, width, height);
   if (bounds.width === 0) return NO_SELECTION;
   return { kind: 'mask', data, width, height, bounds };
+}
+
+/**
+ * Select > Make Selection from Path — flattens the path's bezier curves into a dense point list
+ * (polygon selections have no bezier concept of their own) and wraps it as an ordinary polygon
+ * selection, which already does everything downstream (marching ants, clipToSelection, combine
+ * modes) with zero further changes.
+ */
+export function pathToSelection(path: Pick<PathLayerData, 'anchors' | 'closed'>): Selection {
+  const points = flattenPathToPolygon(path);
+  if (points.length < 3) return NO_SELECTION;
+  return { kind: 'polygon', points };
 }

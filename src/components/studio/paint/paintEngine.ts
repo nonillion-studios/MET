@@ -1,8 +1,10 @@
 import { clipToSelection, magicWandMask, type Selection } from './selection';
 import { getBrushTip, type BrushShape } from './brushTip';
+import { traceAnchors } from '../pathGeometry';
+import type { PathLayerData } from '../studioTypes';
 
 export type PaintTool =
-  | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone'
+  | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone' | 'heal'
   | 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn' | 'sponge' | 'contentAware'
   | 'shape-rect' | 'shape-ellipse' | 'shape-line' | 'spot-heal' | 'liquify';
 
@@ -189,6 +191,115 @@ export function cloneSegment(
     ctx.restore();
   }
   ctx.restore();
+}
+
+/**
+ * Core of Photoshop's Healing Brush / Patch Tool: blends `sourceData`'s texture into `destData`
+ * (same-sized, already positionally aligned by the caller) but corrects for the two regions'
+ * differing average color first, so the source's brush strokes/paper grain transfer without
+ * dragging its color along — the actual thing that distinguishes Heal/Patch from a raw copy
+ * (Clone Stamp). `falloffAt` returns 0..1 per-pixel blend strength — radial for Heal's per-stamp
+ * use, a feathered-rect falloff for Patch's one-shot whole-region use.
+ */
+function colorMatchBlend(
+  destData: ImageData,
+  sourceData: ImageData,
+  falloffAt: (ix: number, iy: number, w: number, h: number) => number,
+): ImageData {
+  const { width: w, height: h } = destData;
+  let dr = 0, dg = 0, db = 0, sr = 0, sg = 0, sb = 0;
+  const n = w * h;
+  for (let i = 0; i < n; i++) {
+    const o = i * 4;
+    dr += destData.data[o]; dg += destData.data[o + 1]; db += destData.data[o + 2];
+    sr += sourceData.data[o]; sg += sourceData.data[o + 1]; sb += sourceData.data[o + 2];
+  }
+  const diffR = dr / n - sr / n, diffG = dg / n - sg / n, diffB = db / n - sb / n;
+
+  const out = new ImageData(w, h);
+  for (let iy = 0; iy < h; iy++) {
+    for (let ix = 0; ix < w; ix++) {
+      const i = iy * w + ix;
+      const o = i * 4;
+      const alpha = falloffAt(ix, iy, w, h);
+      const correctedR = sourceData.data[o] + diffR;
+      const correctedG = sourceData.data[o + 1] + diffG;
+      const correctedB = sourceData.data[o + 2] + diffB;
+      out.data[o] = destData.data[o] * (1 - alpha) + correctedR * alpha;
+      out.data[o + 1] = destData.data[o + 1] * (1 - alpha) + correctedG * alpha;
+      out.data[o + 2] = destData.data[o + 2] * (1 - alpha) + correctedB * alpha;
+      out.data[o + 3] = destData.data[o + 3] * (1 - alpha) + sourceData.data[o + 3] * alpha;
+    }
+  }
+  return out;
+}
+
+/** Healing Brush: like Clone Stamp (interpolated stamps offset from an alt-clicked source — see
+ *  usePaintLayer.ts, which intentionally shares Clone's source-point refs with this tool, matching
+ *  Photoshop's own behavior), but each stamp is color-matched via colorMatchBlend rather than a raw
+ *  copy, so the source's texture transfers without dragging its color/lighting along. */
+export function healSegment(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLCanvasElement,
+  x0: number, y0: number, x1: number, y1: number,
+  size: number, offsetX: number, offsetY: number,
+  selection: Selection,
+) {
+  clipToSelection(ctx, selection);
+  const srcCtx = source.getContext('2d');
+  if (!srcCtx) { ctx.restore(); return; }
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const step = Math.max(1, size * 0.15);
+  const r = size / 2;
+  for (let d = 0; d <= dist; d += step) {
+    const t = dist ? d / dist : 0;
+    const x = x0 + (x1 - x0) * t, y = y0 + (y1 - y0) * t;
+    const bx = Math.round(x - r), by = Math.round(y - r), bs = Math.max(1, Math.round(size));
+    const cw = ctx.canvas.width, ch = ctx.canvas.height;
+    const cx0 = Math.max(0, bx), cy0 = Math.max(0, by);
+    const cx1 = Math.min(cw, bx + bs), cy1 = Math.min(ch, by + bs);
+    if (cx1 <= cx0 || cy1 <= cy0) continue;
+    const w = cx1 - cx0, h = cy1 - cy0;
+    const destData = ctx.getImageData(cx0, cy0, w, h);
+    // Source region uses the same window offset by (offsetX, offsetY) — clamp so it never reads
+    // outside the snapshot; a clamped read is a visible seam, an out-of-bounds read is a crash.
+    const sx0 = Math.max(0, Math.min(source.width - w, cx0 - offsetX));
+    const sy0 = Math.max(0, Math.min(source.height - h, cy0 - offsetY));
+    const sourceData = srcCtx.getImageData(sx0, sy0, w, h);
+    const cx = w / 2, cy = h / 2, rad = Math.min(cx, cy);
+    const blended = colorMatchBlend(destData, sourceData, (ix, iy) => {
+      const fx = ix - cx, fy = iy - cy;
+      return Math.max(0, 1 - Math.hypot(fx, fy) / (rad || 1));
+    });
+    ctx.putImageData(blended, cx0, cy0);
+  }
+  ctx.restore();
+}
+
+/**
+ * Patch Tool: one-shot color-matched blend of a dragged source region into the untouched defect
+ * region at `originBounds` — `dx,dy` is the drag offset (source = originBounds shifted by dx,dy).
+ * Unlike Heal, this is a single whole-region blend, not a brush stroke, so the falloff feathers the
+ * region's own edge inward rather than radiating from a stamp center.
+ */
+export function applyPatch(
+  ctx: CanvasRenderingContext2D,
+  originBounds: { x: number; y: number; width: number; height: number },
+  dx: number, dy: number,
+) {
+  const { x, y, width: w, height: h } = originBounds;
+  if (w <= 0 || h <= 0) return;
+  const cw = ctx.canvas.width, ch = ctx.canvas.height;
+  const sx = Math.max(0, Math.min(cw - w, x + dx));
+  const sy = Math.max(0, Math.min(ch - h, y + dy));
+  const destData = ctx.getImageData(x, y, w, h);
+  const sourceData = ctx.getImageData(sx, sy, w, h);
+  const feather = Math.max(2, Math.min(w, h) * 0.15);
+  const blended = colorMatchBlend(destData, sourceData, (ix, iy, ww, hh) => {
+    const edgeDist = Math.min(ix, iy, ww - 1 - ix, hh - 1 - iy);
+    return Math.min(1, edgeDist / feather);
+  });
+  ctx.putImageData(blended, x, y);
 }
 
 /** Content-Aware Fill (basic, non-AI): averages the colors just outside a rect and fills it with light organic noise. Ported from the legacy prototype. */
@@ -412,20 +523,47 @@ export function drawShape(
   ctx.restore();
 }
 
-/** Basic Pen tool: a straight-edged closed/open path, stroked and/or filled onto the active layer on commit. */
+/**
+ * Traces a smooth curve through every point (quadratic-through-midpoints, the standard
+ * "smooth a polyline" technique): each segment ends at the midpoint of its two source points,
+ * with the source point itself as the curve's control point, so the path passes near every
+ * click rather than sharply cornering at it. Used by the Curvature Pen — the straight-edged
+ * Pen tool traces the same points with plain `lineTo` instead.
+ */
+function tracePenPath(ctx: CanvasRenderingContext2D, points: { x: number; y: number }[], closed: boolean, smooth: boolean) {
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  if (!smooth) {
+    for (const p of points.slice(1)) ctx.lineTo(p.x, p.y);
+    if (closed) ctx.closePath();
+    return;
+  }
+  const pts = closed ? [...points, points[0], points[1]] : points;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const xc = (pts[i].x + pts[i + 1].x) / 2;
+    const yc = (pts[i].y + pts[i + 1].y) / 2;
+    ctx.quadraticCurveTo(pts[i].x, pts[i].y, xc, yc);
+  }
+  if (!closed) {
+    const last = pts[pts.length - 1];
+    ctx.quadraticCurveTo(last.x, last.y, last.x, last.y);
+  } else {
+    ctx.closePath();
+  }
+}
+
+/** Basic Pen tool: a closed/open path, stroked and/or filled onto the active layer on commit. `smooth` traces a curve through the points instead of straight edges — the Curvature Pen. */
 export function strokePenPath(
   ctx: CanvasRenderingContext2D,
   points: { x: number; y: number }[],
   closed: boolean,
   style: ShapeStyle,
   selection: Selection,
+  smooth = false,
 ) {
   if (points.length < 2) return;
   clipToSelection(ctx, selection);
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (const p of points.slice(1)) ctx.lineTo(p.x, p.y);
-  if (closed) ctx.closePath();
+  tracePenPath(ctx, points, closed, smooth);
   if (closed && style.fillColor) {
     ctx.fillStyle = style.fillColor;
     ctx.fill();
@@ -435,5 +573,32 @@ export function strokePenPath(
     ctx.lineWidth = style.strokeWidth;
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/**
+ * One-shot bake of a real vector path layer's geometry onto a raster canvas (Stroke Path / Fill
+ * Path menu actions). Uses real per-anchor cubic bezier via `traceAnchors` (`pathGeometry.ts`) —
+ * genuinely different math from `tracePenPath`'s polyline-smoothing above, which has no
+ * independent per-anchor handle concept. Uses the path's own stroke/fill color regardless of that
+ * style's `enabled` flag — the menu action itself is the intent to stroke/fill, matching how
+ * Photoshop's Stroke Path dialog bakes a stroke even for a path with no live stroke appearance.
+ */
+export function strokePathOntoCanvas(ctx: CanvasRenderingContext2D, path: PathLayerData, selection: Selection) {
+  clipToSelection(ctx, selection);
+  ctx.beginPath();
+  traceAnchors(ctx, path.anchors, path.closed);
+  ctx.strokeStyle = path.stroke.color;
+  ctx.lineWidth = path.stroke.width;
+  ctx.stroke();
+  ctx.restore();
+}
+
+export function fillPathOntoCanvas(ctx: CanvasRenderingContext2D, path: PathLayerData, selection: Selection) {
+  clipToSelection(ctx, selection);
+  ctx.beginPath();
+  traceAnchors(ctx, path.anchors, path.closed);
+  ctx.fillStyle = path.fill.color;
+  ctx.fill(path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
   ctx.restore();
 }

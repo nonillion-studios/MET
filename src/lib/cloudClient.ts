@@ -5,6 +5,7 @@ import { swal, swalToast } from './swalTheme';
 import { genId } from './id';
 import { migrateWorkspace } from './migrate';
 import { loadTelegramCredentials, saveTelegramCredentials } from './telegramSync';
+import { supabase } from './supabaseClient';
 import type { Workspace } from '../types';
 
 export type BackupScope = 'workspace' | 'series' | 'volume' | 'chapter';
@@ -35,7 +36,10 @@ export interface CloudFolder {
 export interface CloudFileComment {
   id: number;
   fileId: number;
+  /** Legacy free-text Telegram display name — kept only as a fallback for comments posted before authorUserId existed. */
   author: string;
+  /** Supabase auth user id of the commenter; resolved against team members/profiles for display. Null for legacy comments. */
+  authorUserId: string | null;
   body: string;
   date: string;
 }
@@ -56,6 +60,7 @@ export function useCloudClient() {
   const [isLoading, setIsLoading] = useState(false);
   const [client, setClient] = useState<TelegramClient | null>(null);
   const [meName, setMeName] = useState('');
+  const [isSessionSynced, setIsSessionSynced] = useState<boolean | null>(null);
 
   const [files, setFiles] = useState<CloudFile[]>([]);
   const [folders, setFolders] = useState<CloudFolder[]>([]);
@@ -115,27 +120,34 @@ export function useCloudClient() {
 
     if (savedApiId) setApiId(savedApiId);
     if (savedApiHash) setApiHash(savedApiHash);
-    if (savedSession && savedApiId && savedApiHash) {
-      initClient(savedApiId, savedApiHash, savedSession);
-    }
     if (savedChatId) setChatId(savedChatId);
 
-    // No local session yet on this device — try pulling synced credentials from Supabase.
-    if (!savedSession) {
-      loadTelegramCredentials().then(creds => {
-        if (!creds) return;
-        if (creds.apiId) setApiId(creds.apiId);
-        if (creds.apiHash) setApiHash(creds.apiHash);
-        if (creds.chatId) setChatId(creds.chatId);
-        if (creds.session && creds.apiId && creds.apiHash) {
-          localStorage.setItem('tg_api_id', creds.apiId);
-          localStorage.setItem('tg_api_hash', creds.apiHash);
-          localStorage.setItem('tg_session', creds.session);
-          if (creds.chatId) localStorage.setItem('tg_chat_id', creds.chatId);
-          initClient(creds.apiId, creds.apiHash, creds.session);
-        }
-      }).catch(console.error);
-    }
+    // Supabase is the source of truth across devices; localStorage is only an
+    // offline cache. Always pull synced credentials first and let them win
+    // over whatever's cached locally (e.g. a session logged out on another
+    // device), falling back to the local session only if Supabase has
+    // nothing usable — offline, or the sync call itself fails.
+    loadTelegramCredentials().then(creds => {
+      if (creds?.apiId) setApiId(creds.apiId);
+      if (creds?.apiHash) setApiHash(creds.apiHash);
+      if (creds?.chatId) setChatId(creds.chatId);
+      setIsSessionSynced(!!creds?.session);
+      if (creds?.session && creds.apiId && creds.apiHash) {
+        localStorage.setItem('tg_api_id', creds.apiId);
+        localStorage.setItem('tg_api_hash', creds.apiHash);
+        localStorage.setItem('tg_session', creds.session);
+        if (creds.chatId) localStorage.setItem('tg_chat_id', creds.chatId);
+        initClient(creds.apiId, creds.apiHash, creds.session);
+      } else if (savedSession && savedApiId && savedApiHash) {
+        initClient(savedApiId, savedApiHash, savedSession);
+      }
+    }).catch(err => {
+      console.error('Failed to load synced Telegram credentials', err);
+      setIsSessionSynced(false);
+      if (savedSession && savedApiId && savedApiHash) {
+        initClient(savedApiId, savedApiHash, savedSession);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -176,7 +188,14 @@ export function useCloudClient() {
         localStorage.setItem('tg_api_id', apiId);
         localStorage.setItem('tg_api_hash', apiHash);
         localStorage.setItem('tg_session', sessionString);
-        saveTelegramCredentials({ apiId, apiHash, phone: phoneNumber, session: sessionString }).catch(console.error);
+        try {
+          await saveTelegramCredentials({ apiId, apiHash, phone: phoneNumber, session: sessionString });
+          setIsSessionSynced(true);
+        } catch (syncErr) {
+          console.error('Failed to sync Telegram session to the cloud', syncErr);
+          setIsSessionSynced(false);
+          swalToast({ icon: 'warning', title: 'Logged in, but the session failed to sync to the cloud — other devices won\'t see it' });
+        }
         setClient(newClient);
         setIsConnected(true);
         await loadMe(newClient);
@@ -396,7 +415,7 @@ export function useCloudClient() {
     setDownloadTotalBytes(file.sizeBytes);
     try {
       const buffer = await client?.downloadMedia(file.msg, {
-        progressCallback: (progress: number) => setDownloadProgress(Math.round(progress * 100)),
+        progressCallback: (downloaded: any, total: any) => setDownloadProgress(Math.min(100, Math.round(Number(downloaded) / Number(total || 1) * 100))),
       } as any);
       if (buffer) {
         const blob = new Blob([buffer]);
@@ -427,7 +446,7 @@ export function useCloudClient() {
     setRestoreTotalBytes(file.sizeBytes);
     try {
       const buffer = await client?.downloadMedia(file.msg, {
-        progressCallback: (progress: number) => setRestoreProgress(Math.round(progress * 100)),
+        progressCallback: (downloaded: any, total: any) => setRestoreProgress(Math.min(100, Math.round(Number(downloaded) / Number(total || 1) * 100))),
       } as any);
       if (!buffer) {
         swal({ title: 'Error', text: 'Empty file buffer received', icon: 'error' });
@@ -508,7 +527,7 @@ export function useCloudClient() {
         return;
       }
       const buffer = await client.downloadMedia(msg, {
-        progressCallback: (progress: number) => onProgress?.(Math.round(progress * 100)),
+        progressCallback: (downloaded: any, total: any) => onProgress?.(Math.min(100, Math.round(Number(downloaded) / Number(total || 1) * 100))),
       } as any);
       if (!buffer) {
         swal({ title: 'Error', text: 'Empty file buffer received', icon: 'error' });
@@ -588,7 +607,7 @@ export function useCloudClient() {
       try {
         const data = JSON.parse(m.message);
         if (data?.type === 'file_comment' && data.fileId === fileId) {
-          comments.push({ id: m.id, fileId, author: data.author || 'Team Member', body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
+          comments.push({ id: m.id, fileId, author: data.author || 'Team Member', authorUserId: data.authorUserId ?? null, body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
         }
       } catch { /* not a comment marker */ }
     });
@@ -597,7 +616,8 @@ export function useCloudClient() {
 
   const postFileComment = async (channelId: string, fileId: number, body: string): Promise<void> => {
     if (!client || !channelId) return;
-    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'file_comment', fileId, author: meName || 'Team Member', body, date: new Date().toISOString() }) });
+    const { data: userData } = await supabase.auth.getUser();
+    await client.sendMessage(channelId, { message: JSON.stringify({ type: 'file_comment', fileId, author: meName || 'Team Member', authorUserId: userData.user?.id ?? null, body, date: new Date().toISOString() }) });
   };
 
   // Single-pass variant of listFileComments — fetches the channel's messages
@@ -612,7 +632,7 @@ export function useCloudClient() {
       try {
         const data = JSON.parse(m.message);
         if (data?.type === 'file_comment') {
-          comments.push({ id: m.id, fileId: data.fileId, author: data.author || 'Team Member', body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
+          comments.push({ id: m.id, fileId: data.fileId, author: data.author || 'Team Member', authorUserId: data.authorUserId ?? null, body: data.body || '', date: data.date || new Date(m.date * 1000).toISOString() });
         }
       } catch { /* not a comment marker */ }
     });
@@ -658,7 +678,7 @@ export function useCloudClient() {
     setDownloadTotalBytes(file.sizeBytes);
     try {
       const buffer = await client?.downloadMedia(file.msg, {
-        progressCallback: (progress: number) => setDownloadProgress(Math.round(progress * 100)),
+        progressCallback: (downloaded: any, total: any) => setDownloadProgress(Math.min(100, Math.round(Number(downloaded) / Number(total || 1) * 100))),
       } as any);
       if (buffer) {
         const blob = new Blob([buffer]);
@@ -694,7 +714,7 @@ export function useCloudClient() {
     await client.editMessage(channelId, { message: folder.id, text: JSON.stringify({ type: 'folder', name: folder.name, parentId: folder.parentId, members }) });
   };
 
-  const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void): Promise<number | null> => {
+  const uploadChannelFile = async (channelId: string, file: File, folderId: number | null, onProgress?: (pct: number) => void, opts?: { name?: string; description?: string }): Promise<number | null> => {
     if (!client || !channelId) {
       swal({ title: 'Error', text: 'Connect Telegram and make sure the team has a channel set first', icon: 'error' });
       return null;
@@ -703,7 +723,7 @@ export function useCloudClient() {
       const arrayBuffer = await file.arrayBuffer();
       const fileBuffer: any = Buffer.from(arrayBuffer);
       fileBuffer.name = file.name;
-      const metadata = { type: 'team_file', name: file.name, description: '', tags: [], sender: meName || 'Team Member', folderId, sizeBytes: file.size, date: new Date().toISOString() };
+      const metadata = { type: 'team_file', name: opts?.name || file.name, description: opts?.description || '', tags: [], sender: meName || 'Team Member', folderId, sizeBytes: file.size, date: new Date().toISOString() };
       const msg = await client.sendFile(channelId, {
         file: fileBuffer,
         caption: JSON.stringify(metadata),
@@ -719,19 +739,45 @@ export function useCloudClient() {
     }
   };
 
-  const saveConfig = () => {
+  const saveConfig = async () => {
     if (chatId) {
       localStorage.setItem('tg_chat_id', chatId);
-      saveTelegramCredentials({ chatId }).catch(console.error);
+      try {
+        await saveTelegramCredentials({ chatId });
+      } catch (err) {
+        console.error('Failed to sync chat ID to the cloud', err);
+        swalToast({ icon: 'warning', title: 'Saved locally, but failed to sync to the cloud' });
+        return;
+      }
     }
     swalToast({ icon: 'success', title: 'Saved' });
   };
 
-  const handleDisconnect = () => {
+  const retryCloudSync = async () => {
+    const savedSession = localStorage.getItem('tg_session');
+    if (!apiId || !apiHash || !savedSession) return;
+    try {
+      await saveTelegramCredentials({ apiId, apiHash, phone: phoneNumber, session: savedSession, chatId });
+      setIsSessionSynced(true);
+      swalToast({ icon: 'success', title: 'Session synced to the cloud' });
+    } catch (err) {
+      console.error('Failed to sync Telegram session to the cloud', err);
+      setIsSessionSynced(false);
+      swalToast({ icon: 'warning', title: 'Still failed to sync to the cloud' });
+    }
+  };
+
+  const handleDisconnect = async () => {
     localStorage.removeItem('tg_session');
-    saveTelegramCredentials({ session: '' }).catch(console.error);
     setIsConnected(false);
     setClient(null);
+    try {
+      await saveTelegramCredentials({ session: '' });
+      setIsSessionSynced(false);
+    } catch (err) {
+      console.error('Failed to clear the synced Telegram session in the cloud', err);
+      swalToast({ icon: 'warning', title: 'Disconnected locally, but failed to clear the synced session in the cloud' });
+    }
   };
 
   return {
@@ -744,7 +790,9 @@ export function useCloudClient() {
     handleLogin,
     handleDisconnect,
     saveConfig,
+    retryCloudSync,
     meName,
+    isSessionSynced,
 
     files,
     folders,

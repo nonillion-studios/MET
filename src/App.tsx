@@ -21,8 +21,7 @@ import { TeamsPanel } from './components/TeamsPanel';
 import { AuthGate } from './components/AuthGate';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { UserAgreement } from './components/legal/UserAgreement';
-import { Modal, Button, Input, Textarea, GlassCard, SkeletonCard } from './components/ui';
-import { PageManager } from './components/studio/PageManager';
+import { Modal, Button, Input, Textarea, GlassCard, SkeletonCard, AppContextMenu } from './components/ui';
 import { Studio } from './components/studio/Studio';
 import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
 import { TextEditorPage } from './components/textEditor/TextEditorPage';
@@ -67,8 +66,10 @@ export default function App() {
   const [tagEditorWorkspaceId, setTagEditorWorkspaceId] = useState<string | null>(null);
   const [newTagValue, setNewTagValue] = useState('');
 
-  // Studio entrance transition
+  // Studio entrance transition — set on a chapter-card click, cleared once
+  // StudioBuildTransition finishes and hands off to setActiveChapterId.
   const [studioBuilding, setStudioBuilding] = useState(false);
+  const [pendingChapterId, setPendingChapterId] = useState<string | null>(null);
 
   // Cloud connect modal (shown from Library when uploading without an active Telegram session)
   const [showCloudConnectModal, setShowCloudConnectModal] = useState(false);
@@ -112,7 +113,6 @@ export default function App() {
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
 
-  const [chapterView, setChapterView] = useState<'manage' | 'studio'>('manage');
   // Bridges "Send to TypeR" from the standalone Text Editor page into whichever chapter's
   // Studio the user next opens — Studio consumes and clears this on mount.
   const [pendingTyperScript, setPendingTyperScript] = useState<string | null>(null);
@@ -212,10 +212,6 @@ export default function App() {
   const activeManga = mangas.find(m => m.id === activeMangaId) || null;
   const activeVolume = activeManga?.volumes.find(v => v.id === activeVolumeId) || null;
   const activeChapter = activeVolume?.chapters.find(c => c.id === activeChapterId) || null;
-
-  useEffect(() => {
-    if (activeChapter) setChapterView(activeChapter.pages.length > 0 ? 'studio' : 'manage');
-  }, [activeChapterId]);
 
   const resetToWorkspaceRoot = () => {
     setActiveWorkspaceId(null);
@@ -719,6 +715,16 @@ export default function App() {
 
       <TopBar />
 
+      {studioBuilding && (
+        <StudioBuildTransition
+          onDone={() => {
+            if (pendingChapterId) setActiveChapterId(pendingChapterId);
+            setPendingChapterId(null);
+            setStudioBuilding(false);
+          }}
+        />
+      )}
+
       <SidebarRail activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />
 
       <div className="flex flex-1 lg:pl-20">
@@ -788,37 +794,18 @@ export default function App() {
                 </div>
               )}
 
-              {/* Chapter view: page manager + studio */}
+              {/* Chapter view: straight into the Studio, even with zero pages — page upload/pairing
+                  now lives inside the Studio itself (StudioPagesPanel's "Add Pages" modal). */}
               {activeWorkspace && activeChapter && activeVolume && activeManga && (
-                chapterView === 'manage' ? (
-                  <div className="space-y-4">
-                    <div className="flex justify-end">
-                      <Button variant="ghost" size="sm" onClick={() => handleDeleteChapter(activeChapter)}>
-                        <Trash2 size={14} /> Delete Chapter
-                      </Button>
-                    </div>
-                    <AdSlot placement="studio-placeholder" />
-                    <PageManager
-                      chapterName={activeChapter.name}
-                      pages={activeChapter.pages}
-                      onChange={handleChapterPagesChange}
-                      onEnterStudio={() => setStudioBuilding(true)}
-                    />
-                    {studioBuilding && (
-                      <StudioBuildTransition onDone={() => { setChapterView('studio'); setStudioBuilding(false); }} />
-                    )}
-                  </div>
-                ) : (
-                  <Studio
-                    chapterId={activeChapter.id}
-                    chapterName={activeChapter.name}
-                    pages={activeChapter.pages}
-                    onBack={() => setChapterView('manage')}
-                    pendingTyperScript={pendingTyperScript}
-                    onConsumePendingTyperScript={() => setPendingTyperScript(null)}
-                    onPagesChange={handleChapterPagesChange}
-                  />
-                )
+                <Studio
+                  chapterId={activeChapter.id}
+                  chapterName={activeChapter.name}
+                  pages={activeChapter.pages}
+                  onBack={resetToLibraryRoot}
+                  pendingTyperScript={pendingTyperScript}
+                  onConsumePendingTyperScript={() => setPendingTyperScript(null)}
+                  onPagesChange={handleChapterPagesChange}
+                />
               )}
 
               {/* Chapter list within volume */}
@@ -839,8 +826,8 @@ export default function App() {
                     {interleaveWithAds(activeVolume.chapters, chap => (
                       <button
                         key={chap.id}
-                        onClick={() => setActiveChapterId(chap.id)}
-                        className="stagger-item group relative text-left"
+                        onClick={() => { setPendingChapterId(chap.id); setStudioBuilding(true); }}
+                        className="stagger-item group relative text-left overflow-hidden rounded-2xl"
                       >
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
@@ -910,7 +897,7 @@ export default function App() {
                   )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
                     {interleaveWithAds(activeManga.volumes, vol => (
-                      <button key={vol.id} onClick={() => setActiveVolumeId(vol.id)} className="stagger-item group relative text-left">
+                      <button key={vol.id} onClick={() => setActiveVolumeId(vol.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
                             {vol.coverUrl ? (
@@ -979,7 +966,7 @@ export default function App() {
                   )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {interleaveWithAds(mangas, manga => (
-                      <button key={manga.id} onClick={() => setActiveMangaId(manga.id)} className="stagger-item group relative text-left">
+                      <button key={manga.id} onClick={() => setActiveMangaId(manga.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
                             {manga.coverUrl ? (
@@ -1064,7 +1051,7 @@ export default function App() {
                   {!isLoadingLibrary && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
                     {interleaveWithAds(workspaces, ws => (
-                      <button key={ws.id} onClick={() => setActiveWorkspaceId(ws.id)} className="stagger-item group relative text-left">
+                      <button key={ws.id} onClick={() => setActiveWorkspaceId(ws.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
                             {ws.coverUrl ? (
@@ -1416,6 +1403,7 @@ export default function App() {
           from any tab (e.g. a Library "Upload to Telecloud" action), not only
           while the Cloud tab happens to be open. */}
       <CloudTransferModals cc={cloudClient} />
+      <AppContextMenu />
       </AuthGate>}
     </div>
   );

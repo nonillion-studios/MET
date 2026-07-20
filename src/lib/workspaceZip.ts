@@ -14,7 +14,12 @@ interface NodeInfo {
 export type ZipProgressCallback = (current: number, total: number) => void;
 
 function sanitize(name: string): string {
-  return name.replace(/[^\w\-]+/g, '_') || 'untitled';
+  // \w is ASCII-only, so a non-Latin title (Japanese/Korean/Chinese, accented
+  // Latin, etc. — common for manga/manhwa) used to have every character
+  // stripped and collapse to the 'untitled' fallback. \p{L}/\p{N} keep any
+  // script's letters/digits so the zip's folder/file names still visibly
+  // match the title shown in the app.
+  return name.trim().replace(/[^\p{L}\p{N}\-]+/gu, '_').replace(/^_+|_+$/g, '') || 'untitled';
 }
 
 /** Like `sanitize`, but preserves the file extension — `sanitize` alone turns the dot in
