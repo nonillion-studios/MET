@@ -294,14 +294,20 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     }
   }, [getCanvas, settings, selection, onStrokeEnd]);
 
-  const pickMagicWand = useCallback((x: number, y: number, combineMode: SelectionCombineMode = 'replace') => {
+  /** Returns the final selection it committed (not just void) — Magic Wand fires on a single
+   *  click with no separate drag-end moment, so a caller that needs "the shape this gesture just
+   *  produced" (Type Region's auto-bubble) can't wait for a re-render and read the `selection`
+   *  prop back, since that would still be the pre-click value in the same synchronous tick. */
+  const pickMagicWand = useCallback((x: number, y: number, combineMode: SelectionCombineMode = 'replace'): Selection | null => {
     const canvas = getCanvas() ?? getFallbackCanvas?.() ?? null;
-    if (!canvas || !onSelectionChange) return;
+    if (!canvas || !onSelectionChange) return null;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
     const mask = magicWandMask(ctx, canvas.width, canvas.height, x, y, settings.tolerance);
     const picked = mask.kind === 'mask' ? mask : NO_SELECTION;
-    onSelectionChange(combineMode === 'replace' ? picked : combineSelections(selection, picked, combineMode, canvas.width, canvas.height));
+    const final = combineMode === 'replace' ? picked : combineSelections(selection, picked, combineMode, canvas.width, canvas.height);
+    onSelectionChange(final);
+    return final;
   }, [getCanvas, getFallbackCanvas, settings.tolerance, selection, onSelectionChange]);
 
   const setCloneSource = useCallback((x: number, y: number) => {

@@ -99,12 +99,32 @@ export function TextLayerNode({
       // each node just commits its own final position — propagating the delta by hand here would
       // double-apply it and the followers would overshoot.
       onDragEnd={(e) => onUpdate({ x: e.target.x(), y: e.target.y() })}
+      // Live reflow: fires continuously while a handle is being dragged, not just once on
+      // release. Each frame absorbs the node's current scale into real width/fontSize data (the
+      // same conversion onTransformEnd does) and immediately zeroes the scale back out, so the
+      // *next* frame's `layout` is computed from the true new width rather than a Konva visual
+      // stretch — the text actually re-wraps as you drag, instead of visibly stretching until you
+      // let go. No history label (matches the other continuous-drag controls, e.g. opacity), so
+      // this doesn't spam an undo entry per frame; only the final position/size sticks.
+      onTransform={(e) => {
+        const node = e.target as Konva.Group;
+        const scaleX = node.scaleX();
+        const scaleY = node.scaleY();
+        node.scaleX(1);
+        node.scaleY(1);
+        onUpdate({
+          width: Math.max(20, layout.width * scaleX),
+          fontSize: Math.max(6, text.fontSize * scaleY),
+        });
+      }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
         // Scale must not stay baked on the node — it's converted into width/fontSize instead, so
-        // the next layout starts from a clean transform.
+        // the next layout starts from a clean transform. (Usually already 1 by this point, since
+        // onTransform above zeroes it every frame — kept here too for the rare case this fires
+        // without an intervening onTransform, e.g. a transform with no actual movement.)
         node.scaleX(1);
         node.scaleY(1);
         onUpdate({

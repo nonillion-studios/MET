@@ -352,6 +352,35 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     };
   }, []);
 
+  // Live Shift/Alt state for the Transformer's corner-drag behavior (Shift = constrain
+  // proportions, Alt = resize from center) — Konva's `keepRatio`/`centeredScaling` are plain
+  // props it re-reads on every transform-computation frame, so toggling them from React state
+  // driven by keydown/keyup takes effect mid-drag, matching Photoshop's live modifier toggling
+  // rather than requiring the modifier to be held before the drag starts.
+  const [shiftHeld, setShiftHeld] = useState(false);
+  const [altHeld, setAltHeld] = useState(false);
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Shift') setShiftHeld(true);
+      if (e.key === 'Alt') setAltHeld(true);
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.key === 'Shift') setShiftHeld(false);
+      if (e.key === 'Alt') setAltHeld(false);
+    }
+    // A window blur (e.g. Alt-tabbing away mid-drag) never delivers the matching keyup — without
+    // this, the modifier could get stuck "on" until the next unrelated keypress.
+    function onBlur() { setShiftHeld(false); setAltHeld(false); }
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
   const paintLayerIdRef = useRef<string | null>(null);
@@ -1212,7 +1241,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (activeTool === 'wand') {
       const p = imageSpacePointer();
-      if (p) paint.pickMagicWand(p.x, p.y, combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey));
+      if (p) {
+        const picked = paint.pickMagicWand(p.x, p.y, combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey));
+        // Type Region auto-bubble: a wand click has no separate drag-end, so this is its one
+        // "the selection just completed" moment — same as the drag tools' pointerup and the
+        // click-accumulate lassos' commit.
+        if (picked && hasSelection(picked) && typeRegionArmed && onCreateTypeRegion) onCreateTypeRegion(picked);
+      }
       return;
     }
     if (activeTool === 'eyedropper') {
@@ -1538,7 +1573,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const commitLassoPolygon = () => {
     if (lassoPolyPoints.length > 2 && image) {
       const shape: Selection = { kind: 'polygon', points: lassoPolyPoints };
-      onSelectionChange(combineModeRef.current === 'replace' ? shape : combineSelections(combineBaseRef.current, shape, combineModeRef.current, image.width, image.height));
+      const finalShape = combineModeRef.current === 'replace' ? shape : combineSelections(combineBaseRef.current, shape, combineModeRef.current, image.width, image.height);
+      onSelectionChange(finalShape);
+      // Type Region auto-bubble: Polygonal/Magnetic Lasso commit here (Enter or click-back-to-first-
+      // point), not on pointerup like the drag-based tools — same "completed selection becomes a
+      // text container immediately" behavior, just triggered at this gesture's own commit moment.
+      if (typeRegionArmed && onCreateTypeRegion) onCreateTypeRegion(finalShape);
     }
     setLassoPolyPoints([]);
   };
@@ -2073,10 +2113,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 handle (very plausible — the handles sit right around any selected text) started
                 *both* the manual pan and Konva's own anchor-drag (a resize) from the same
                 gesture, fighting each other and reading as the view jumping/the text warping. */}
+            {/* keepRatio/centeredScaling: this Transformer's `nodes()` are always exactly the
+                selected text layers (see the binding effect below), so these only ever govern
+                text corner-drags — Shift constrains the box (and, since fontSize scales with
+                scaleY in onTransformEnd, the type size) proportionally; Alt resizes around the
+                box's own center instead of the opposite corner. Both are plain Konva props it
+                re-reads every transform frame, so toggling the React state mid-drag (via the
+                shiftHeld/altHeld keydown/keyup effect above) takes effect immediately. */}
             <Transformer
               ref={transformerRef}
               rotateEnabled
               listening={!spaceDown}
+              keepRatio={shiftHeld}
+              centeredScaling={altHeld}
               enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']}
               boundBoxFunc={(oldBox, newBox) => (newBox.width < 20 ? oldBox : newBox)}
             />
