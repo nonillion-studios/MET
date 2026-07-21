@@ -2066,9 +2066,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           )}
 
           <Layer>
+            {/* listening={false} while Space is held: a Transformer's resize/rotate handles are
+                always internally draggable, independent of the selected node's own `draggable`
+                prop (which the text Group already gates on spaceDown — see its `draggable` prop
+                below). Without this, a Space-held pan-drag that happened to land on a visible
+                handle (very plausible — the handles sit right around any selected text) started
+                *both* the manual pan and Konva's own anchor-drag (a resize) from the same
+                gesture, fighting each other and reading as the view jumping/the text warping. */}
             <Transformer
               ref={transformerRef}
               rotateEnabled
+              listening={!spaceDown}
               enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']}
               boundBoxFunc={(oldBox, newBox) => (newBox.width < 20 ? oldBox : newBox)}
             />
@@ -2111,6 +2119,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               <Transformer
                 ref={transformerRef2}
                 rotateEnabled
+                listening={!spaceDown}
                 boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
               />
             </Layer>
