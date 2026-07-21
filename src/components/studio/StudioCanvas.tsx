@@ -6,6 +6,7 @@ import type { Page, ProcessedImage } from '../../types';
 import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type LayerSelectMode } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
+import { FloatingTextToolbar } from './FloatingTextToolbar';
 import { PathLayerNode } from './PathLayerNode';
 import { traceAnchors, applyCurvatureSmoothing } from './pathGeometry';
 import { genId } from '../../lib/id';
@@ -83,7 +84,9 @@ interface StudioCanvasProps {
   onSelectLayers?: (ids: string[]) => void;
   /** x/y are in page-image coordinates. */
   /** boxWidth given => box text of that width (click-drag); omitted => point text (click). */
-  onAddTextLayer: (x: number, y: number, boxWidth?: number) => void;
+  onAddTextLayer: (x: number, y: number, boxWidth?: number, boxHeight?: number) => void;
+  /** Built-ins + any installed custom fonts, for the floating text toolbar's font picker. */
+  fontFamilies?: string[];
   onUpdateTextLayer: (id: string, patch: Partial<TextLayerData>) => void;
   onUpdatePathLayer: (id: string, patch: Partial<PathLayerData>) => void;
   /** Commits the Pen/Curvature Pen tool's in-progress anchors as a new persisted path layer. */
@@ -205,7 +208,7 @@ export interface StudioCanvasHandle {
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
-  onTextLineSelectionChange,
+  onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
@@ -259,6 +262,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const textDragRef = useRef<{ x: number; y: number } | null>(null);
   /** Set when a text drag already created a layer, so the trailing click doesn't make a second one. */
   const textDragConsumedRef = useRef(false);
+  /** Live dashed-rectangle preview (image-space) while dragging out a new area text box — the
+   *  W×H readout reads straight off this, matching Photoshop's live-drag box readout. */
+  const [textDragPreview, setTextDragPreview] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  /** Hovering a text layer's own box body (not one of the Transformer's handles, which sit on top
+   *  and win the hit-test first) — drives the move-cursor over the container below. */
+  const [hoveringTextBody, setHoveringTextBody] = useState(false);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
   /** Selection to combine against and how, captured from Shift/Alt at the start of a marquee/lasso drag. */
   const combineBaseRef = useRef<Selection>(NO_SELECTION);
@@ -1237,6 +1246,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (activeTool === 'text') {
       const p = imageSpacePointer();
       if (p) textDragRef.current = p;
+      setTextDragPreview(null);
       return;
     }
     if (activeTool === 'wand') {
@@ -1331,6 +1341,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (panRef.current?.active) return;
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (transformingSelection) return;
+    if (activeTool === 'text' && textDragRef.current) {
+      const p = imageSpacePointer();
+      const start = textDragRef.current;
+      if (!p) return;
+      setTextDragPreview({
+        x: Math.min(start.x, p.x),
+        y: Math.min(start.y, p.y),
+        width: Math.abs(p.x - start.x),
+        height: Math.abs(p.y - start.y),
+      });
+      return;
+    }
     if (penPlacingRef.current) {
       const p = imageSpacePointer();
       const { index, start } = penPlacingRef.current;
@@ -1506,13 +1528,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (activeTool === 'text' && textDragRef.current) {
       const start = textDragRef.current;
       textDragRef.current = null;
+      setTextDragPreview(null);
       const p = imageSpacePointer();
       const width = p ? Math.abs(p.x - start.x) : 0;
+      const height = p ? Math.abs(p.y - start.y) : 0;
       // Below the threshold this was a click, not a drag — let handleStageClick
-      // make point text instead.
-      if (p && width >= 12) {
+      // make point text instead. Either dimension crossing it is enough (a drag that's mostly
+      // vertical still means "draw a box", not "place a point").
+      if (p && (width >= 12 || height >= 12)) {
         textDragConsumedRef.current = true;
-        onAddTextLayer(Math.min(start.x, p.x), Math.min(start.y, p.y), width);
+        onAddTextLayer(Math.min(start.x, p.x), Math.min(start.y, p.y), Math.max(width, 20), Math.max(height, 20));
       }
       return;
     }
@@ -1750,7 +1775,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // Hide the OS cursor while a brush-sized tool is armed — the BrushCursor ring below
   // *is* the cursor, and showing both reads as a doubled pointer.
   const showBrushCursor = !panning && BRUSH_CURSOR_TOOLS.has(activeTool) && brushCursorPos !== null;
-  const cursorClass = panning ? 'cursor-grab' : showBrushCursor ? 'cursor-none' : '';
+  // Move cursor over a text box's own body, away from its Transformer handles (which sit on top
+  // and win the hit-test first, so hoveringTextBody never fires for those) — only meaningful with
+  // the Select tool actually able to drag it right now.
+  const showMoveCursor = !panning && activeTool === 'select' && hoveringTextBody;
+  const cursorClass = panning ? 'cursor-grab' : showBrushCursor ? 'cursor-none' : showMoveCursor ? 'cursor-move' : '';
 
   /**
    * Renders a layer list (bottom-to-top) as nested Konva Groups.
@@ -1917,6 +1946,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
             onSelectLine={onTextLineSelectionChange ? (lineIndex) => onTextLineSelectionChange({ layerId: layer.id, lineIndex }) : undefined}
+            scale={scale}
+            onHoverChange={setHoveringTextBody}
           />
         )}
 
@@ -2043,6 +2074,27 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
                 stroke="#22d3ee" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />
             ))}
+            {/* Live area-text drag preview — a dashed rect that tracks the drag exactly, plus a
+                W×H readout at its bottom-left corner (Photoshop's own convention for this gesture).
+                Font size is counter-scaled by 1/scale so the label reads the same physical size on
+                screen at any zoom, matching every other zoom-compensated stroke width in this file. */}
+            {textDragPreview && (
+              <>
+                <Rect
+                  x={textDragPreview.x} y={textDragPreview.y}
+                  width={textDragPreview.width} height={textDragPreview.height}
+                  stroke="#38bdf8" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]}
+                />
+                <KonvaText
+                  text={`W: ${Math.round(textDragPreview.width)} px / H: ${Math.round(textDragPreview.height)} px`}
+                  x={textDragPreview.x}
+                  y={textDragPreview.y + textDragPreview.height + 4 / scale}
+                  fontSize={12 / scale}
+                  fill="#38bdf8"
+                  listening={false}
+                />
+              </>
+            )}
             {penDraft.length > 0 && (
               <>
                 {/* Live curved preview — real bezier via traceAnchors, the same function the
@@ -2126,6 +2178,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               listening={!spaceDown}
               keepRatio={shiftHeld}
               centeredScaling={altHeld}
+              // Dashed, not Konva's default solid border — matches the dashed-outline convention
+              // every other selection/preview overlay in this file already uses (marching ants,
+              // Type Region's shape outline, the drag-preview rect above).
+              borderDash={[4, 3]}
+              anchorCornerRadius={2}
               enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right']}
               boundBoxFunc={(oldBox, newBox) => (newBox.width < 20 ? oldBox : newBox)}
             />
@@ -2178,6 +2235,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       {editingLayer?.text && (
         <textarea
           autoFocus
+          // Right-aligned text is this app's existing proxy for "this layer is RTL" (see
+          // isArabicMajority's auto-default in Studio.tsx) — `dir="rtl"` is what actually moves the
+          // caret to the visual right and reverses arrow-key/typing direction to match. A freshly
+          // created, still-empty box defaults to center align, so it starts `ltr` and only flips
+          // once Arabic content is typed and align auto-switches, exactly mirroring that heuristic.
+          dir={editingLayer.text.align === 'right' ? 'rtl' : 'ltr'}
           value={editingLayer.text.content}
           onChange={(e) => {
             const prev = editingLayer.text!;
@@ -2224,6 +2287,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           }}
         />
       )}
+      {editingLayer?.text && (() => {
+        const t = editingLayer.text!;
+        const w = t.autoWidth ? layoutText(t).width : t.width;
+        const h = t.autoWidth ? layoutText(t).height : (t.fixedHeight ?? layoutText(t).height);
+        return (
+          <FloatingTextToolbar
+            text={t}
+            boxScreenRect={{ left: pos.x + t.x * scale, top: pos.y + t.y * scale, width: w * scale, height: h * scale }}
+            containerHeight={containerSize.height}
+            fontFamilies={fontFamilies}
+            onUpdate={(patch) => onUpdateTextLayer(editingLayer.id, patch)}
+          />
+        );
+      })()}
       {showBrushCursor && (
         <BrushCursor pos={brushCursorPos} scale={scale} settings={paintSettings} tool={activeTool} />
       )}

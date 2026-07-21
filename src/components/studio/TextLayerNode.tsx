@@ -17,6 +17,13 @@ interface TextLayerNodeProps {
   /** Click a wrapped line (while selected, not editing) to apply per-line style overrides to it —
    *  independent of the character-range selection the editing textarea drives. */
   onSelectLine?: (lineIndex: number) => void;
+  /** The Stage's current zoom — only needed to counter-scale the W×H readout's font size so it
+   *  reads as a fixed on-screen size at any zoom, matching StudioCanvas.tsx's own live drag-preview
+   *  readout. Defaults to 1 (readout scales with content) if omitted. */
+  scale?: number;
+  /** Hovering the box body (not a Transformer handle, which sits on top and wins the hit-test
+   *  first) vs. leaving it — drives the move-cursor StudioCanvas.tsx shows over the container. */
+  onHoverChange?: (hovering: boolean) => void;
 }
 
 /**
@@ -43,7 +50,7 @@ function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
  * The Group is the interactive/transform target; the run nodes are inert.
  */
 export function TextLayerNode({
-  layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate, onSelectLine,
+  layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate, onSelectLine, scale = 1, onHoverChange,
 }: TextLayerNodeProps) {
   const text = layer.text!;
   const layout = useMemo(() => layoutText(text), [text]);
@@ -100,31 +107,39 @@ export function TextLayerNode({
       // double-apply it and the followers would overshoot.
       onDragEnd={(e) => onUpdate({ x: e.target.x(), y: e.target.y() })}
       // Live reflow: fires continuously while a handle is being dragged, not just once on
-      // release. Each frame absorbs the node's current scale into real width/fontSize data (the
-      // same conversion onTransformEnd does) and immediately zeroes the scale back out, so the
-      // *next* frame's `layout` is computed from the true new width rather than a Konva visual
-      // stretch — the text actually re-wraps as you drag, instead of visibly stretching until you
-      // let go. No history label (matches the other continuous-drag controls, e.g. opacity), so
-      // this doesn't spam an undo entry per frame; only the final position/size sticks.
+      // release. Each frame absorbs the node's current scale into real width/(height or fontSize)
+      // data (the same conversion onTransformEnd does) and immediately zeroes the scale back out,
+      // so the *next* frame's `layout` is computed from the true new size rather than a Konva
+      // visual stretch — the text actually re-wraps as you drag, instead of visibly stretching
+      // until you let go. No history label (matches the other continuous-drag controls, e.g.
+      // opacity), so this doesn't spam an undo entry per frame; only the final position/size
+      // sticks.
+      //
+      // Point vs area text scale *different* things, matching Photoshop exactly: point text has
+      // no frame of its own — resizing it *is* resizing the type, so scale converts to fontSize.
+      // Area text has a real frame independent of its type size — resizing changes the box only
+      // (width from scaleX, height from scaleY, becoming/updating `fixedHeight`) and reflows the
+      // existing fontSize into it; the type size never moves, not even by 1px.
       onTransform={(e) => {
         const node = e.target as Konva.Group;
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
         node.scaleX(1);
         node.scaleY(1);
-        onUpdate({
-          width: Math.max(20, layout.width * scaleX),
-          fontSize: Math.max(6, text.fontSize * scaleY),
-        });
+        onUpdate(
+          text.autoWidth
+            ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
+            : { width: Math.max(20, layout.width * scaleX), fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+        );
       }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
-        // Scale must not stay baked on the node — it's converted into width/fontSize instead, so
-        // the next layout starts from a clean transform. (Usually already 1 by this point, since
-        // onTransform above zeroes it every frame — kept here too for the rare case this fires
-        // without an intervening onTransform, e.g. a transform with no actual movement.)
+        // Scale must not stay baked on the node — it's converted into width/(height or fontSize)
+        // instead, so the next layout starts from a clean transform. (Usually already 1 by this
+        // point, since onTransform above zeroes it every frame — kept here too for the rare case
+        // this fires without an intervening onTransform, e.g. a transform with no actual movement.)
         node.scaleX(1);
         node.scaleY(1);
         onUpdate({
@@ -132,7 +147,9 @@ export function TextLayerNode({
           y: node.y(),
           rotation: node.rotation(),
           width: Math.max(20, layout.width * scaleX),
-          fontSize: Math.max(6, text.fontSize * scaleY),
+          ...(text.autoWidth
+            ? { fontSize: Math.max(6, text.fontSize * scaleY) }
+            : { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }),
         });
       }}
     >
@@ -140,7 +157,14 @@ export function TextLayerNode({
           the Transformer frames the text box rather than the glyph extents. A `transparent` fill is
           still drawn to the hit canvas (Konva substitutes its own colour key there), so this is
           invisible but clickable. */}
-      <Rect name={TEXT_HIT_NAME} width={Math.max(layout.width, 4)} height={Math.max(layout.height, 4)} fill="transparent" />
+      <Rect
+        name={TEXT_HIT_NAME}
+        width={Math.max(layout.width, 4)}
+        height={Math.max(layout.height, 4)}
+        fill="transparent"
+        onMouseEnter={() => onHoverChange?.(true)}
+        onMouseLeave={() => onHoverChange?.(false)}
+      />
 
       {layout.runs.map((run, i) => (
         <KonvaText
@@ -197,14 +221,31 @@ export function TextLayerNode({
       ))}
 
       {/* Overflow indicator for a fixed-height area frame — laid-out content exceeds it, so some
-          lines are being clipped rather than silently lost off-frame. */}
+          lines are being clipped rather than silently lost off-frame. Bottom-center, matching
+          Photoshop's own placement for this glyph. */}
       {layout.overflowing && (
         <KonvaText
           text="⊞"
-          x={Math.max(layout.width, 4) - 16}
+          x={Math.max(layout.width, 4) / 2 - 7}
           y={(text.fixedHeight ?? layout.height) - 16}
           fontSize={14}
           fill="#f59e0b"
+          listening={false}
+        />
+      )}
+
+      {/* W×H readout while selected (not mid-edit, not mid-drag — the live drag has its own
+          preview in StudioCanvas.tsx). This Group already lives inside the zoomed/panned Stage, so
+          its position needs no adjustment — but the *font size* is in the same image-space units
+          as everything else here, so it would visibly grow/shrink with zoom unless counter-scaled
+          by 1/scale, matching the drag-preview readout's own convention. */}
+      {selected && !editing && (
+        <KonvaText
+          text={`W: ${Math.round(layout.width)} px / H: ${Math.round(text.fixedHeight ?? layout.height)} px`}
+          x={0}
+          y={(text.fixedHeight ?? layout.height) + 6 / scale}
+          fontSize={11 / scale}
+          fill="#38bdf8"
           listening={false}
         />
       )}

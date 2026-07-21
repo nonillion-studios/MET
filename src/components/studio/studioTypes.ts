@@ -385,10 +385,13 @@ export function createLayerMask(): LayerMask {
 }
 
 /**
- * @param boxWidth When given, creates *box* text of that width (click-drag);
+ * @param boxWidth When given, creates *box* (area) text of that width (click-drag);
  *                 omitted creates *point* text that grows with its content (click).
+ * @param boxHeight When given alongside boxWidth, becomes the area frame's `fixedHeight` — the
+ *                  exact Photoshop area-text convention: the rectangle you drag *is* the frame,
+ *                  height included, not just a starting width that then auto-grows.
  */
-export function createTextLayer(x: number, y: number, boxWidth?: number): StudioLayer {
+export function createTextLayer(x: number, y: number, boxWidth?: number, boxHeight?: number): StudioLayer {
   layerCounter += 1;
   return {
     id: `layer-${Date.now()}-${layerCounter}`,
@@ -404,6 +407,7 @@ export function createTextLayer(x: number, y: number, boxWidth?: number): Studio
       y,
       width: boxWidth ?? 240,
       autoWidth: boxWidth === undefined,
+      ...(boxWidth !== undefined && boxHeight !== undefined ? { fixedHeight: boxHeight } : {}),
       letterSpacing: 0,
       shadow: { ...DEFAULT_TEXT_SHADOW },
       gradient: { ...DEFAULT_TEXT_GRADIENT },

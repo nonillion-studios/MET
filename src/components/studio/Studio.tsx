@@ -970,7 +970,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
-  function handleAddTextLayer(x: number, y: number, boxWidth?: number) {
+  function handleAddTextLayer(x: number, y: number, boxWidth?: number, boxHeight?: number) {
     // TypeR auto-detect-bubble: a plain click (not a drag-to-size box) while armed flood-fills
     // from the click point to find the speech bubble there, and sizes/centers the new layer to it
     // instead of dropping it at the raw click point — same centering math as handlePlaceAllBubbles.
@@ -986,7 +986,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       }
     }
 
-    const layer = createTextLayer(x, y, boxWidth);
+    const layer = createTextLayer(x, y, boxWidth, boxHeight);
 
     if (typerArmed && typerLines[typerIndex]) {
       const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
@@ -1420,6 +1420,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSelectLayer={selectLayer}
       onSelectLayers={selectLayers}
       onAddTextLayer={handleAddTextLayer}
+      fontFamilies={allFontFamilies}
       onUpdateTextLayer={handleUpdateTextLayer}
       onUpdatePathLayer={handleUpdatePathLayer}
       onAddPathLayer={handleAddPathLayer}
