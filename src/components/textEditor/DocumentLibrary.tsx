@@ -102,7 +102,7 @@ export function DocumentLibrary({ docs, activeDocId, onOpen, onNew, onRename, on
   }
 
   return (
-    <div className="w-64 shrink-0 border-r border-hairline flex flex-col h-full min-h-0">
+    <div className="w-60 shrink-0 border-r border-hairline flex flex-col h-full min-h-0">
       <div className="flex items-center gap-1 px-2 h-10 shrink-0 border-b border-hairline">
         <IconButton size="sm" aria-label="New document" onClick={onNew} className="!bg-transparent">
           <Plus size={14} />
