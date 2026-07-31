@@ -2219,6 +2219,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onExitTransformSelection={() => setTransformingSelection(false)}
       quickMaskActive={quickMaskActive}
       activeMaskLayerId={activeMaskLayerId}
+      onMakeSelectionFromPath={handleMakeSelectionFromPath}
+      onStrokeActivePath={handleStrokeActivePath}
+      onFillActivePath={handleFillActivePath}
+      canBakePath={canBakePath}
+      onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
     />
   );
 

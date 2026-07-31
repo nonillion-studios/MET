@@ -26,6 +26,8 @@ import {
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
+import { Menu } from './menu/Menu';
+import type { MenuItemDef } from './menu/menuDefinitions';
 import { snapSegmentToEdges } from './paint/magneticLasso';
 import { ToolCursorOverlay } from './paint/ToolCursorOverlay';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
@@ -148,6 +150,20 @@ interface StudioCanvasProps {
   /** The layer whose *mask* (not its own content) is the current paint target, or null when
    *  painting normally. Set by clicking a mask's thumbnail in the Layers panel. */
   activeMaskLayerId?: string | null;
+  /** Right-click on a closed path's own "Make Selection" — same effect as Select > Make Selection
+   *  from Path, just reachable from a right-click on the path itself. Undefined (not just disabled)
+   *  for an open path, since an open path has no interior to select — see canBeClipBase's own
+   *  "honest subset" convention for a similar type-gated capability. */
+  onMakeSelectionFromPath?: () => void;
+  /** Right-click "Fill Path"/"Stroke Path" — bakes the active path's geometry onto the topmost
+   *  raster layer, same as the Layer menu's own Stroke/Fill Path items. */
+  onStrokeActivePath?: () => void;
+  onFillActivePath?: () => void;
+  /** Whether Stroke/Fill Path have anywhere to bake onto (a raster layer exists) — both menu items
+   *  disable together rather than silently no-opping. */
+  canBakePath?: boolean;
+  /** Right-click "Delete Path" — removes the active path layer. */
+  onDeleteActivePath?: () => void;
 }
 
 export interface StudioCanvasHandle {
@@ -237,6 +253,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
+  onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -382,6 +399,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const penPlacingRef = useRef<{ index: number; start: { x: number; y: number } } | null>(null);
   const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
+  /** Right-click on a path layer — Make Selection/Fill/Stroke/Delete Path, positioned at the click's
+   *  viewport coordinates (an HTML overlay above the stage, like every other popover in this file). */
+  const [pathContextMenu, setPathContextMenu] = useState<{ layerId: string; x: number; y: number } | null>(null);
+  const pathContextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pathContextMenu) return;
+    function onPointerDown(e: PointerEvent) {
+      if (pathContextMenuRef.current && !pathContextMenuRef.current.contains(e.target as Node)) setPathContextMenu(null);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPathContextMenu(null);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [pathContextMenu]);
 
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
   const [spaceDown, setSpaceDown] = useState(false);
@@ -2147,6 +2184,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             directSelect={activeTool === 'direct-select' && !layer.locked}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onUpdate={(patch) => onUpdatePathLayer(layer.id, patch)}
+            onContextMenu={(clientX, clientY) => {
+              const rect = containerRef.current?.getBoundingClientRect();
+              setPathContextMenu({ layerId: layer.id, x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) });
+            }}
           />
         )}
 
@@ -2563,6 +2604,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           cloneSource={cloneSourceContainerPos}
         />
       )}
+      {pathContextMenu && (() => {
+        const pathLayer = findLayer(layers, pathContextMenu.layerId);
+        const closed = pathLayer?.type === 'path' && !!pathLayer.path?.closed;
+        const items: MenuItemDef[] = [
+          // Open paths can be stroked/filled but have no interior to select — the item is absent
+          // rather than a permanently-disabled dead click, matching this codebase's real-vs-grayed
+          // menu convention (grayed is reserved for "no backing subsystem", not "wrong shape now").
+          ...(closed ? [{ id: 'make-selection', label: 'Make Selection', action: onMakeSelectionFromPath }] : []),
+          { id: 'fill-path', label: 'Fill Path', disabled: !canBakePath, action: onFillActivePath },
+          { id: 'stroke-path', label: 'Stroke Path', disabled: !canBakePath, action: onStrokeActivePath },
+          { id: 'sep', label: '', separator: true },
+          { id: 'delete-path', label: 'Delete Path', action: onDeleteActivePath },
+        ];
+        return (
+          <div ref={pathContextMenuRef} className="absolute z-50" style={{ left: pathContextMenu.x, top: pathContextMenu.y }}>
+            <Menu items={items} onItemClick={(action) => { action?.(); setPathContextMenu(null); }} />
+          </div>
+        );
+      })()}
       {!page && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
           <ImageIcon size={28} className="text-white/25" strokeWidth={1.5} />
