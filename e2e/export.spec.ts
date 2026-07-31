@@ -16,6 +16,12 @@ const near = (a: number, b: number) => Math.abs(a - b) <= TOLERANCE;
 const row = (page: import('@playwright/test').Page, name: string) =>
   page.locator('button').filter({ has: page.getByText(name, { exact: true }) }).first();
 
+/** The Layers panel's own per-row Opacity slider, disambiguated from the Brushes panel's identically-
+ *  labeled one (Brushes is visible-by-default, not just collapsed-and-absent) via the `studio-
+ *  focusable` class the Brushes control carries and the Layers one doesn't. */
+const opacitySlider = (page: import('@playwright/test').Page) =>
+  page.locator('label').filter({ hasText: 'Opacity' }).locator('input[type=range]:not(.studio-focusable)');
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (e) => { throw new Error(`Uncaught page error: ${e.message}`); });
   await openStudio(page);
@@ -78,7 +84,7 @@ test('a group exports the same as it renders', async ({ page }) => {
   await row(page, 'Layer 1').click();
   await page.getByRole('button', { name: 'Group layers' }).click();
   await row(page, 'Group').click();
-  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
+  await opacitySlider(page).fill('50');
   await page.waitForTimeout(600);
 
   // An isolated group (opacity < 1) must isolate identically on both sides. This is the assertion

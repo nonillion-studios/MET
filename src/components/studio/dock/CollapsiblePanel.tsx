@@ -33,6 +33,14 @@ interface CollapsiblePanelProps {
  *  fires. Debouncing the single-click action lets a fast second click cancel it outright. */
 const DOUBLE_CLICK_WINDOW_MS = 220;
 
+/** A non-grow panel's expanded content used to animate open to its full natural `scrollHeight` with
+ *  no cap, which is what made only the *whole column* scrollable — a tall panel (TypeR's line list,
+ *  a long layer's worth of Adjustment controls) just pushed everything below it down instead of
+ *  scrolling on its own. Capping the max-height target and switching to overflow-y-auto gives every
+ *  panel its own scroll once its content exceeds this, while shorter panels are unaffected (auto
+ *  overflow only shows a scrollbar when content actually exceeds the box). */
+const MAX_PANEL_HEIGHT = 320;
+
 export function CollapsiblePanel({
   id, title, children, collapsed, onToggleCollapsed, maximized, onToggleMaximized, grow, onMenu,
   draggedOver, onDragStart, onDragEnd, onDragOverHeader, onDropOnHeader,
@@ -128,7 +136,7 @@ export function CollapsiblePanel({
     return (
       <div className="flex-1 min-h-[220px] flex flex-col border-b border-hairline">
         {header}
-        <div className="flex-1 min-h-0">{children}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
       </div>
     );
   }
@@ -140,8 +148,8 @@ export function CollapsiblePanel({
         <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
       ) : (
         <div
-          style={{ maxHeight: collapsed ? 0 : contentHeight, transition: 'max-height 200ms ease' }}
-          className="overflow-hidden"
+          style={{ maxHeight: collapsed ? 0 : Math.min(contentHeight, MAX_PANEL_HEIGHT), transition: 'max-height 200ms ease' }}
+          className="overflow-y-auto"
         >
           <div ref={contentRef}>{children}</div>
         </div>

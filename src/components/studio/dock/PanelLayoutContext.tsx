@@ -13,9 +13,11 @@ const DEFAULT_COLLAPSED: Record<string, boolean> = {
   brushes: true, fonts: true, adjustment: true, text: false, history: false,
 };
 
-// Brushes/Fonts/Adjustments (and now Magic Erase) start absent (not just collapsed) so Window >
-// "<Panel>" reads as a real on/off toggle — "appears… disappears" — rather than merely expanding
-// something already present.
+// Fonts/Adjustments (and Magic Erase) start absent (not just collapsed) so Window > "<Panel>"
+// reads as a real on/off toggle — "appears… disappears" — rather than merely expanding something
+// already present. Brushes is the one exception: it's visible-but-collapsed by default (paired
+// with DEFAULT_COLLAPSED's brushes:true above), not hidden — a core painting panel a manga-cleanup
+// workflow reaches for constantly, unlike the other three, which stay opt-in.
 //
 // Magic Erase was missing from DEFAULT_ORDER entirely until now (not just DEFAULT_VISIBLE) — since
 // PanelStack's visibleOrder is `layout.order.filter(...)`, an id absent from `order` can never
@@ -25,7 +27,7 @@ const DEFAULT_COLLAPSED: Record<string, boolean> = {
 // this array itself listed it.
 const DEFAULT_VISIBLE: Record<string, boolean> = {
   color: true, typer: true, magicerase: false, translation: true, layers: true,
-  brushes: false, fonts: false, adjustment: false, text: false, history: false,
+  brushes: true, fonts: false, adjustment: false, text: false, history: false,
 };
 
 interface PanelLayoutState {
