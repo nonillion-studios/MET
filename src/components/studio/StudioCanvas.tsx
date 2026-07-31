@@ -25,6 +25,7 @@ import {
   type Selection, type SelectionCombineMode,
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
+import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
 import { snapSegmentToEdges } from './paint/magneticLasso';
 import { ToolCursorOverlay } from './paint/ToolCursorOverlay';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
@@ -253,9 +254,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * blend now composites against the background and everything under it, matching the exporter.
    */
   const layerNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  /** Clone/Heal source + Eyedropper sampling composite, cached per `SampleMode` and rebuilt lazily
+   *  (not eagerly on every pixel change) — see `getSampleComposite` below. */
+  const sampleCompositeCacheRef = useRef<Partial<Record<SampleMode, HTMLCanvasElement>>>({});
+  const sampleCompositeDirtyRef = useRef(true);
   /** Groups have no batchDraw of their own — only Layer does — so redraws go via the owning Layer. */
   const redrawLayerNode = useCallback((layerId: string | null | undefined) => {
     layerNodeRefs.current[layerId ?? '']?.getLayer()?.batchDraw();
+    // Every raster mutation anywhere in this file (strokes, filters, seeding, liquify, mask
+    // painting) already calls this right after touching pixels — the one universal chokepoint to
+    // invalidate the sampling composite cache from, instead of chasing every individual call site.
+    sampleCompositeDirtyRef.current = true;
   }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   /** A layer's mask and its own raster content are two separate registry entries, keyed by the
@@ -547,6 +556,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     liquifySnapshots,
     getFallbackCanvas: () => sampleCanvasRef.current,
     onCloneSourceSet: setCloneSourceImg,
+    getSampleCanvas: () => getSampleComposite(paintSettings.sampleMode),
   });
 
   useImperativeHandle(ref, () => ({
@@ -886,7 +896,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [penDraft, lassoPolyPoints, activeTool, onCommitCrop, transformingSelection, transformBox, selection, onSelectionChange]);
 
-  // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
+  // Magic Wand's fallback and Magnetic Lasso's edge-snapping both deliberately want the flat
+  // background only, never other layers mixed in — kept separate from getSampleComposite below.
   useEffect(() => {
     if (!image) { sampleCanvasRef.current = null; return; }
     const canvas = document.createElement('canvas');
@@ -895,6 +906,39 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     canvas.getContext('2d')!.drawImage(image, 0, 0);
     sampleCanvasRef.current = canvas;
   }, [image]);
+
+  // Layer structure changes (add/remove/reorder/opacity/blend/visibility/mask-enable, or switching
+  // page) invalidate every cached sampling mode; redrawLayerNode (called after every pixel-level
+  // mutation elsewhere in this file) invalidates it too. The next getSampleComposite call after
+  // either rebuilds lazily, only for the mode actually requested.
+  useEffect(() => {
+    sampleCompositeDirtyRef.current = true;
+  }, [layers, image]);
+
+  /** Clone/Heal source + Eyedropper pick read through this — a synchronous, live-canvas composite
+   *  (see `sampleComposite.ts`) rather than the async data-URL export pipeline, since both call
+   *  sites need an answer within the same pointer event, not after an await. */
+  const getSampleComposite = useCallback((mode: SampleMode): HTMLCanvasElement | null => {
+    const img = imageRef.current;
+    if (!img) return null;
+    if (sampleCompositeDirtyRef.current) {
+      sampleCompositeCacheRef.current = {};
+      sampleCompositeDirtyRef.current = false;
+    }
+    let canvas = sampleCompositeCacheRef.current[mode];
+    if (!canvas) {
+      canvas = compositeLayersForSampling(mode, activeLayerId, {
+        layers: layersRef.current,
+        background: img,
+        width: img.width,
+        height: img.height,
+        getRaster: (layerId) => paintCanvasRegistry.current[layerId] ?? null,
+        getMask: (maskId) => maskCanvasRegistry.current[maskId] ?? null,
+      });
+      sampleCompositeCacheRef.current[mode] = canvas;
+    }
+    return canvas;
+  }, [activeLayerId]);
 
   // Track container size responsively.
   useEffect(() => {
@@ -1361,7 +1405,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (activeTool === 'eyedropper') {
       const p = imageSpacePointer();
-      const canvas = sampleCanvasRef.current;
+      const canvas = getSampleComposite(paintSettings.sampleMode);
       if (!p || !canvas || !onEyedropperPick) return;
       const x = Math.max(0, Math.min(canvas.width - 1, Math.round(p.x)));
       const y = Math.max(0, Math.min(canvas.height - 1, Math.round(p.y)));
@@ -1452,7 +1496,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // handles this move, since neither tool participates in PAINT_TOOLS or any of those branches.
     if (activeTool === 'eyedropper') {
       const p = imageSpacePointer();
-      const canvas = sampleCanvasRef.current;
+      const canvas = getSampleComposite(paintSettings.sampleMode);
       if (p && canvas) {
         const x = Math.max(0, Math.min(canvas.width - 1, Math.round(p.x)));
         const y = Math.max(0, Math.min(canvas.height - 1, Math.round(p.y)));

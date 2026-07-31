@@ -2,6 +2,7 @@ import { clipToSelection, magicWandMask, type Selection } from './selection';
 import { getBrushTip, type BrushShape } from './brushTip';
 import { traceAnchors } from '../pathGeometry';
 import type { PathLayerData } from '../studioTypes';
+import type { SampleMode } from '../../../lib/sampleComposite';
 
 export type PaintTool =
   | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone' | 'heal'
@@ -38,6 +39,9 @@ export interface PaintSettings {
   /** Whether stylus pressure drives size / opacity (PointerEvent.pressure). */
   pressureSize: boolean;
   pressureOpacity: boolean;
+  /** Clone/Heal source and Eyedropper pick: which layers contribute to what gets sampled. See
+   *  `sampleComposite.ts`'s `compositeLayersForSampling` for what each option actually composites. */
+  sampleMode: SampleMode;
 }
 
 function hexToRgb(hex: string): [number, number, number] {

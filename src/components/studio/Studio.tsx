@@ -24,6 +24,7 @@ import {
 } from './layerTree';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
+import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
@@ -118,11 +119,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
+  /** Clone/Heal source + Eyedropper pick: which layers they read from. Shared across both tools,
+   *  matching Photoshop's own single "Sample" setting. */
+  const [sampleMode, setSampleMode] = useState<SampleMode>('all');
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
-    scatter, smoothing, pressureSize, pressureOpacity,
+    scatter, smoothing, pressureSize, pressureOpacity, sampleMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
 
@@ -2292,6 +2296,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onScatterChange={setScatter}
           smoothing={smoothing}
           onSmoothingChange={setSmoothing}
+          sampleMode={sampleMode}
+          onSampleModeChange={setSampleMode}
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}
