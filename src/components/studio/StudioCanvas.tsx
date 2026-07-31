@@ -164,6 +164,24 @@ interface StudioCanvasProps {
   canBakePath?: boolean;
   /** Right-click "Delete Path" — removes the active path layer. */
   onDeleteActivePath?: () => void;
+  /** TypeR armed placement: while dragging out a text box, the current script line previews inside
+   *  it (semi-transparent, in its real font/color/size) — a pure rendering overlay, never touching
+   *  the contentEditable-equivalent text-edit state or any paint canvas. Undefined/false when TypeR
+   *  isn't armed, in which case the drag preview stays exactly as before (dashed box + W×H only). */
+  typerArmed?: boolean;
+  typerPreviewLine?: TyperPreviewLine | null;
+}
+
+/** The subset of a resolved TypeR line's style the drag preview needs to render — see
+ *  `typerPreviewLine` above. Deliberately not the full `TyperStyle`/`ParsedTyperLine` shape (stroke,
+ *  page hints, etc.): those don't affect what a quick in-progress preview needs to show. */
+export interface TyperPreviewLine {
+  content: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
 }
 
 export interface StudioCanvasHandle {
@@ -254,6 +272,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
+  typerArmed = false, typerPreviewLine = null,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -2348,6 +2367,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   width={textDragPreview.width} height={textDragPreview.height}
                   stroke="#38bdf8" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]}
                 />
+                {/* TypeR armed: the current script line previews inside the box being drawn, at
+                    partial opacity, in its own real font/color/size — becomes the actual (fully
+                    opaque) layer content the moment the drag commits (handleAddTextLayer already
+                    reads the same typerLines[typerIndex] entry). Pure Konva rendering, `listening=
+                    {false}` — never touches the contentEditable-equivalent text-edit state or any
+                    paint canvas. */}
+                {typerArmed && typerPreviewLine && (
+                  <KonvaText
+                    text={typerPreviewLine.content}
+                    x={textDragPreview.x}
+                    y={textDragPreview.y}
+                    width={textDragPreview.width}
+                    height={textDragPreview.height}
+                    wrap="word"
+                    fontFamily={typerPreviewLine.fontFamily}
+                    fontSize={typerPreviewLine.fontSize}
+                    fontStyle={[typerPreviewLine.bold ? 'bold' : '', typerPreviewLine.italic ? 'italic' : ''].filter(Boolean).join(' ') || 'normal'}
+                    fill={typerPreviewLine.color}
+                    opacity={0.7}
+                    listening={false}
+                  />
+                )}
                 <KonvaText
                   text={`W: ${Math.round(textDragPreview.width)} px / H: ${Math.round(textDragPreview.height)} px`}
                   x={textDragPreview.x}

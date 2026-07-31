@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cn, IconButton, Modal } from '../ui';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection } from './StudioCanvas';
+import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection, type TyperPreviewLine } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
 import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
@@ -1373,6 +1373,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
+  /** The style bits StudioCanvas's drag-box preview needs — same resolved entry (override precedence
+   *  already applied by parseTyperScript) that handleAddTextLayer below reads at actual placement
+   *  time, so the preview can never show something different from what committing will produce. */
+  const typerPreviewLine: TyperPreviewLine | null = typerArmed && typerLines[typerIndex] ? (() => {
+    const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
+    return {
+      content, fontFamily: style.fontFamily, fontSize: style.fontSize, color: style.color,
+      bold: boldOverride ?? style.bold, italic: italicOverride ?? style.italic,
+    };
+  })() : null;
+
   function handleAddTextLayer(x: number, y: number, boxWidth?: number, boxHeight?: number) {
     // TypeR auto-detect-bubble: a plain click (not a drag-to-size box) while armed flood-fills
     // from the click point to find the speech bubble there, and sizes/centers the new layer to it
@@ -2224,6 +2235,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onFillActivePath={handleFillActivePath}
       canBakePath={canBakePath}
       onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
+      typerArmed={typerArmed}
+      typerPreviewLine={typerPreviewLine}
     />
   );
 

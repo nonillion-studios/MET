@@ -10,7 +10,11 @@ import { openStudio, navigateToStudio } from './studioFixture';
  */
 
 async function openTyperTab(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: 'TypeR' }).or(page.getByText('TypeR', { exact: true })).first().click();
+  // TypeR is expanded by default in the current always-visible panel-stack architecture — clicking
+  // its header unconditionally (a leftover from the old tab-based dock) toggles collapse instead of
+  // being the safe "switch to it" no-op this was written for. Only expand if actually collapsed.
+  const expandButton = page.getByRole('button', { name: 'Expand TypeR panel' });
+  if (await expandButton.isVisible().catch(() => false)) await expandButton.click();
 }
 
 test.beforeEach(async ({ page }) => {
