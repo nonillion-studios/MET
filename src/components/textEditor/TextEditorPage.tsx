@@ -80,6 +80,9 @@ import type { Workspace } from '../../types';
 const PAGE_WIDTH = 794; // A4 at 96dpi
 const PAGE_HEIGHT = 1123;
 const AUTOSAVE_MS = 1000;
+const SPLIT_RATIO_KEY = 'text_editor_split_ratio';
+const MIN_SPLIT_RATIO = 0.3;
+const MAX_SPLIT_RATIO = 0.8;
 
 function newDoc(title = 'Untitled'): TextEditorDoc {
   return { id: genId('tedoc'), title, dir: 'ltr', pages: [''], updatedAt: Date.now(), status: defaultDocStatus() };
@@ -169,6 +172,12 @@ interface TextEditorPageProps {
 
 export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter }: TextEditorPageProps) {
   const [splitScreenOpen, setSplitScreenOpen] = useState(false);
+  // The ratio itself persists across sessions; whether split screen is *open* deliberately does
+  // not — a fresh session always starts full-width, matching the spec's own "not persisted" rule.
+  const [splitRatio, setSplitRatio] = useState(() => {
+    const stored = Number(localStorage.getItem(SPLIT_RATIO_KEY));
+    return Number.isFinite(stored) && stored >= MIN_SPLIT_RATIO && stored <= MAX_SPLIT_RATIO ? stored : 0.5;
+  });
   // The app-wide theme (same one TopBar/SettingsPanel toggle) — not a second, editor-local theme
   // system. Pages themselves stay bg-white/text-black regardless (see the page div's own
   // className below), since they represent paper, not chrome.
@@ -217,6 +226,45 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         swalToast({ icon: 'error', title: "Couldn't enter fullscreen" });
       });
     }
+  }
+
+  // Escape closes split screen — same dismiss convention as every other overlay/panel in this file.
+  useEffect(() => {
+    if (!splitScreenOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSplitScreenOpen(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [splitScreenOpen]);
+
+  /** Drag-to-resize the split divider. Uses real pointer capture (not just window-level move/up
+   *  listeners) so a fast drag that momentarily leaves the 4px divider under the cursor doesn't
+   *  drop the gesture — the pointer stays "captured" by the divider element regardless of what's
+   *  actually under the cursor mid-drag. */
+  function handleSplitDividerPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    const divider = e.currentTarget;
+    const container = divider.parentElement;
+    if (!container) return;
+    divider.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startRatio = splitRatio;
+    const width = container.getBoundingClientRect().width;
+    function onMove(ev: PointerEvent) {
+      const next = Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, startRatio + (ev.clientX - startX) / width));
+      setSplitRatio(next);
+    }
+    function onUp(ev: PointerEvent) {
+      divider.releasePointerCapture(ev.pointerId);
+      divider.removeEventListener('pointermove', onMove);
+      divider.removeEventListener('pointerup', onUp);
+      setSplitRatio(current => {
+        try { localStorage.setItem(SPLIT_RATIO_KEY, String(current)); } catch { /* not fatal */ }
+        return current;
+      });
+    }
+    divider.addEventListener('pointermove', onMove);
+    divider.addEventListener('pointerup', onUp);
   }
 
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -2057,8 +2105,14 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         onDelete={closeDoc}
         onToggleStatus={toggleDocStatus}
       />
-      <div ref={rootRef} className="flex flex-col flex-1 min-w-0 h-full min-h-0">
-    <div className="flex flex-col h-full min-h-0">
+      {/* A real flex row, not a portal/popup: split screen is [editor column][divider][preview
+          column] as ordinary flex siblings — the manga preview is always on the right and never
+          overlaps, since it's laid out, not floated. This whole subtree (including the preview and
+          its controls) is inside rootRef, so entering fullscreen with split screen active keeps
+          everything visible and correctly proportioned; only the document-library sidebar sits
+          outside it (fullscreen hides chrome, matching this app's own convention elsewhere). */}
+      <div ref={rootRef} className="flex flex-1 min-w-0 h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 min-w-0" style={{ width: splitScreenOpen ? `${splitRatio * 100}%` : '100%' }}>
       <TextEditorMenuBar actions={menuActions} />
 
       {/* Document tabs */}
@@ -2315,8 +2369,53 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
           </div>
         )}
       </div>
+
+      {/* Status bar — part of the editor column (spec: "the status bar at the bottom" sits inside
+          the left side), not spanning both columns, so it moves with the ratio like everything
+          else in this column rather than sitting below the whole split. */}
+      {activeDoc && (
+        <div className="flex items-center gap-3 px-3 h-7 shrink-0 border-t border-hairline text-[11px] text-ink-faint overflow-x-auto">
+          <span className="whitespace-nowrap">
+            Page {Math.min(activePageIndex, activeDoc.pages.length - 1) + 1} of {activeDoc.pages.length}
+          </span>
+          <span className="whitespace-nowrap">{wordCount} word{wordCount === 1 ? '' : 's'}</span>
+          <span className="whitespace-nowrap">{charCount.toLocaleString()} characters / {charCountNoSpaces.toLocaleString()} without spaces</span>
+          <span className="whitespace-nowrap flex items-center gap-1"><Clock size={11} /> ~{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
+          <button type="button" onClick={toggleDir} className="whitespace-nowrap hover:text-ink transition-colors" title="Toggle text direction">
+            {activeDoc.dir === 'rtl' ? 'AR-RTL' : 'EN-LTR'}
+          </button>
+          <span className="flex-1" />
+          <div className="flex items-center gap-1 shrink-0">
+            <IconButton size="sm" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
+              <Minus size={11} />
+            </IconButton>
+            <button type="button" onClick={() => setZoom(1)} className="w-10 text-center hover:text-ink transition-colors" title="Reset zoom">
+              {Math.round(zoom * 100)}%
+            </button>
+            <IconButton size="sm" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(2, Math.round((z + 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
+              <Plus size={11} />
+            </IconButton>
+          </div>
+        </div>
+      )}
       </div>
-      {splitScreenOpen && <SplitScreenPreview workspaces={workspaces} onClose={() => setSplitScreenOpen(false)} />}
+      {splitScreenOpen && (
+        <>
+          <div
+            onPointerDown={handleSplitDividerPointerDown}
+            role="separator"
+            aria-label="Resize split screen"
+            aria-orientation="vertical"
+            className="w-1 shrink-0 cursor-col-resize bg-hairline hover:bg-accent transition-colors touch-none"
+          />
+          <SplitScreenPreview
+            workspaces={workspaces}
+            activeChapterId={activeChapterId}
+            studioActivePageId={studioActivePageId}
+            onClose={() => setSplitScreenOpen(false)}
+          />
+        </>
+      )}
       {activeTable && (
         <TableToolbar
           table={activeTable}
@@ -2389,33 +2488,6 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
           <button className="block w-full text-left text-[12px] px-3 py-1.5 hover:bg-ink/10 text-ink whitespace-nowrap" onClick={() => applyMark('reviewed')}>
             🟣 Reviewed
           </button>
-        </div>
-      )}
-
-      {/* Status bar */}
-      {activeDoc && (
-        <div className="flex items-center gap-3 px-3 h-7 shrink-0 border-t border-hairline text-[11px] text-ink-faint overflow-x-auto">
-          <span className="whitespace-nowrap">
-            Page {Math.min(activePageIndex, activeDoc.pages.length - 1) + 1} of {activeDoc.pages.length}
-          </span>
-          <span className="whitespace-nowrap">{wordCount} word{wordCount === 1 ? '' : 's'}</span>
-          <span className="whitespace-nowrap">{charCount.toLocaleString()} characters / {charCountNoSpaces.toLocaleString()} without spaces</span>
-          <span className="whitespace-nowrap flex items-center gap-1"><Clock size={11} /> ~{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
-          <button type="button" onClick={toggleDir} className="whitespace-nowrap hover:text-ink transition-colors" title="Toggle text direction">
-            {activeDoc.dir === 'rtl' ? 'AR-RTL' : 'EN-LTR'}
-          </button>
-          <span className="flex-1" />
-          <div className="flex items-center gap-1 shrink-0">
-            <IconButton size="sm" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
-              <Minus size={11} />
-            </IconButton>
-            <button type="button" onClick={() => setZoom(1)} className="w-10 text-center hover:text-ink transition-colors" title="Reset zoom">
-              {Math.round(zoom * 100)}%
-            </button>
-            <IconButton size="sm" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(2, Math.round((z + 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
-              <Plus size={11} />
-            </IconButton>
-          </div>
         </div>
       )}
 
