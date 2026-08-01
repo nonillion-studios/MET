@@ -897,6 +897,7 @@ export default function App() {
                 onSendToTyper={handleSendToTyper}
                 pendingChapter={pendingTextEditorChapter}
                 onConsumePendingChapter={() => setPendingTextEditorChapter(null)}
+                onOpenStudio={() => setActiveNavigationTab('library')}
               />
             </div>
           )}

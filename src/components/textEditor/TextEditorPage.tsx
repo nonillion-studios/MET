@@ -6,7 +6,7 @@ import {
   Pencil, Eye,
   Heading3, Heading4, AlignJustify, IndentIncrease, IndentDecrease,
   Strikethrough, Undo2, Redo2, Languages, ChevronUp, ChevronDown, Minus, Clock,
-  Maximize2, Minimize2, Sun, Moon,
+  Maximize2, Minimize2, Sun, Moon, Image as ImageIcon,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -199,9 +199,13 @@ interface TextEditorPageProps {
   pendingChapter?: { id: string; name: string } | null;
   /** Called once the pending chapter has been resolved into a doc, so App.tsx can clear it. */
   onConsumePendingChapter?: () => void;
+  /** Switches the app to the Studio view (App.tsx's own nav-tab state) — the reverse of Studio's
+   *  existing `onOpenTextEditor` button. Omitted when there's nothing meaningful to switch to (this
+   *  page can also be reached with no Studio chapter context at all, straight from the left nav). */
+  onOpenStudio?: () => void;
 }
 
-export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter }: TextEditorPageProps) {
+export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter, onOpenStudio }: TextEditorPageProps) {
   const [splitScreenOpen, setSplitScreenOpen] = useState(false);
   // The ratio itself persists across sessions; whether split screen is *open* deliberately does
   // not — a fresh session always starts full-width, matching the spec's own "not persisted" rule.
@@ -2230,6 +2234,11 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
           <SaveStatusIcon size={12} className={saveStatus === 'saving' ? 'animate-spin' : ''} />
           {saveStatusLabel}
         </span>
+        {onOpenStudio && (
+          <IconButton size="sm" aria-label="Open Studio" title="Studio" onClick={onOpenStudio} className="!bg-transparent shrink-0">
+            <ImageIcon size={14} />
+          </IconButton>
+        )}
         <IconButton size="sm" aria-label="Toggle split screen" onClick={() => setSplitScreenOpen(v => !v)} className={`!bg-transparent shrink-0 ${splitScreenOpen ? '!text-accent' : ''}`}>
           <PanelRight size={14} />
         </IconButton>
