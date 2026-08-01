@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { ToolFlyout } from './ToolFlyout';
@@ -17,6 +18,8 @@ export function ToolGroupButton({ group, activeTool, onToolChange, orientation }
   const [remembered, setRemembered] = useState(group.tools[0].id);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Anchor for ToolFlyout's position:fixed placement — the icon's own rect, not the rail's.
+  const iconRef = useRef<HTMLButtonElement>(null);
 
   const activeInGroup = group.tools.find(t => t.id === activeTool);
   const shown = activeInGroup ?? group.tools.find(t => t.id === remembered) ?? group.tools[0];
@@ -46,6 +49,7 @@ export function ToolGroupButton({ group, activeTool, onToolChange, orientation }
     <div className="relative contents">
       <div className="relative">
         <IconButton
+          ref={iconRef}
           size={orientation === 'horizontal' ? 'lg' : 'sm'}
           active={!!activeInGroup}
           disabled={!shown.enabled}
@@ -83,6 +87,7 @@ export function ToolGroupButton({ group, activeTool, onToolChange, orientation }
             orientation={orientation}
             onPick={pick}
             onClose={() => setFlyoutOpen(false)}
+            anchorRef={iconRef as RefObject<HTMLElement>}
           />
         )}
       </div>

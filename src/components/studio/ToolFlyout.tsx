@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { RefObject } from 'react';
 import { cn } from '../ui/cn';
 import type { StudioToolDef } from './toolGroups';
 
@@ -8,12 +9,20 @@ interface ToolFlyoutProps {
   orientation: 'vertical' | 'horizontal';
   onPick: (id: string) => void;
   onClose: () => void;
+  /** The trigger icon's own element — the flyout is positioned in viewport (`fixed`) coordinates
+   *  computed from this rect, not CSS-relative to any ancestor. This is load-bearing: a CSS-relative
+   *  (`position: absolute` + `left-full`/`bottom-full`) flyout is a paint-descendant of the tool
+   *  rail, so any ancestor with non-`visible` overflow on either axis (a real bug ToolRail.tsx had)
+   *  clips or scroll-traps it even though its own viewport-clamp math below is sound in isolation. */
+  anchorRef: RefObject<HTMLElement>;
 }
 
 /** Screen-edge margin kept clear on every side once the flyout is nudged back into the viewport. */
 const VIEWPORT_MARGIN = 6;
+/** Gap between the anchor icon and the flyout's near edge. */
+const ANCHOR_GAP = 6;
 
-export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose }: ToolFlyoutProps) {
+export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose, anchorRef }: ToolFlyoutProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -38,23 +47,36 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose }: 
   const MIN_TEXT_WIDTH = 90;
   const [compact, setCompact] = useState(false);
 
-  // Viewport clamping: the flyout is CSS-positioned (left-full/bottom-full) relative to its own
-  // icon, which keeps it correctly on the required side of the rail (right of vertical, above
-  // horizontal) but doesn't know about the screen edges. Measure the *actual* rendered rect (real
-  // Tailwind-computed layout, not a hand-estimated one that could silently drift from the classes
-  // above) and nudge it back on-screen along the *other* axis only — it must never flip which side
-  // it opens on.
+  // Fixed-viewport positioning computed from the anchor icon's own rect — not CSS-relative to any
+  // ancestor, so no ancestor's overflow/transform/stacking context can clip or misplace this. First
+  // place it on the required side of the anchor (right of vertical, above horizontal — never
+  // flipped), then measure the *actual* rendered rect and nudge it back on-screen along the *other*
+  // axis only.
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    el.style.transform = '';
+    const anchor = anchorRef.current;
+    if (!el || !anchor) return;
     el.style.maxWidth = '';
-    const rect = el.getBoundingClientRect();
-    let dx = 0;
-    let dy = 0;
+    const anchorRect = anchor.getBoundingClientRect();
+
     if (isVertical) {
-      if (rect.bottom > window.innerHeight - VIEWPORT_MARGIN) dy = window.innerHeight - VIEWPORT_MARGIN - rect.bottom;
-      if (rect.top + dy < VIEWPORT_MARGIN) dy = VIEWPORT_MARGIN - rect.top;
+      el.style.left = `${anchorRect.right + ANCHOR_GAP}px`;
+      el.style.top = `${anchorRect.top}px`;
+      el.style.bottom = '';
+    } else {
+      el.style.left = `${anchorRect.left}px`;
+      el.style.bottom = `${window.innerHeight - anchorRect.top + ANCHOR_GAP}px`;
+      el.style.top = '';
+    }
+
+    const rect = el.getBoundingClientRect();
+
+    if (isVertical) {
+      let top = rect.top;
+      if (rect.bottom > window.innerHeight - VIEWPORT_MARGIN) top -= rect.bottom - (window.innerHeight - VIEWPORT_MARGIN);
+      if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
+      el.style.top = `${top}px`;
+
       // Required side (right of a vertical rail) is never flipped, so a rail sitting close to the
       // right edge (a narrow/tablet layout) can leave less room than the full-text row wants.
       const availableWidth = window.innerWidth - VIEWPORT_MARGIN - rect.left;
@@ -64,18 +86,18 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose }: 
       }
       if (rect.width > availableWidth) el.style.maxWidth = `${Math.max(0, availableWidth)}px`;
     } else {
-      if (rect.right > window.innerWidth - VIEWPORT_MARGIN) dx = window.innerWidth - VIEWPORT_MARGIN - rect.right;
-      if (rect.left + dx < VIEWPORT_MARGIN) dx = VIEWPORT_MARGIN - rect.left;
+      let left = rect.left;
+      if (rect.right > window.innerWidth - VIEWPORT_MARGIN) left -= rect.right - (window.innerWidth - VIEWPORT_MARGIN);
+      if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+      el.style.left = `${left}px`;
     }
-    if (dx || dy) el.style.transform = `translate(${dx}px, ${dy}px)`;
-  }, [isVertical, tools.length, compact]);
+  }, [isVertical, tools.length, compact, anchorRef]);
 
   return (
     <div
       ref={ref}
       className={cn(
-        'absolute z-50 liquid-glass-heavy rounded-panel border border-hairline p-1 flex gap-0.5',
-        isVertical ? 'left-full top-0 ml-1.5' : 'bottom-full left-0 mb-1.5',
+        'fixed z-50 liquid-glass-heavy rounded-panel border border-hairline p-1 flex gap-0.5',
         compact ? 'flex-col' : 'flex-col w-max max-w-[200px]'
       )}
     >
