@@ -75,9 +75,9 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
     tools: [
       { id: 'brush', label: 'Brush', icon: Paintbrush, enabled: true, shortcut: 'b' },
       { id: 'pencil', label: 'Pencil', icon: Pencil, enabled: true },
+      { id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' },
     ],
   },
-  { id: 'eraser', tools: [{ id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' }] },
   {
     id: 'gradient',
     tools: [

@@ -8,7 +8,7 @@
  *     pencil/eraser get Size+Hardness+Flow+Opacity+(while SYMMETRY_TOOLS) Spacing/Smoothing/
  *     Scatter/Angle/Round/Tip-shape/Symmetry; bucket/gradient get Opacity; marquee/lasso/wand
  *     get selection add-subtract-intersect controls; spot-heal/clone/heal/blur/sharpen/smudge/
- *     dodge/burn/sponge/shape-*/liquify get Size (+Flow where listed); slice gets Add Rect/
+ *     dodge/burn/sponge/shape tools/liquify get Size (+Flow where listed); slice gets Add Rect/
  *     Export Slices buttons. Full membership lives in the Set definitions at the top of that file.
  * A3. TypeR's *Multi-Bubble* capture path (`Studio.tsx`'s `handleAddBubbleRect`) only accepts
  *     rect selections today — `if (selection.kind !== 'rect') { toast; return }` — and
