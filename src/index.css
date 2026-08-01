@@ -662,17 +662,10 @@
   background: color-mix(in srgb, var(--color-accent) 60%, transparent);
 }
 
-/* Text Editor: spell-check flags and find-highlight spans. These live entirely inside a page's
-   contenteditable HTML, so they're plain global classes rather than Tailwind utilities scoped to
-   a component. */
-.spell-miss {
-  text-decoration: underline wavy #ff5c66 1.5px;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.spell-miss:hover {
-  background: rgba(255, 92, 102, 0.15);
-}
+/* Text Editor: find-highlight spans. These live entirely inside a page's contenteditable HTML,
+   so they're plain global classes rather than Tailwind utilities scoped to a component. (Spell
+   check no longer marks spans in-page at all — see SpellCheckOverlay.tsx — so there's no
+   `.spell-miss` rule here anymore.) */
 .te-find-hit {
   background: rgba(255, 230, 0, 0.55);
 }

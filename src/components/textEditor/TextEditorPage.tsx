@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Plus, X, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight,
   List, ListOrdered, Search, Download, FileType, Printer, Send, Heading1, Heading2,
@@ -14,6 +14,7 @@ import { swal, swalToast, Swal } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import { loadTextEditorDocs, saveTextEditorDocs, defaultDocStatus, findOrCreateChapterDoc, type TextEditorDoc, type TextEditorDocStatus } from '../../lib/textEditorStore';
 import { stripSpellMarks } from '../../lib/spellCheck';
+import { SpellCheckOverlay } from '../../editor/SpellCheckOverlay';
 import { exportDocAsTxt, exportDocAsDocx, printDocAsPdf, downloadBlob } from '../../lib/textEditorExport';
 import { SplitScreenPreview } from './SplitScreenPreview';
 import { DocumentLibrary } from './DocumentLibrary';
@@ -308,6 +309,38 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
    *  across renders is required for `EditablePage`'s `memo` to bail out (a
    *  fresh inline arrow function every render would look like a changed prop). */
   const pageRefCallbacksRef = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
+  /** `SpellCheckOverlay` needs a stable `RefObject` per page (not a plain array index) — one
+   *  overlay instance is mounted per page, each watching that page's own contenteditable and
+   *  positioned against that page's own untransformed wrapper. Populated by the same ref
+   *  callbacks that already populate `pageRefs`/`pageContainerRefs`, so there's no second
+   *  source of truth for "what DOM node is page i" — just a second place it's written to. */
+  const spellCheckContentRefsRef = useRef<Map<number, RefObject<HTMLDivElement | null>>>(new Map());
+  const spellCheckContainerRefsRef = useRef<Map<number, RefObject<HTMLDivElement | null>>>(new Map());
+  const pageContainerRefCallbacksRef = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
+
+  function getSpellCheckContentRef(i: number): RefObject<HTMLDivElement | null> {
+    const cache = spellCheckContentRefsRef.current;
+    let ref = cache.get(i);
+    if (!ref) { ref = { current: null }; cache.set(i, ref); }
+    return ref;
+  }
+
+  function getSpellCheckContainerRef(i: number): RefObject<HTMLDivElement | null> {
+    const cache = spellCheckContainerRefsRef.current;
+    let ref = cache.get(i);
+    if (!ref) { ref = { current: null }; cache.set(i, ref); }
+    return ref;
+  }
+
+  function getPageContainerRefCallback(i: number): (el: HTMLDivElement | null) => void {
+    const cache = pageContainerRefCallbacksRef.current;
+    let cb = cache.get(i);
+    if (!cb) {
+      cb = (el: HTMLDivElement | null) => { getSpellCheckContainerRef(i).current = el; };
+      cache.set(i, cb);
+    }
+    return cb;
+  }
   /** "Latest logic" refs backing the stable `handleInput`/`handleSpellClick`
    *  wrappers below — lets those exposed callbacks keep one identity forever
    *  (required for `EditablePage`'s `memo` to bail out) while always running
@@ -323,7 +356,10 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     const cache = pageRefCallbacksRef.current;
     let cb = cache.get(i);
     if (!cb) {
-      cb = (el: HTMLDivElement | null) => { pageRefs.current[i] = el; };
+      cb = (el: HTMLDivElement | null) => {
+        pageRefs.current[i] = el;
+        getSpellCheckContentRef(i).current = el;
+      };
       cache.set(i, cb);
     }
     return cb;
@@ -1276,20 +1312,18 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
 
   const [tabMenu, setTabMenu] = useState<{ docId: string; x: number; y: number } | null>(null);
 
-  /** Native browser spellcheck only — toggles the `spellcheck` DOM property directly on every
-   *  page's contentEditable, imperatively, rather than passing it down as an EditablePage prop.
-   *  EditablePage must never re-render past its initial mount (see its own comment) — a prop here
-   *  would trigger exactly that. The browser underlines misspelled words and offers its own
-   *  right-click suggestions; nothing here ever touches page content, so there's nothing that can
-   *  lose or corrupt text the way the old dictionary-based implementation could (it rewrote every
-   *  page's innerHTML and forced a full remount just to apply/clear marks). */
-  const [spellCheckActive, setSpellCheckActive] = useState(true);
+  /** Real EN/AR dictionary spell check (`src/editor/spellCheck.ts` + `SpellCheckOverlay.tsx`),
+   *  replacing the old native-`spellcheck`-attribute toggle this button used to drive. The overlay
+   *  is a sibling absolutely-positioned div per page — never a prop into `EditablePage` (which
+   *  must never re-render past its initial mount, see its own comment) and never a write to any
+   *  page's `innerHTML`, so it can't lose or corrupt text the way the old from-scratch dictionary
+   *  implementation could (that one rewrote every page's `innerHTML` and forced a full remount
+   *  just to apply/clear marks — see `src/lib/spellCheck.ts`'s history). Defaults off: dictionaries
+   *  are real (multi-hundred-KB to multi-MB) and load lazily on first activation. */
+  const [spellCheckEnabled, setSpellCheckEnabled] = useState(false);
   function toggleSpellCheck() {
-    setSpellCheckActive(v => !v);
+    setSpellCheckEnabled(v => !v);
   }
-  useEffect(() => {
-    pageRefs.current.forEach((p) => { if (p) p.spellcheck = spellCheckActive; });
-  });
 
   function runPageClickLogic(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
@@ -1732,15 +1766,6 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     }
     document.addEventListener('focusin', onFocusIn);
     return () => document.removeEventListener('focusin', onFocusIn);
-  }, []);
-
-  // The suggestion/"Ignore" action in the global right-click menu (ContextMenu.tsx) can't reach
-  // into this component directly — it dispatches this custom event on the fixed span instead.
-  useEffect(() => {
-    function onSpellFix() { scheduleAutosave(); }
-    document.addEventListener('te-spell-fix', onSpellFix);
-    return () => document.removeEventListener('te-spell-fix', onSpellFix);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function buildFindRegex(): RegExp | null {
@@ -2302,9 +2327,9 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         <div className="w-px h-5 bg-hairline mx-1.5" />
         <Button
           size="sm"
-          variant={spellCheckActive ? 'primary' : 'secondary'}
-          aria-pressed={spellCheckActive}
-          title={spellCheckActive ? 'Spell check on — click to turn off' : 'Spell check off — click to turn on'}
+          variant={spellCheckEnabled ? 'primary' : 'secondary'}
+          aria-pressed={spellCheckEnabled}
+          title={spellCheckEnabled ? 'Spell check on — click to turn off' : 'Spell check off — click to turn on'}
           onClick={toggleSpellCheck}
         >
           Spell Check
@@ -2376,7 +2401,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         {activeDoc && (
           <div key={`${activeDoc.id}-${renderKey}`} className="flex flex-col items-center gap-6" dir={activeDoc.dir}>
             {activeDoc.pages.map((html, i) => (
-              <div key={i} className="shrink-0 relative" style={{ width: PAGE_WIDTH * zoom, height: PAGE_HEIGHT * zoom }}>
+              <div key={i} className="shrink-0 relative" style={{ width: PAGE_WIDTH * zoom, height: PAGE_HEIGHT * zoom }} ref={getPageContainerRefCallback(i)}>
                 <div
                   className="overflow-hidden rounded-sm shadow-2xl"
                   style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
@@ -2393,6 +2418,11 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
                 <div className="absolute bottom-1 inset-x-0 text-center text-[11px] text-ink-faint pointer-events-none select-none">
                   {i + 1} / {activeDoc.pages.length}
                 </div>
+                <SpellCheckOverlay
+                  contentEditableRef={getSpellCheckContentRef(i)}
+                  enabled={spellCheckEnabled}
+                  containerRef={getSpellCheckContainerRef(i)}
+                />
               </div>
             ))}
           </div>

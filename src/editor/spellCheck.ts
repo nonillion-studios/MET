@@ -67,6 +67,172 @@
  * LibreOffice's `ar.aff`/`ar.dic` (via the Ayaspell project, GPL/LGPL/MPL tri-licensed) live in
  * `public/dictionaries/ar/` and are `fetch()`ed lazily below rather than `import()`ed as a
  * package — the ~7MB `.dic` must never enter a JS bundle.
+ *
+ * `dictionary-en@4` is *also* unusable as a runtime import here: its `index.js` reads
+ * `index.aff`/`index.dic` off disk via `node:fs/promises` + `import.meta.url` at module-evaluation
+ * time — real Node.js APIs with no browser equivalent, so bundling it for this app would fail (or
+ * silently ship a broken stub). Its actual data files are plain UTF-8 Hunspell text underneath, so
+ * they're vendored the same way as Arabic — copied once into `public/dictionaries/en/` (MIT/BSD
+ * dual-licensed per the package's own `license` file, copied alongside as `LICENSE.txt`) — and the
+ * npm package itself was uninstalled since nothing here imports its JS. `nspell` itself has no such
+ * problem (pure logic, no Node built-ins) and is imported normally.
  */
 
 import type NSpell from 'nspell';
+
+interface SpellCheckResult {
+  word: string;
+  start: number;
+  end: number;
+  language: 'en' | 'ar';
+  suggestions: string[];
+}
+
+let englishChecker: NSpell | null = null;
+let arabicChecker: NSpell | null = null;
+let loadingEnglish = false;
+let loadingArabic = false;
+
+const ARABIC_COLLOQUIAL_CORRECTIONS: Record<string, string> = {
+  'لاكن': 'لكن', 'هاذا': 'هذا', 'هاذه': 'هذه', 'انا': 'أنا',
+  'اكل': 'أكل', 'امر': 'أمر', 'اعطى': 'أعطى', 'ارض': 'أرض',
+  'او': 'أو', 'اب': 'أب', 'اخ': 'أخ', 'ام': 'أم', 'ان': 'أن',
+  'فية': 'فيه', 'عنة': 'عنه', 'معة': 'معه', 'لية': 'له',
+  'علية': 'عليه', 'بية': 'به', 'أنة': 'أنه', 'اللة': 'الله',
+  'هاؤلاء': 'هؤلاء', 'الي': 'الذي', 'اللي': 'الذي',
+  'دة': 'ده', 'انشاء الله': 'إن شاء الله',
+};
+
+async function waitForChecker(getChecker: () => NSpell | null): Promise<NSpell> {
+  await new Promise<void>((resolve) => {
+    const check = setInterval(() => {
+      if (getChecker()) { clearInterval(check); resolve(); }
+    }, 50);
+  });
+  return getChecker()!;
+}
+
+async function fetchDictionaryText(path: string): Promise<string> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`Failed to load dictionary asset: ${path} (${res.status})`);
+  return res.text();
+}
+
+async function loadEnglish(): Promise<NSpell> {
+  if (englishChecker) return englishChecker;
+  if (loadingEnglish) return waitForChecker(() => englishChecker);
+  loadingEnglish = true;
+  const [{ default: nspell }, aff, dic] = await Promise.all([
+    import('nspell'),
+    fetchDictionaryText('/dictionaries/en/en.aff'),
+    fetchDictionaryText('/dictionaries/en/en.dic'),
+  ]);
+  englishChecker = nspell(aff, dic);
+  loadingEnglish = false;
+  return englishChecker;
+}
+
+async function loadArabic(): Promise<NSpell> {
+  if (arabicChecker) return arabicChecker;
+  if (loadingArabic) return waitForChecker(() => arabicChecker);
+  loadingArabic = true;
+  const [{ default: nspell }, aff, dic] = await Promise.all([
+    import('nspell'),
+    fetchDictionaryText('/dictionaries/ar/ar.aff'),
+    fetchDictionaryText('/dictionaries/ar/ar.dic'),
+  ]);
+  arabicChecker = nspell(aff, dic);
+  loadingArabic = false;
+  return arabicChecker;
+}
+
+const ARABIC_RANGE = /[\u0600-\u06FF]/;
+const ENGLISH_RANGE = /[a-zA-Z]/;
+
+function detectLanguage(word: string): 'ar' | 'en' | 'other' {
+  if (ARABIC_RANGE.test(word)) return 'ar';
+  if (ENGLISH_RANGE.test(word)) return 'en';
+  return 'other';
+}
+
+interface WordToken {
+  word: string;
+  start: number;
+  end: number;
+}
+
+function tokenizeWords(text: string): WordToken[] {
+  const tokens: WordToken[] = [];
+  const pattern = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+|[a-zA-Z']+/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    tokens.push({ word: match[0], start: match.index, end: match.index + match[0].length });
+  }
+  return tokens;
+}
+
+const ignoredWords = new Set<string>();
+
+export function ignoreWord(word: string): void {
+  ignoredWords.add(word.toLowerCase());
+}
+
+export function clearIgnoreList(): void {
+  ignoredWords.clear();
+}
+
+export async function spellCheckText(text: string): Promise<SpellCheckResult[]> {
+  if (!text.trim()) return [];
+  const tokens = tokenizeWords(text);
+  if (tokens.length === 0) return [];
+
+  const needsEnglish = tokens.some((t) => detectLanguage(t.word) === 'en');
+  const needsArabic = tokens.some((t) => detectLanguage(t.word) === 'ar');
+
+  const [enChecker, arChecker] = await Promise.all([
+    needsEnglish ? loadEnglish() : Promise.resolve(null),
+    needsArabic ? loadArabic() : Promise.resolve(null),
+  ]);
+
+  const results: SpellCheckResult[] = [];
+
+  for (const token of tokens) {
+    const lang = detectLanguage(token.word);
+    if (lang === 'other') continue;
+    if (ignoredWords.has(token.word.toLowerCase())) continue;
+
+    if (lang === 'en' && enChecker) {
+      if (!enChecker.correct(token.word)) {
+        results.push({
+          word: token.word, start: token.start, end: token.end,
+          language: 'en', suggestions: enChecker.suggest(token.word).slice(0, 5),
+        });
+      }
+    }
+
+    if (lang === 'ar' && arChecker) {
+      const colloquialFix = ARABIC_COLLOQUIAL_CORRECTIONS[token.word];
+      if (colloquialFix) {
+        results.push({
+          word: token.word, start: token.start, end: token.end,
+          language: 'ar', suggestions: [colloquialFix],
+        });
+      } else if (!arChecker.correct(token.word)) {
+        results.push({
+          word: token.word, start: token.start, end: token.end,
+          language: 'ar', suggestions: arChecker.suggest(token.word).slice(0, 5),
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+export async function addWordToDictionary(word: string, language: 'en' | 'ar'): Promise<void> {
+  if (language === 'en' && englishChecker) englishChecker.add(word);
+  else if (language === 'ar' && arabicChecker) arabicChecker.add(word);
+  ignoredWords.add(word.toLowerCase());
+}
+
+export type { SpellCheckResult };
