@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { loadPalettes, savePalettes, type ColorPalette } from '../../../lib/paletteStore';
+import { loadRecentColors, saveRecentColors } from '../../../lib/recentColorsStore';
 
 interface ColorContextValue {
   foreground: string;
@@ -41,10 +42,15 @@ export function ColorProvider({ children }: { children: ReactNode }) {
       setPalettes(saved);
       if (saved.length > 0) setActivePaletteId(saved[0].id);
     });
+    loadRecentColors().then(setRecent);
   }, []);
 
   const remember = useCallback((hex: string) => {
-    setRecent(prev => [hex, ...prev.filter(c => c !== hex)].slice(0, 12));
+    setRecent(prev => {
+      const next = [hex, ...prev.filter(c => c !== hex)].slice(0, 12);
+      void saveRecentColors(next);
+      return next;
+    });
   }, []);
 
   const setForeground = useCallback((hex: string) => { setForegroundState(hex); remember(hex); }, [remember]);

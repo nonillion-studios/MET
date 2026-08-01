@@ -24,6 +24,9 @@ export function presetToSettings(
     brushShape: preset.shape,
     tipMask,
     tipMaskId: preset.shape === 'image' ? preset.id : undefined,
+    // Thumbnails only ever stroke brush/pencil/eraser (see strokeSegment below) — Clone/Heal's
+    // sample mode is irrelevant here, so a fixed default satisfies the type without a caller prop.
+    sampleMode: 'all',
     ...base,
   };
 }

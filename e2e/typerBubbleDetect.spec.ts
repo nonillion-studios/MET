@@ -97,7 +97,11 @@ test('TypeR auto-detect-bubble sizes/centers placement to the detected bubble, n
   page.on('pageerror', (e) => { throw new Error(`Uncaught page error: ${e.message}`); });
   await seedBubblePage(page);
 
-  await page.getByRole('tab', { name: 'TypeR' }).or(page.getByText('TypeR', { exact: true })).first().click();
+  // TypeR is already expanded by default in the current panel-stack architecture — unconditionally
+  // clicking its header (a leftover from the old tab-based dock) would toggle it *collapsed*
+  // instead. Only expand if it's actually collapsed, mirroring openLayersPanel's own fix.
+  const expandButton = page.getByRole('button', { name: 'Expand TypeR panel' });
+  if (await expandButton.isVisible().catch(() => false)) await expandButton.click();
   await page.getByPlaceholder(/Paste a script/).fill('Hello bubble');
   await page.getByRole('button', { name: 'Auto-detect bubble' }).click();
   await page.getByRole('button', { name: /Arm placement/ }).click();

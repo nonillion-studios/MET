@@ -221,17 +221,26 @@ export async function openStudio(page: Page): Promise<void> {
 }
 
 /**
- * Waits for the Layers panel to be interactive.
+ * Waits for the Layers panel to be interactive, expanding it if it's currently collapsed.
  *
  * The Layers panel is now a pinned, always-visible section of the right column (Studio.tsx's
  * `toolsSidebar`) rather than a tab in the swappable dock, so creating a text/adjustment layer
  * (which still explicitly opens that layer's own settings tab alongside it) no longer navigates
  * away from it — there's nothing left to click back to. Kept as a named step so call sites read
  * the same either way.
+ *
+ * A real, found-by-testing bug: this used to unconditionally click the panel's own header text,
+ * on the assumption (stated in this comment before the fix) that doing so was a harmless no-op in
+ * the current always-visible architecture. It isn't — that header click toggles collapse, so a
+ * test calling this more than once could collapse Layers right before trying to click something
+ * inside it. It happened to go unnoticed while the right column had fewer visible panels; adding
+ * Brushes (visible-by-default, Fix 5) shifted layout enough to turn the latent bug into consistent
+ * click-interception failures. Now idempotent: only clicks the chevron when it's actually collapsed.
  */
 export async function openLayersPanel(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Add layer' }).waitFor({ state: 'visible' });
-  await page.getByRole('tab', { name: 'Layers' }).or(page.getByText('Layers', { exact: true })).first().click();
+  const expandButton = page.getByRole('button', { name: 'Expand Layers panel' });
+  if (await expandButton.isVisible().catch(() => false)) await expandButton.click();
   await page.getByRole('button', { name: 'Add layer', exact: true }).waitFor({ state: 'visible' });
 }
 

@@ -1,4 +1,4 @@
-import { BLEND_TO_COMPOSITE, type TextLayerData } from '../components/studio/studioTypes';
+import { BLEND_TO_COMPOSITE, type TextLayerData, type PathLayerData } from '../components/studio/studioTypes';
 import { traceAnchors } from '../components/studio/pathGeometry';
 import { gradientVector } from '../components/studio/textGradient';
 import { layoutText, applyLetterSpacing } from '../components/studio/textLayout';
@@ -25,7 +25,7 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
  * do its own wrapping, which is exactly how point text ended up exporting wrapped when it doesn't
  * wrap on screen.
  */
-function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
+export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
   ctx.save();
 
   const layout = layoutText(text);
@@ -111,9 +111,11 @@ function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData) {
  *
  * **Must stay identical to `needsIsolation` in `StudioCanvas.tsx`** — the two implement the same
  * rule for two renderers, and any drift shows up as an export that doesn't match the screen. See
- * that function for why child count is not a factor.
+ * that function for why child count is not a factor. Generic over `{opacity, blendMode}` so
+ * `sampleComposite.ts`'s live-canvas sampler (a third renderer, over `StudioLayer` rather than
+ * `SerializedStudioLayer`) reuses this exact rule instead of risking a three-way drift.
  */
-const isolatesGroup = (layer: SerializedStudioLayer) =>
+export const isolatesGroup = (layer: { opacity: number; blendMode: SerializedStudioLayer['blendMode'] }) =>
   layer.opacity < 1 || layer.blendMode !== 'normal';
 
 /**
@@ -237,13 +239,18 @@ async function drawLeafContent(
   } else if (layer.type === 'text' && layer.text && layer.text.content) {
     drawTextLayer(ctx, layer.text);
   } else if (layer.type === 'path' && layer.path) {
-    // Flattened export has no vector concept regardless of format, so rasterizing here at export
-    // resolution is simply correct — the same reasoning text glyphs already get.
-    ctx.beginPath();
-    traceAnchors(ctx, layer.path.anchors, layer.path.closed);
-    if (layer.path.fill.enabled) { ctx.fillStyle = layer.path.fill.color; ctx.fill(layer.path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero'); }
-    if (layer.path.stroke.enabled) { ctx.strokeStyle = layer.path.stroke.color; ctx.lineWidth = layer.path.stroke.width; ctx.stroke(); }
+    drawPathLayer(ctx, layer.path);
   }
+}
+
+/** Flattened export (and live sampling) have no vector concept regardless of format, so
+ *  rasterizing here at export resolution is simply correct — the same reasoning text glyphs
+ *  already get. Shared by `drawLeafContent` and `sampleComposite.ts`'s synchronous compositor. */
+export function drawPathLayer(ctx: CanvasRenderingContext2D, path: PathLayerData) {
+  ctx.beginPath();
+  traceAnchors(ctx, path.anchors, path.closed);
+  if (path.fill.enabled) { ctx.fillStyle = path.fill.color; ctx.fill(path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero'); }
+  if (path.stroke.enabled) { ctx.strokeStyle = path.stroke.color; ctx.lineWidth = path.stroke.width; ctx.stroke(); }
 }
 
 async function compositeLeaf(

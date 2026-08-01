@@ -18,6 +18,12 @@ const TOLERANCE = 4;
 
 const near = (actual: number, expected: number) => Math.abs(actual - expected) <= TOLERANCE;
 
+/** The Layers panel's own per-row Opacity slider, disambiguated from the Brushes panel's identically-
+ *  labeled one (Brushes is visible-by-default, not just collapsed-and-absent) via the `studio-
+ *  focusable` class the Brushes control carries and the Layers one doesn't. */
+const opacitySlider = (page: import('@playwright/test').Page) =>
+  page.locator('label').filter({ hasText: 'Opacity' }).locator('input[type=range]:not(.studio-focusable)');
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (e) => { throw new Error(`Uncaught page error: ${e.message}`); });
   await openStudio(page);
@@ -87,7 +93,7 @@ test('layer opacity fades a layer toward what is beneath it', async ({ page }) =
   // Multiply at full strength is 64; at 50% opacity it composites halfway back to the grey
   // underneath, i.e. ~96. This checks opacity and blend interact, not just that each runs.
   await page.getByRole('combobox', { name: 'Blend' }).selectOption('multiply');
-  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
+  await opacitySlider(page).fill('50');
   await page.waitForTimeout(500);
 
   const c = await sampleStageColor(page);
