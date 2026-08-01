@@ -36,6 +36,26 @@ interface UsePaintLayerArgs {
    *  All Layers / …) — see `sampleComposite.ts`. Falls back to `getCanvas()` (the active layer's
    *  own pixels only) when omitted, matching the tool's original single-layer behavior. */
   getSampleCanvas?: () => HTMLCanvasElement | null;
+  /** Fired on every gradient-drag frame (start fixed, current live) so the caller can render a live
+   *  overlay preview; fired with `(null, null)` once the drag commits/cancels. Mirrors the existing
+   *  `onCloneSourceSet` "caller owns the UI, hook owns the pointer math" convention. */
+  onGradientPreview?: (start: { x: number; y: number } | null, current: { x: number; y: number } | null) => void;
+  /** Accessor rather than a raw boolean prop — read fresh on every pointermove instead of closing
+   *  over a value that'd go stale mid-drag (same reasoning as `getLayerId`/`getFallbackCanvas`). */
+  getShiftHeld?: () => boolean;
+}
+
+/** Shift-snap: preserves the drag distance but rounds the angle to the nearest 45° increment —
+ *  shared by the live preview and the actual commit so what's previewed is exactly what's baked. */
+function snapGradientPoint(start: { x: number; y: number }, current: { x: number; y: number }): { x: number; y: number } {
+  const dx = current.x - start.x;
+  const dy = current.y - start.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist === 0) return current;
+  const angle = Math.atan2(dy, dx);
+  const step = Math.PI / 4;
+  const snapped = Math.round(angle / step) * step;
+  return { x: start.x + Math.cos(snapped) * dist, y: start.y + Math.sin(snapped) * dist };
 }
 
 /**
@@ -44,7 +64,7 @@ interface UsePaintLayerArgs {
  * coordinates) only when `activeTool` is one of PAINT_TOOLS; select/pan/text keep
  * their existing, untouched code paths.
  */
-export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas }: UsePaintLayerArgs) {
+export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas, onGradientPreview, getShiftHeld }: UsePaintLayerArgs) {
   const drawingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   // Intentionally shared between Clone Stamp and Healing Brush — Photoshop keeps one source point
@@ -287,6 +307,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     }
     if (tool === 'gradient') {
       gradientStartRef.current = { x, y };
+      onGradientPreview?.({ x, y }, { x, y });
       return;
     }
     if (tool === 'contentAware') {
@@ -335,7 +356,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       spotHealBoundsRef.current = null;
     }
     applyStrokeSegment(ctx, tool, x, y, x, y, pressure);
-  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet, getSampleCanvas]);
+  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet, getSampleCanvas, onGradientPreview]);
 
   function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number, pressure = 1) {
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
@@ -382,7 +403,11 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    if (tool === 'gradient' && gradientStartRef.current) return; // committed on pointerUp
+    if (tool === 'gradient' && gradientStartRef.current) {
+      const current = getShiftHeld?.() ? snapGradientPoint(gradientStartRef.current, { x, y }) : { x, y };
+      onGradientPreview?.(gradientStartRef.current, current);
+      return; // committed on pointerUp
+    }
     if (tool === 'contentAware' && contentAwareStartRef.current) return; // committed on pointerUp
     if ((tool === 'shape-rect' || tool === 'shape-ellipse' || tool === 'shape-line') && shapeStartRef.current) return; // committed on pointerUp
 
@@ -414,7 +439,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     applyStrokeSegment(ctx, tool, last.x, last.y, tx, ty, pressure);
     lastRef.current = { x: tx, y: ty };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [getCanvas, settings, selection, onCloneSourceSet]);
+  }, [getCanvas, settings, selection, onCloneSourceSet, onGradientPreview, getShiftHeld]);
 
   const pointerUp = useCallback((tool: PaintTool, x: number, y: number) => {
     const canvas = getCanvas();
@@ -422,11 +447,15 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     const ctx = canvas.getContext('2d');
 
     if (tool === 'gradient' && gradientStartRef.current && ctx) {
+      const start = gradientStartRef.current;
+      // Same snap the live preview used, so the committed gradient always matches what was shown.
+      const end = getShiftHeld?.() ? snapGradientPoint(start, { x, y }) : { x, y };
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
       // Foreground-to-background, matching Photoshop's default Gradient tool convention.
-      applyGradient(ctx, canvas.width, canvas.height, gradientStartRef.current.x, gradientStartRef.current.y, x, y, settings.color, settings.bgColor, selection);
+      applyGradient(ctx, canvas.width, canvas.height, start.x, start.y, end.x, end.y, settings.color, settings.bgColor, selection);
       if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
       gradientStartRef.current = null;
+      onGradientPreview?.(null, null);
       onStrokeEnd(before);
       return;
     }
@@ -506,7 +535,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
         strokeBeforeRef.current = null;
       }
     }
-  }, [getCanvas, settings, selection, onStrokeEnd]);
+  }, [getCanvas, settings, selection, onStrokeEnd, onGradientPreview, getShiftHeld]);
 
   /** Returns the final selection it committed (not just void) — Magic Wand fires on a single
    *  click with no separate drag-end moment, so a caller that needs "the shape this gesture just
