@@ -10,6 +10,8 @@ import { Menu } from '../menu/Menu';
 import type { MenuItemDef } from '../menu/menuDefinitions';
 import { useColor } from './ColorContext';
 import { SvSquare } from './SvSquare';
+import { HueBrightSquare } from './HueBrightSquare';
+import { HueSatSquare } from './HueSatSquare';
 import { ColorPickerModal } from './ColorPickerModal';
 import { hexToRgb, hsvToRgb, rgbToHex, rgbToHsv } from './colorConversions';
 
@@ -121,6 +123,12 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
   const menuWrapperRef = useRef<HTMLDivElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'fg' | 'bg'>('fg');
+  // Uncommitted hex text — a plain `value={activeColor}` controlled input snaps back to the last
+  // *complete* committed hex on every keystroke that isn't a full 6-digit match yet, since the old
+  // onChange only ever called setActiveColor once the whole string already validated. This draft
+  // lets partial typing (e.g. "f", "ff", "ff0") stay on screen; it commits live once valid and
+  // reverts to the real color on blur if left incomplete.
+  const [hexDraft, setHexDraft] = useState('');
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -130,6 +138,10 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [menuOpen]);
+
+  useEffect(() => {
+    setHexDraft(activeColor);
+  }, [activeColor]);
 
   const hsv = rgbToHsv(hexToRgb(activeColor));
   const rgb = hexToRgb(activeColor);
@@ -187,16 +199,16 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
     setPickerOpen(true);
   }
 
-  const isWheelMode = viewMode === 'wheel' || viewMode === 'hueCube' || viewMode === 'brightnessCube';
   const isRampMode = viewMode === 'rgbSpectrum' || viewMode === 'cmykSpectrum' || viewMode === 'grayscaleRamp';
 
   function menuItem(mode: ColorViewMode): MenuItemDef {
     return { id: mode, label: VIEW_MODE_LABEL[mode], checked: viewMode === mode, action: () => setViewMode(mode) };
   }
 
-  // Matches Photoshop's own Color panel menu order exactly (see CLAUDE.md's task spec) — Hue/
-  // Brightness Cube intentionally render identically to Color Wheel (see isWheelMode above); a true
-  // cube-projection UI is out of scope for what this app's manga-typesetting workflow needs.
+  // Matches Photoshop's own Color panel menu order exactly (see CLAUDE.md's task spec). Color
+  // Wheel/Hue Cube/Brightness Cube are three genuinely distinct square+slider pickers, each
+  // exposing a different pair of draggable HSV channels (Sat×Bright/hue slider, Hue×Bright/no
+  // slider, Hue×Sat/brightness slider) — see SvSquare/HueBrightSquare/HueSatSquare.
   const menuItems: MenuItemDef[] = [
     menuItem('hueCube'), menuItem('brightnessCube'), menuItem('wheel'), menuItem('grayscaleSlider'),
     menuItem('rgbSliders'), menuItem('hsbSliders'), menuItem('cmykSliders'), menuItem('labSliders'), menuItem('webSliders'),
@@ -255,7 +267,7 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
           <span className="text-micro text-ink-faint">Editing {active === 'fg' ? 'Foreground' : 'Background'}</span>
         </div>
 
-        {isWheelMode && (
+        {viewMode === 'wheel' && (
           <>
             <SvSquare hue={hsv.h} sat={hsv.s} val={hsv.v} onPick={(s, v) => setFromHsv({ s, v })} size={SV_SIZE} />
             <input
@@ -264,6 +276,18 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
               className="w-full accent-[var(--color-accent)]"
               style={{ background: 'linear-gradient(to right, red, yellow, lime, cyan, blue, magenta, red)' }}
             />
+          </>
+        )}
+
+        {viewMode === 'hueCube' && (
+          <HueBrightSquare hue={hsv.h} sat={hsv.s} val={hsv.v} onPick={(h, v) => setFromHsv({ h, v })} size={SV_SIZE} />
+        )}
+
+        {viewMode === 'brightnessCube' && (
+          <>
+            <HueSatSquare hue={hsv.h} sat={hsv.s} val={hsv.v} onPick={(h, s) => setFromHsv({ h, s })} size={SV_SIZE} />
+            <ColorSlider label="B" value={hsv.v} min={0} max={100} onChange={(v) => setFromHsv({ v })}
+              background={`linear-gradient(to right, ${rgbToHex(hsvToRgb({ h: hsv.h, s: hsv.s, v: 0 }))}, ${rgbToHex(hsvToRgb({ h: hsv.h, s: hsv.s, v: 100 }))})`} />
           </>
         )}
 
@@ -380,8 +404,13 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
           <label className="flex items-center gap-2 text-micro text-ink-faint flex-1 min-w-0">
             <span className="w-8 shrink-0">Hex</span>
             <Input
-              value={activeColor}
-              onChange={(e) => /^#?[0-9a-fA-F]{6}$/.test(e.target.value) && setActiveColor(e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`)}
+              value={hexDraft}
+              onChange={(e) => {
+                setHexDraft(e.target.value);
+                const normalized = e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`;
+                if (/^#[0-9a-fA-F]{6}$/.test(normalized)) setActiveColor(normalized);
+              }}
+              onBlur={() => setHexDraft(activeColor)}
               className="!px-2 !py-1 !text-ui font-mono"
             />
           </label>

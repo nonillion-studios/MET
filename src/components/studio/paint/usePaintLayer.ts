@@ -30,6 +30,10 @@ interface UsePaintLayerArgs {
    *  live source-point cursor indicator. Mirrors cloneSourceRef's own value; not cleared between
    *  strokes, matching that ref's intentional "persists across strokes" behavior. */
   onCloneSourceSet?: (pt: { x: number; y: number }) => void;
+  /** Clone/Heal's source snapshot, per the active `sampleMode` (Current Layer / Current & Below /
+   *  All Layers / …) — see `sampleComposite.ts`. Falls back to `getCanvas()` (the active layer's
+   *  own pixels only) when omitted, matching the tool's original single-layer behavior. */
+  getSampleCanvas?: () => HTMLCanvasElement | null;
 }
 
 /**
@@ -38,7 +42,7 @@ interface UsePaintLayerArgs {
  * coordinates) only when `activeTool` is one of PAINT_TOOLS; select/pan/text keep
  * their existing, untouched code paths.
  */
-export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet }: UsePaintLayerArgs) {
+export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas }: UsePaintLayerArgs) {
   const drawingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   // Intentionally shared between Clone Stamp and Healing Brush — Photoshop keeps one source point
@@ -155,10 +159,11 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     }
     if ((tool === 'clone' || tool === 'heal') && cloneSourceRef.current) {
       cloneOffsetRef.current = { x: x - cloneSourceRef.current.x, y: y - cloneSourceRef.current.y };
+      const sampleSource = getSampleCanvas?.() ?? canvas;
       const snap = document.createElement('canvas');
-      snap.width = canvas.width;
-      snap.height = canvas.height;
-      snap.getContext('2d')!.drawImage(canvas, 0, 0);
+      snap.width = sampleSource.width;
+      snap.height = sampleSource.height;
+      snap.getContext('2d')!.drawImage(sampleSource, 0, 0);
       sourceSnapshotRef.current = snap;
     }
 
@@ -178,7 +183,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       smoothRef.current = { x, y };
     }
     applyStrokeSegment(ctx, tool, x, y, x, y, pressure);
-  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet]);
+  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet, getSampleCanvas]);
 
   function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number, pressure = 1) {
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
@@ -233,6 +238,14 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     if (!drawingRef.current || !lastRef.current) return;
     const last = lastRef.current;
 
+    // Live crosshair sync: the source read point tracks the brush at the fixed offset established
+    // by the stroke's first sample (Photoshop's "aligned" clone, the only mode this implements) —
+    // without this the UI crosshair stayed frozen at the alt-click point for the whole stroke even
+    // though the actual pixel sampling (cloneSegment/healSegment, below) already tracked correctly.
+    if ((tool === 'clone' || tool === 'heal') && cloneOffsetRef.current) {
+      onCloneSourceSet?.({ x: x - cloneOffsetRef.current.x, y: y - cloneOffsetRef.current.y });
+    }
+
     // Pull-string smoothing: the painted point chases the raw pointer instead of
     // tracking it exactly, which damps hand jitter. smoothing=0 paints the raw
     // pointer (identical to the old behaviour); higher values lag further behind.
@@ -250,7 +263,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     applyStrokeSegment(ctx, tool, last.x, last.y, tx, ty, pressure);
     lastRef.current = { x: tx, y: ty };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [getCanvas, settings, selection]);
+  }, [getCanvas, settings, selection, onCloneSourceSet]);
 
   const pointerUp = useCallback((tool: PaintTool, x: number, y: number) => {
     const canvas = getCanvas();

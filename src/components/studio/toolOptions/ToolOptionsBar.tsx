@@ -2,6 +2,7 @@ import { findTool } from '../toolGroups';
 import type { LiquifyMode, SymmetryMode } from '../paint/paintEngine';
 import type { BrushShape } from '../paint/brushTip';
 import { PAINT_TOOLS } from '../paint/usePaintLayer';
+import type { SampleMode } from '../../../lib/sampleComposite';
 
 interface ToolOptionsBarProps {
   layoutMode?: 'desktop' | 'tablet' | 'phone';
@@ -32,6 +33,8 @@ interface ToolOptionsBarProps {
   onScatterChange: (v: number) => void;
   smoothing: number;
   onSmoothingChange: (v: number) => void;
+  sampleMode: SampleMode;
+  onSampleModeChange: (v: SampleMode) => void;
   sliceRectCount: number;
   onAddSliceRect: () => void;
   onExportSlices: () => void;
@@ -46,6 +49,9 @@ const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient'
 const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
 const SYMMETRY_TOOLS = new Set(['brush', 'pencil', 'eraser']);
 const SELECTION_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'lasso-freehand', 'lasso-polygon', 'lasso-magnetic', 'wand']);
+/** Clone/Heal source and the Eyedropper both read pixels through the same `sampleMode` — matches
+ *  Photoshop's single shared "Sample" setting rather than a per-tool copy. */
+const SAMPLE_TOOLS = new Set(['clone', 'heal', 'eyedropper']);
 
 const LIQUIFY_MODES: { id: LiquifyMode; label: string }[] = [
   { id: 'push', label: 'Push' },
@@ -66,6 +72,14 @@ const SYMMETRY_MODES: { id: SymmetryMode; label: string }[] = [
   { id: 'horizontal', label: 'Horizontal' },
   { id: 'vertical', label: 'Vertical' },
   { id: 'both', label: 'Both' },
+];
+
+const SAMPLE_MODES: { id: SampleMode; label: string }[] = [
+  { id: 'current', label: 'Current Layer' },
+  { id: 'currentBelow', label: 'Current & Below' },
+  { id: 'all', label: 'All Layers' },
+  { id: 'allNoAdj', label: 'All Layers no Adjustments' },
+  { id: 'currentBelowNoAdj', label: 'Current & Below no Adjustments' },
 ];
 
 function Slider({ label, value, min, max, step, onChange, format, phone }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format?: (v: number) => string; phone?: boolean }) {
@@ -93,6 +107,7 @@ export function ToolOptionsBar({
   symmetry, onSymmetryChange, spacing, onSpacingChange, brushShape, onBrushShapeChange,
   angle, onAngleChange, roundness, onRoundnessChange, scatter, onScatterChange,
   smoothing, onSmoothingChange,
+  sampleMode, onSampleModeChange,
   sliceRectCount, onAddSliceRect, onExportSlices,
   hasSelection, onDeselect,
 }: ToolOptionsBarProps) {
@@ -108,8 +123,9 @@ export function ToolOptionsBar({
   const showSlice = activeTool === 'slice';
   const showDeselect = SELECTION_TOOLS.has(activeTool) && hasSelection;
   const showSelectionHint = (PAINT_TOOLS as readonly string[]).includes(activeTool) && hasSelection;
+  const showSample = SAMPLE_TOOLS.has(activeTool);
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice && !showDeselect && !showSelectionHint)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice && !showDeselect && !showSelectionHint && !showSample)) return null;
 
   const controlClass = `studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control text-ink text-micro shrink-0 ${phone ? 'min-h-11 px-3' : 'px-2 py-1'}`;
   const selectClass = `bg-ink/5 border border-hairline rounded-control text-ink text-micro ${phone ? 'min-h-11 px-2' : 'px-1.5 py-1'}`;
@@ -148,6 +164,18 @@ export function ToolOptionsBar({
       {showFlow && <Slider label="Flow" value={flow * 100} min={0} max={100} step={1} onChange={(v) => onFlowChange(v / 100)} format={(v) => `${Math.round(v)}%`} phone={phone} />}
       {showOpacity && <Slider label="Opacity" value={opacity * 100} min={0} max={100} step={1} onChange={(v) => onOpacityChange(v / 100)} format={(v) => `${Math.round(v)}%`} phone={phone} />}
       {showTolerance && <Slider label="Tolerance" value={tolerance} min={0} max={100} step={1} onChange={onToleranceChange} phone={phone} />}
+      {showSample && (
+        <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+          <span className="uppercase tracking-wide text-[10px] opacity-70">Sample</span>
+          <select
+            value={sampleMode}
+            onChange={(e) => onSampleModeChange(e.target.value as SampleMode)}
+            className={`studio-interactive studio-focusable ${selectClass}`}
+          >
+            {SAMPLE_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </label>
+      )}
       {showSlice && (
         <>
           <button
