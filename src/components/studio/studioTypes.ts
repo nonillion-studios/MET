@@ -7,26 +7,90 @@ import {
 import type { Point } from './paint/selection';
 
 export type BlendMode =
-  | 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
+  | 'normal' | 'dissolve'
+  | 'darken' | 'multiply' | 'color-burn' | 'linear-burn' | 'darker-color'
+  | 'lighten' | 'screen' | 'color-dodge' | 'linear-dodge' | 'lighter-color'
+  | 'overlay' | 'soft-light' | 'hard-light' | 'vivid-light' | 'linear-light' | 'pin-light' | 'hard-mix'
+  | 'difference' | 'exclusion' | 'subtract' | 'divide'
+  | 'hue' | 'saturation' | 'color' | 'luminosity';
 
+/** Photoshop's real ~27-mode grouping/order, kept for the Blending Options dialog's dropdown. */
 export const BLEND_MODES: { id: BlendMode; label: string }[] = [
   { id: 'normal', label: 'Normal' },
-  { id: 'multiply', label: 'Multiply' },
-  { id: 'screen', label: 'Screen' },
-  { id: 'overlay', label: 'Overlay' },
+  { id: 'dissolve', label: 'Dissolve' },
   { id: 'darken', label: 'Darken' },
+  { id: 'multiply', label: 'Multiply' },
+  { id: 'color-burn', label: 'Color Burn' },
+  { id: 'linear-burn', label: 'Linear Burn' },
+  { id: 'darker-color', label: 'Darker Color' },
   { id: 'lighten', label: 'Lighten' },
+  { id: 'screen', label: 'Screen' },
+  { id: 'color-dodge', label: 'Color Dodge' },
+  { id: 'linear-dodge', label: 'Linear Dodge (Add)' },
+  { id: 'lighter-color', label: 'Lighter Color' },
+  { id: 'overlay', label: 'Overlay' },
+  { id: 'soft-light', label: 'Soft Light' },
+  { id: 'hard-light', label: 'Hard Light' },
+  { id: 'vivid-light', label: 'Vivid Light' },
+  { id: 'linear-light', label: 'Linear Light' },
+  { id: 'pin-light', label: 'Pin Light' },
+  { id: 'hard-mix', label: 'Hard Mix' },
+  { id: 'difference', label: 'Difference' },
+  { id: 'exclusion', label: 'Exclusion' },
+  { id: 'subtract', label: 'Subtract' },
+  { id: 'divide', label: 'Divide' },
+  { id: 'hue', label: 'Hue' },
+  { id: 'saturation', label: 'Saturation' },
+  { id: 'color', label: 'Color' },
+  { id: 'luminosity', label: 'Luminosity' },
 ];
 
-/** Maps our blend mode ids to Konva's globalCompositeOperation values. */
-export const BLEND_TO_COMPOSITE: Record<BlendMode, GlobalCompositeOperation> = {
+/** Maps our blend mode ids to Konva's (the browser canvas's) native `globalCompositeOperation`
+ *  values — 17 of Photoshop's ~27 modes have a real native equivalent. The other 10 (see
+ *  `CUSTOM_BLEND_MODES`) have no native composite-operation string and need real per-pixel math
+ *  instead (`lib/customBlendModes.ts`), applied as a filter rather than this map. */
+export const BLEND_TO_COMPOSITE: Partial<Record<BlendMode, GlobalCompositeOperation>> = {
   normal: 'source-over',
-  multiply: 'multiply',
-  screen: 'screen',
-  overlay: 'overlay',
   darken: 'darken',
+  multiply: 'multiply',
+  'color-burn': 'color-burn',
   lighten: 'lighten',
+  screen: 'screen',
+  'color-dodge': 'color-dodge',
+  'linear-dodge': 'lighter',
+  overlay: 'overlay',
+  'soft-light': 'soft-light',
+  'hard-light': 'hard-light',
+  difference: 'difference',
+  exclusion: 'exclusion',
+  hue: 'hue',
+  saturation: 'saturation',
+  color: 'color',
+  luminosity: 'luminosity',
 };
+
+/** The 10 modes with no native `globalCompositeOperation` equivalent — real per-pixel formulas
+ *  live in `lib/customBlendModes.ts`, dispatched by `StudioCanvas.tsx`'s render path instead of
+ *  `BLEND_TO_COMPOSITE`. */
+export const CUSTOM_BLEND_MODES = new Set<BlendMode>([
+  'dissolve', 'linear-burn', 'darker-color', 'lighter-color',
+  'vivid-light', 'linear-light', 'pin-light', 'hard-mix', 'subtract', 'divide',
+]);
+
+/**
+ * The native composite operation for `mode`, or `'source-over'` for a custom mode that has none.
+ * This is the *live-canvas* story only: Konva's per-node model only ever composites a node against
+ * its own cached pixels, never the backdrop, so a genuine custom-mode blend (which by definition
+ * needs the backdrop) can't run as a per-node filter without much deeper surgery than this session
+ * scopes. A custom-mode layer therefore previews as Normal on screen — a known, honest limitation,
+ * not a silent one (the Blending Options dialog says so). `lib/exportImage.ts`'s flatten path is
+ * where custom modes get their real per-pixel treatment instead (`lib/customBlendModes.ts`), since
+ * flatten export already composites everything sequentially onto one real 2D context with the
+ * backdrop naturally available at every step.
+ */
+export function compositeOperationFor(mode: BlendMode): GlobalCompositeOperation {
+  return BLEND_TO_COMPOSITE[mode] ?? 'source-over';
+}
 
 export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group' | 'path';
 
@@ -558,6 +622,206 @@ export interface PathLayerData {
   fillRule: PathFillRule;
 }
 
+/** Shadow/Glow's own blend mode + opacity + color, shared shape for all 4 (Drop Shadow, Inner
+ *  Shadow, Outer Glow, Inner Glow) since they're all "a blurred/offset copy of this layer's own
+ *  silhouette, drawn behind or clipped inside it". */
+export interface ShadowStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  angle: number; // 0-360, degrees
+  useGlobalLight: boolean;
+  distance: number; // 0-999
+  spread: number; // 0-100
+  size: number; // 0-999
+  noise: number; // 0-100
+  /** Drop Shadow only ("Layer Knocks Out Drop Shadow") — Inner Shadow has no equivalent field. */
+  layerKnocksOut?: boolean;
+}
+export interface GlowStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  noise: number; // 0-100
+  technique: 'softer' | 'precise';
+  spread: number; // 0-100
+  size: number; // 1-999
+  range: number; // 1-100
+  jitter: number; // 0-100
+  /** Inner Glow only. */
+  source?: 'center' | 'edge';
+}
+export interface BevelEmbossData {
+  enabled: boolean;
+  style: 'outer-bevel' | 'inner-bevel' | 'emboss' | 'pillow-emboss' | 'stroke-emboss';
+  technique: 'smooth' | 'chisel-hard' | 'chisel-soft';
+  depth: number; // 1-1000
+  direction: 'up' | 'down';
+  size: number; // 0-999
+  soften: number; // 0-16
+  angle: number; // 0-360
+  altitude: number; // 0-90
+  highlightMode: BlendMode;
+  highlightColor: string;
+  highlightOpacity: number; // 0-100
+  shadowMode: BlendMode;
+  shadowColor: string;
+  shadowOpacity: number; // 0-100
+  /** Left-nav sub-items under Bevel & Emboss. Real toggles (see BlendingOptionsDialog), not yet
+   *  wired to their own contour-curve/texture-pattern controls beyond the toggle itself — Contour
+   *  defaults to the same linear ramp Gradient Map already uses when this app has no dedicated
+   *  contour-curve editor; Texture has no pattern-asset infra, same honest-gap status as Pattern
+   *  Overlay below. */
+  contourEnabled: boolean;
+  textureEnabled: boolean;
+}
+export interface SatinStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  angle: number; // 0-360
+  distance: number; // 0-999
+  size: number; // 0-999
+  invert: boolean;
+}
+/** Color Overlay's real shape — ag-psd calls this "solid fill". */
+export interface SolidFillStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+}
+export interface GradientOverlayStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  /** Deliberately 2-stop only, matching every other gradient in this app (Gradient tool, Gradient
+   *  Map) — there's no multi-stop gradient editor anywhere in this codebase. */
+  gradient: { from: string; to: string };
+  style: 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond';
+  alignWithLayer: boolean;
+  angle: number; // 0-360
+  scale: number; // 10-150
+}
+export interface PatternOverlayStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  /** No pattern-asset library exists anywhere in this app — always null, the picker shows an
+   *  honest "No patterns available" state (matches Color Lookup's own scope decision). */
+  patternId: string | null;
+  scale: number; // 1-1000
+  linkWithLayer: boolean;
+}
+export interface StrokeStyleData {
+  enabled: boolean;
+  size: number; // 1-999
+  position: 'outside' | 'inside' | 'center';
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  fillType: 'color' | 'gradient' | 'pattern';
+  color: string;
+  gradient: { from: string; to: string };
+}
+
+/**
+ * A layer's full Layer Style / Blending Options — `StudioLayer.effects` itself is optional (absent
+ * = no dialog ever opened for this layer, matching the existing optional-field convention for
+ * `mask`/`clipped`/`collapsed`), but once present every sub-style always exists with its own
+ * `enabled` flag, rather than each sub-style itself being optional. This is a deliberate departure
+ * from this file's usual "optional nested field" shape: Photoshop's own Layer Style dialog always
+ * has settings for every effect type ready to go the instant you check its box, and modeling that
+ * the same way here means the dialog never needs "construct defaults on first open" logic — opening
+ * any style pane just reads what's already there.
+ */
+export interface LayerEffects {
+  advancedBlending: {
+    fillOpacity: number; // 0-100
+    channels: { r: boolean; g: boolean; b: boolean };
+    knockout: 'none' | 'shallow' | 'deep';
+    blendInteriorEffectsAsGroup: boolean;
+    blendClippedLayersAsGroup: boolean;
+    transparencyShapesLayer: boolean;
+    layerMaskHidesEffects: boolean;
+    vectorMaskHidesEffects: boolean;
+  };
+  /**
+   * Blend If's two split-point ranges, This Layer and Underlying Layer, each black/white 0-255.
+   * "This Layer" gates purely on this layer's own rendered luminance/alpha — real everywhere,
+   * including the live Konva canvas (a per-node filter has everything it needs). "Underlying Layer"
+   * needs the composited backdrop, which a Konva per-node filter fundamentally cannot see without
+   * much deeper rendering-pipeline surgery than this feature warrants — real in flattened export
+   * (`exportImage.ts`, which already composites sequentially with the backdrop naturally at hand)
+   * but not live-previewed on screen; the Blending Options dialog says so next to the control.
+   */
+  blendIf: {
+    thisLayer: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
+    underlying: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
+  };
+  dropShadow: ShadowStyleData;
+  innerShadow: ShadowStyleData;
+  outerGlow: GlowStyleData;
+  innerGlow: GlowStyleData;
+  bevelEmboss: BevelEmbossData;
+  satin: SatinStyleData;
+  colorOverlay: SolidFillStyleData;
+  gradientOverlay: GradientOverlayStyleData;
+  patternOverlay: PatternOverlayStyleData;
+  stroke: StrokeStyleData;
+}
+
+export function createDefaultLayerEffects(): LayerEffects {
+  return {
+    advancedBlending: {
+      fillOpacity: 100,
+      channels: { r: true, g: true, b: true },
+      knockout: 'none',
+      blendInteriorEffectsAsGroup: false,
+      blendClippedLayersAsGroup: true,
+      transparencyShapesLayer: true,
+      layerMaskHidesEffects: false,
+      vectorMaskHidesEffects: false,
+    },
+    blendIf: {
+      thisLayer: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
+      underlying: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
+    },
+    dropShadow: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 75, angle: 120, useGlobalLight: true, distance: 5, spread: 0, size: 5, noise: 0, layerKnocksOut: false },
+    innerShadow: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 75, angle: 120, useGlobalLight: true, distance: 5, spread: 0, size: 5, noise: 0 },
+    outerGlow: { enabled: false, blendMode: 'screen', color: '#ffff99', opacity: 75, noise: 0, technique: 'softer', spread: 0, size: 5, range: 50, jitter: 0 },
+    innerGlow: { enabled: false, blendMode: 'screen', color: '#ffff99', opacity: 75, noise: 0, technique: 'softer', spread: 0, size: 5, range: 50, jitter: 0, source: 'edge' },
+    bevelEmboss: { enabled: false, style: 'inner-bevel', technique: 'smooth', depth: 100, direction: 'up', size: 5, soften: 0, angle: 120, altitude: 30, highlightMode: 'screen', highlightColor: '#ffffff', highlightOpacity: 75, shadowMode: 'multiply', shadowColor: '#000000', shadowOpacity: 75, contourEnabled: false, textureEnabled: false },
+    satin: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 50, angle: 19, distance: 11, size: 14, invert: true },
+    colorOverlay: { enabled: false, blendMode: 'normal', color: '#ff0000', opacity: 100 },
+    gradientOverlay: { enabled: false, blendMode: 'normal', opacity: 100, gradient: { from: '#000000', to: '#ffffff' }, style: 'linear', alignWithLayer: true, angle: 90, scale: 100 },
+    patternOverlay: { enabled: false, blendMode: 'normal', opacity: 100, patternId: null, scale: 100, linkWithLayer: true },
+    stroke: { enabled: false, size: 3, position: 'outside', blendMode: 'normal', opacity: 100, fillType: 'color', color: '#ff0000', gradient: { from: '#000000', to: '#ffffff' } },
+  };
+}
+
+/** The 10 real (non-`advancedBlending`/`blendIf`) style keys, with display labels — shared by the
+ *  Blending Options dialog's left nav and the Layers panel's expandable fx sub-rows, so the two
+ *  never drift to different names for the same style. */
+export type LayerStyleKey = 'dropShadow' | 'innerShadow' | 'outerGlow' | 'innerGlow' | 'bevelEmboss' | 'satin' | 'colorOverlay' | 'gradientOverlay' | 'patternOverlay' | 'stroke';
+export const LAYER_STYLE_KEYS: LayerStyleKey[] = ['dropShadow', 'innerShadow', 'outerGlow', 'innerGlow', 'bevelEmboss', 'satin', 'colorOverlay', 'gradientOverlay', 'patternOverlay', 'stroke'];
+export const LAYER_STYLE_LABEL: Record<LayerStyleKey, string> = {
+  dropShadow: 'Drop Shadow', innerShadow: 'Inner Shadow', outerGlow: 'Outer Glow', innerGlow: 'Inner Glow',
+  bevelEmboss: 'Bevel & Emboss', satin: 'Satin', colorOverlay: 'Color Overlay', gradientOverlay: 'Gradient Overlay',
+  patternOverlay: 'Pattern Overlay', stroke: 'Stroke',
+};
+
+/** True if any style is actually switched on — gates the Layers panel's fx badge, which should only
+ *  appear once something would actually render, not just because the dialog was opened once. */
+export function hasAnyEnabledStyle(effects: LayerEffects): boolean {
+  return effects.dropShadow.enabled || effects.innerShadow.enabled || effects.outerGlow.enabled
+    || effects.innerGlow.enabled || effects.bevelEmboss.enabled || effects.satin.enabled
+    || effects.colorOverlay.enabled || effects.gradientOverlay.enabled || effects.patternOverlay.enabled
+    || effects.stroke.enabled;
+}
+
 export interface StudioLayer {
   id: string;
   type: StudioLayerType;
@@ -568,6 +832,10 @@ export interface StudioLayer {
   blendMode: BlendMode;
   /** Background layers can't be deleted, reordered below, or have opacity/blend changed. */
   isBackground?: boolean;
+  /** Layer Style / Blending Options — absent means the dialog was never used for this layer. Any
+   *  layer type may carry one (path layers included — unlike masks, nothing here needs a raster
+   *  target to make sense). */
+  effects?: LayerEffects;
   /**
    * Present iff type === 'group'. Bottom-to-top, same convention as the root array — `layerTree.ts`
    * owns that invariant, and nothing outside it may walk or edit this directly.

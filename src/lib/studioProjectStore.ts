@@ -5,8 +5,11 @@ import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, createDefaultAdjustmentData
 /** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes.
  *  v7 added the 'path' layer type — no backfill needed (old data simply has zero path layers).
  *  v8 added 8 new AdjustmentKind values plus per-channel Curves/Hue-Saturation/Levels — every new
- *  AdjustmentLayerData field backfills from createDefaultAdjustmentData(a.kind), see migrateLayer. */
-export const STUDIO_SCHEMA_VERSION = 8;
+ *  AdjustmentLayerData field backfills from createDefaultAdjustmentData(a.kind), see migrateLayer.
+ *  v9 added StudioLayer.effects (Blending Options) — optional, and absent is precisely the pre-v9
+ *  behaviour (no styles applied), the same reasoning v5's `mask`/`clipped`/`collapsed` already used.
+ *  No backfill of its own. */
+export const STUDIO_SCHEMA_VERSION = 9;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
 

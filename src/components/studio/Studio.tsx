@@ -55,6 +55,7 @@ import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
+import { BlendingOptionsDialog } from './BlendingOptionsDialog';
 import { FilterDialog } from './filters/FilterDialog';
 import { FillPathDialog, type FillPathResult } from './FillPathDialog';
 import { StrokePathDialog, type StrokePathResult } from './StrokePathDialog';
@@ -1679,6 +1680,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
+  const [blendingOptionsLayerId, setBlendingOptionsLayerId] = useState<string | null>(null);
+  const [blendingOptionsSection, setBlendingOptionsSection] = useState<Parameters<typeof BlendingOptionsDialog>[0]['initialSection']>(undefined);
+
+  function openBlendingOptions(id: string, section?: typeof blendingOptionsSection) {
+    setBlendingOptionsLayerId(id);
+    setBlendingOptionsSection(section);
+  }
+
+  /** Live preview (commit=false, no history entry, fired on every field change while the dialog's
+   *  own Preview checkbox is on) vs the real committed change (commit=true, OK button only). */
+  function handleUpdateLayerStyle(id: string, patch: { blendMode?: StudioLayer['blendMode']; opacity?: number; effects: NonNullable<StudioLayer['effects']> }, commit: boolean) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, ...patch })), commit ? 'Change Blending Options' : undefined);
+  }
+
   /** The style bits StudioCanvas's drag-box preview needs — same resolved entry (override precedence
    *  already applied by parseTyperScript) that handleAddTextLayer below reads at actual placement
    *  time, so the preview can never show something different from what committing will produce. */
@@ -2180,6 +2195,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       expandedLayerId={expandedLayerId}
       onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
       onConvertTextMode={handleConvertTextMode}
+      onOpenBlendingOptions={(id, section) => openBlendingOptions(id, section as typeof blendingOptionsSection)}
+      onToggleLayerStyle={(id, styleKey, enabled) => {
+        const target = findLayer(layers, id);
+        const currentEffects = target?.effects;
+        if (!currentEffects) return;
+        const key = styleKey as keyof typeof currentEffects;
+        handleUpdateLayerStyle(id, { effects: { ...currentEffects, [key]: { ...currentEffects[key], enabled } } }, true);
+      }}
       hideTitle
     />
   );
@@ -2916,6 +2939,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onClose={() => setStrokePathDialogOpen(false)}
         onConfirm={confirmStrokePath}
       />
+      {blendingOptionsLayerId && (() => {
+        const target = findLayer(layers, blendingOptionsLayerId);
+        if (!target) return null;
+        return (
+          <BlendingOptionsDialog
+            open
+            layer={target}
+            initialSection={blendingOptionsSection}
+            onClose={() => setBlendingOptionsLayerId(null)}
+            onUpdate={(patch, commit) => handleUpdateLayerStyle(target.id, patch, commit)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { clipToSelection, magicWandMask, type Selection } from './selection';
 import { getBrushTip, type BrushShape } from './brushTip';
 import { traceAnchors, flattenPathToPolygon } from '../pathGeometry';
-import { BLEND_TO_COMPOSITE, type PathLayerData } from '../studioTypes';
+import { compositeOperationFor, type PathLayerData } from '../studioTypes';
 import type { ContentAwareMode } from './contentAwareAlgorithms';
 import type { SampleMode } from '../../../lib/sampleComposite';
 
@@ -603,7 +603,7 @@ export function fillPathOntoCanvas(ctx: CanvasRenderingContext2D, path: PathLaye
   // and "blend against the backdrop" are two different, mutually exclusive intents.
   ctx.globalCompositeOperation = path.fill.preserveTransparency
     ? 'source-atop'
-    : BLEND_TO_COMPOSITE[path.fill.blendMode ?? 'normal'];
+    : compositeOperationFor(path.fill.blendMode ?? 'normal');
   ctx.fillStyle = path.fill.color;
   ctx.fill(path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
   ctx.restore();

@@ -10,7 +10,10 @@ import { swal } from '../../lib/swalTheme';
 import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
-import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer, type LayerSelectMode, type AdjustmentKind } from './studioTypes';
+import {
+  LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL,
+  type StudioLayer, type LayerSelectMode, type AdjustmentKind,
+} from './studioTypes';
 import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
 
 /** Where a drop lands relative to the row under the cursor. */
@@ -68,6 +71,11 @@ interface LayersPanelProps {
   /** Explicit "open full settings" intent (the Text/Adjustment panel) — separate from onSelect, so
    *  a plain click never navigates away from this list. No-ops for layer types without a panel. */
   onOpenSettings?: (id: string) => void;
+  /** Opens the Blending Options dialog — right-click menu, the fx badge, and each expanded style
+   *  sub-row's own re-open all funnel through this. `section` jumps straight to that style's pane. */
+  onOpenBlendingOptions?: (id: string, section?: string) => void;
+  /** Toggles one style's own `enabled` flag without opening the dialog — the sub-row eye icons. */
+  onToggleLayerStyle?: (id: string, styleKey: string, enabled: boolean) => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -90,7 +98,7 @@ export function LayersPanel({
   onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
-  hideTitle, onConvertTextMode,
+  hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -140,6 +148,7 @@ export function LayersPanel({
         : {}),
       moveUp: 'Move Up',
       moveDown: 'Move Down',
+      ...(onOpenBlendingOptions ? { blendingOptions: 'Blending Options…' } : {}),
       ...(layer.isBackground ? {} : { delete: 'Delete' }),
     };
     const result = await swal({
@@ -172,6 +181,7 @@ export function LayersPanel({
       case 'lock': onToggleLocked(layer.id); break;
       case 'moveUp': onMove(layer.id, 'up'); break;
       case 'moveDown': onMove(layer.id, 'down'); break;
+      case 'blendingOptions': onOpenBlendingOptions?.(layer.id); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }
@@ -377,6 +387,23 @@ export function LayersPanel({
                       </span>
                     )}
 
+                    {/* fx badge — same visual convention as the mask chip above (w-5 h-5 rounded
+                        border, always visible once present). Only appears once a style is actually
+                        enabled (`hasAnyEnabledStyle`); a layer that's never had the dialog opened, or
+                        had every style toggled back off, shows nothing here at all. */}
+                    {layer.effects && hasAnyEnabledStyle(layer.effects) && onOpenBlendingOptions && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`${layer.name} has layer effects — open Blending Options`}
+                        title="Layer effects (click to edit)"
+                        onClick={(e) => { e.stopPropagation(); onOpenBlendingOptions(layer.id); }}
+                        className="shrink-0 w-5 h-5 rounded border border-hairline text-ink-faint hover:text-ink flex items-center justify-center text-[10px] font-semibold"
+                      >
+                        fx
+                      </span>
+                    )}
+
                     {isRenaming ? (
                       <input
                         autoFocus
@@ -562,6 +589,11 @@ export function LayersPanel({
                       </IconButton>
                     )}
                     <div className="flex-1" />
+                    {onOpenBlendingOptions && !layer.isBackground && (
+                      <IconButton size="sm" aria-label="Blending options" title="Blending Options…" onClick={() => onOpenBlendingOptions(layer.id)} className="!bg-transparent !w-7 !h-7 text-[10px] font-semibold">
+                        fx
+                      </IconButton>
+                    )}
                     {onOpenSettings && (layer.type === 'text' || layer.type === 'adjustment') && (
                       <IconButton size="sm" aria-label="Open layer settings" title="Open full settings (Text/Adjustment panel)" onClick={() => onOpenSettings(layer.id)} className="!bg-transparent !w-7 !h-7">
                         <Settings2 size={12} />
@@ -581,6 +613,36 @@ export function LayersPanel({
                       </IconButton>
                     )}
                   </div>
+
+                  {/* One sub-row per *enabled* style — mirrors the group-collapse/chevron
+                      convention already in this file rather than inventing new interaction
+                      language. Each row's own eye toggles that one style's `enabled` flag without
+                      opening the dialog; clicking the row's label reopens the dialog scrolled to
+                      that style's own pane. */}
+                  {layer.effects && onOpenBlendingOptions && (
+                    <div className="flex flex-col gap-0.5 pt-1 border-t border-hairline/40">
+                      {LAYER_STYLE_KEYS.filter((key) => layer.effects![key].enabled).map((key) => (
+                        <div key={key} className="flex items-center gap-1.5 pl-1">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`Toggle ${LAYER_STYLE_LABEL[key]}`}
+                            onClick={() => onToggleLayerStyle?.(layer.id, key, !layer.effects![key].enabled)}
+                            className="shrink-0 w-5 h-5 flex items-center justify-center text-ink-faint hover:text-ink"
+                          >
+                            <Eye size={11} />
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onOpenBlendingOptions(layer.id, key)}
+                            className="flex-1 min-w-0 text-left text-micro text-ink-faint hover:text-ink truncate"
+                          >
+                            {LAYER_STYLE_LABEL[key]}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
