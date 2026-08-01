@@ -22,7 +22,7 @@ import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
 import {
   NO_SELECTION, combineModeFromModifiers, combineSelections, hasSelection, rasterizeSelectionMask,
   selectionContainsPoint, translateSelection, transformSelectionMask, selectionToAlphaCanvas, alphaMaskToSelection,
-  type Selection, type SelectionCombineMode,
+  selectionBounds, type Selection, type SelectionCombineMode,
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { snapSegmentToEdges } from './paint/magneticLasso';
@@ -133,8 +133,9 @@ interface StudioCanvasProps {
   onEyedropperPick?: (hex: string) => void;
   /** Fired on Enter/double-click while the Crop tool is active, to commit the current rect selection as a crop. */
   onCommitCrop?: () => void;
-  /** TypeR Multi-Bubble mode's already-queued rects, drawn as a distinct overlay from the live selection. */
-  queuedBubbleRects?: { x: number; y: number; width: number; height: number }[];
+  /** TypeR Multi-Bubble mode's already-queued shapes (any selection kind), drawn as a distinct
+   *  overlay from the live selection. */
+  queuedBubbleShapes?: Selection[];
   /** Slice tool's already-queued rects, drawn as a distinct overlay from the live selection. */
   queuedSliceRects?: { x: number; y: number; width: number; height: number }[];
   /** Select > Transform Selection: shows a free-transform box around the selection's bounds instead
@@ -252,7 +253,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
-  queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
+  queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null, onLiveCursorMove,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2283,10 +2284,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 )}
               </>
             )}
-            {queuedBubbleRects?.map((rect, i) => (
-              <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
-                stroke="#f59e0b" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />
-            ))}
+            {queuedBubbleShapes?.map((shape, i) => {
+              // Renders whatever shape was actually captured (rect/ellipse/polygon) — a mask has no
+              // clean vector outline to draw, so it falls back to its bounds, matching how Type
+              // Region's own clipShape falls back to a plain rect for mask-kind selections.
+              const strokeProps = { stroke: '#f59e0b', strokeWidth: 1.5 / scale, dash: [4 / scale, 3 / scale] };
+              if (shape.kind === 'ellipse') {
+                return (
+                  <Ellipse key={i}
+                    x={shape.x + shape.width / 2} y={shape.y + shape.height / 2}
+                    radiusX={Math.abs(shape.width) / 2} radiusY={Math.abs(shape.height) / 2}
+                    {...strokeProps}
+                  />
+                );
+              }
+              if (shape.kind === 'polygon') {
+                const pts = shape.points.flatMap(p => [p.x, p.y]);
+                return <Line key={i} points={pts} closed {...strokeProps} />;
+              }
+              const bounds = shape.kind === 'rect' ? shape : selectionBounds(shape);
+              if (!bounds) return null;
+              return (
+                <Rect key={i} x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} {...strokeProps} />
+              );
+            })}
             {queuedSliceRects?.map((rect, i) => (
               <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
                 stroke="#22d3ee" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />

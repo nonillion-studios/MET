@@ -753,7 +753,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // All replays each capture's own line/style rather than re-deriving position from sequential
   // order at fill time.
   const [multiBubbleMode, setMultiBubbleModeState] = useState(false);
-  const [multiBubbleRects, setMultiBubbleRects] = useState<{ rect: { x: number; y: number; width: number; height: number }; lineIndex: number }[]>([]);
+  const [multiBubbleRects, setMultiBubbleRects] = useState<{ shape: Selection; lineIndex: number }[]>([]);
   // Script-line indices already stamped onto the canvas (single-click placement or a multi-bubble
   // fill) — drives the line list's ✓ badge. Not persisted (mirrors typerIndex's own current
   // session-only behaviour); cleared whenever the script itself changes or progress is reset.
@@ -766,15 +766,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleAddBubbleRect() {
-    if (selection.kind !== 'rect') {
-      swalToast({ icon: 'info', title: 'Draw a rectangle around a bubble first' });
+    // Accepts any real selection shape (rect/ellipse/polygon/mask), not just a rectangle —
+    // handlePlaceAllBubbles below derives bounds/clipShape from whatever was actually drawn,
+    // the same way Type Region's handleCreateTypeRegion already does for a single bubble.
+    if (selection.kind === 'none') {
+      swalToast({ icon: 'info', title: 'Draw a selection around a bubble first' });
       return;
     }
     if (!typerLines[typerIndex]) {
       swalToast({ icon: 'info', title: 'No more lines to capture' });
       return;
     }
-    setMultiBubbleRects(prev => [...prev, { rect: selection, lineIndex: typerIndex }]);
+    setMultiBubbleRects(prev => [...prev, { shape: selection, lineIndex: typerIndex }]);
     setSelection(NO_SELECTION);
     // Auto-advance, same as a single armed canvas click — lets the user jump to a different line
     // in the panel before drawing the *next* bubble, which is what lets each capture carry its own
@@ -807,7 +810,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         pageBoundaryHint = line.pageHint;
         break;
       }
-      const { rect } = capture;
+      const { shape } = capture;
+      const rect = selectionBounds(shape);
+      if (!rect) continue;
       const { content, style, boldOverride, italicOverride } = line;
       const lineCount = content.split('\n').length || 1;
       const textWidth = Math.max(40, Math.min(rect.width, 400));
@@ -826,6 +831,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         strokeColor: style.strokeColor,
         strokeWidth: style.strokeWidth,
       };
+      // Clip to the captured shape exactly like Type Region's own single-bubble path
+      // (handleCreateTypeRegion below) — a rect needs no clip, a mask has no clean vector
+      // form to persist, so both fall back to the plain rectangular container at bounds.
+      if (shape.kind === 'ellipse') {
+        layer.text!.clipShape = { kind: 'ellipse', x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      } else if (shape.kind === 'polygon') {
+        layer.text!.clipShape = { kind: 'polygon', points: shape.points };
+      }
       newLayers.push(layer);
       placedNow.push(capture.lineIndex);
     }
@@ -2494,7 +2507,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onPaintStrokeEnd={handlePaintStrokeEnd}
       onEyedropperPick={setForeground}
       onCommitCrop={handleCommitCrop}
-      queuedBubbleRects={multiBubbleRects.map(c => c.rect)}
+      queuedBubbleShapes={multiBubbleRects.map(c => c.shape)}
       queuedSliceRects={sliceRects}
       transformingSelection={transformingSelection}
       onExitTransformSelection={() => setTransformingSelection(false)}

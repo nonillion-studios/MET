@@ -34,8 +34,9 @@ export interface TyperPanelProps {
   onArmedChange: (armed: boolean) => void;
   /** Built-in fonts plus any custom fonts installed via the Fonts panel. */
   fontFamilies?: string[];
-  /** Multi-Bubble mode: draw a rect per bubble (Rectangular Marquee), queue it, then place every
-   *  queued rect's line in one go instead of one click-to-place bubble at a time. */
+  /** Multi-Bubble mode: draw a selection per bubble (any selection tool — rect/ellipse/lasso/wand),
+   *  queue it, then place every queued shape's line in one go instead of one click-to-place bubble
+   *  at a time. A non-rect capture clips the placed text to its exact shape, not just its bounds. */
   multiBubbleMode: boolean;
   onMultiBubbleModeChange: (enabled: boolean) => void;
   queuedBubbleCount: number;
@@ -490,14 +491,14 @@ export function TyperPanel({
           >
             <Target size={14} />
             {armed
-              ? multiBubbleMode ? 'Armed — draw a rect per bubble' : 'Armed — click the canvas to place'
+              ? multiBubbleMode ? 'Armed — draw a selection per bubble' : 'Armed — click the canvas to place'
               : 'Arm placement'}
           </button>
           <IconButton
             size="sm"
             active={multiBubbleMode}
             aria-label="Multi-Bubble mode"
-            title="Multi-Bubble mode: queue several bubble rects, then place all their lines at once (Ctrl+Shift+M)"
+            title="Multi-Bubble mode: queue several bubble selections, then place all their lines at once (Ctrl+Shift+M)"
             onClick={() => onMultiBubbleModeChange(!multiBubbleMode)}
             className="!bg-transparent !w-9 !h-9"
           >
