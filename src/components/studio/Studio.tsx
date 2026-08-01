@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Home, Radio } from 'lucide-react';
 import { cn, IconButton, Modal } from '../ui';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
@@ -57,6 +58,16 @@ import { MagicEraseLoadingOverlay } from './MagicEraseLoadingOverlay';
 import { detectTextRegions, type TextRegion } from '../../lib/textDetect';
 import { callMagicErase, MagicEraseError } from '../../lib/magicErase';
 import { loadMagicEraseServer } from '../../lib/magicEraseStore';
+import { supabase } from '../../lib/supabaseClient';
+import {
+  startStudioSession, endStudioSession, joinStudioSessionChannel,
+  type StudioCollabPeer, type StudioSessionRow, type StudioCollabHandle,
+} from '../../lib/studioCollab';
+import { useStudioVoiceChat } from './useStudioVoiceChat';
+import { useStudioScreenShare } from './useStudioScreenShare';
+import { CollabCursors } from './CollabCursors';
+import { CollabViewerCanvas } from './CollabViewerCanvas';
+import { CollabSessionPanel, type CollabChatMessage } from './CollabSessionPanel';
 import {
   loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot, STUDIO_SCHEMA_VERSION,
   type ChapterStudioData, type SerializedStudioLayer,
@@ -77,6 +88,17 @@ interface StudioProps {
   /** Project > Export as .msp — the existing workspace-level .msp export (App.tsx), threaded down so
    *  it's reachable from inside a chapter without Studio needing the whole `Workspace` object itself. */
   onExportMsp?: () => void;
+  /** Opens the standalone Text Editor tab with a doc linked to this chapter — Text Editor's only
+   *  entry point now that it's no longer a top-level nav destination. */
+  onOpenTextEditor?: () => void;
+  /** Set when this mount is a spectator joining someone else's live session (from a chapter card's
+   *  "Live" badge) rather than a normal editing session — renders a read-only viewer shell instead
+   *  of the full edit UI, and never mounts the real Konva StudioCanvas at all. */
+  viewOnlySession?: { sessionId: string; teamId: string } | null;
+  /** Set when this mount was opened via Teams' "Go Live" button (which already picked the team and
+   *  chapter) — Studio starts hosting automatically instead of the user needing a second click. */
+  autoStartLiveSession?: { teamId: string } | null;
+  onConsumeAutoStartLiveSession?: () => void;
   /** Reports the active page id up to App.tsx on every change — lets the standalone Text Editor's
    *  split-screen page preview follow along live even though it's a completely separate top-level
    *  tab with no other visibility into Studio's internal state. */
@@ -95,12 +117,223 @@ export function Studio(props: StudioProps) {
   );
 }
 
-function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onActivePageChange }: StudioProps) {
+function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
+
+  // Live collab (spectator mode) — a hosted session for this chapter, joined either as the host
+  // (via "Go Live" below) or as a viewer (viewOnlySession, set by App.tsx when opened from a
+  // chapter's "Live" badge). See src/lib/studioCollab.ts for the underlying presence/broadcast
+  // plumbing this all rides on.
+  const [liveSession, setLiveSession] = useState<StudioSessionRow | null>(null);
+  const [collabSelf, setCollabSelf] = useState<{ id: string; name: string } | null>(null);
+  const [collabPeers, setCollabPeers] = useState<StudioCollabPeer[]>([]);
+  const [collabMessages, setCollabMessages] = useState<CollabChatMessage[]>([]);
+  const [collabCursors, setCollabCursors] = useState<Record<string, { name: string; x: number; y: number }>>({});
+  const [viewerFrame, setViewerFrame] = useState<string | null>(null);
+  const [goingLive, setGoingLive] = useState(false);
+  const collabHandleRef = useRef<StudioCollabHandle | null>(null);
+  const isHostingLive = !!liveSession && !viewOnlySession;
+  // Remote control: who currently holds it (everyone learns this, so a granted viewer's own
+  // canvas can become interactive and the roster can show who's driving), tracked identically on
+  // host and viewers — only the host's onControlRequest handler ever actually grants it, gated at
+  // the channel layer (studioCollab.ts only invokes that callback for self.isHost in the first
+  // place, so there's no separate "am I host" check needed here).
+  const [controlGrantedTo, setControlGrantedTo] = useState<string | null>(null);
+  // Same stale-closure fix as voiceRef above — the host's onRemoteInput handler is captured once
+  // when the channel is created and never re-subscribed just because `controlGrantedTo` changed.
+  const controlGrantedToRef = useRef(controlGrantedTo);
+  useEffect(() => { controlGrantedToRef.current = controlGrantedTo; }, [controlGrantedTo]);
+  const voice = useStudioVoiceChat({
+    collabHandleRef,
+    selfUserId: collabSelf?.id ?? null,
+    peerUserIds: collabPeers.filter(p => p.userId !== collabSelf?.id).map(p => p.userId),
+  });
+  // The channel's voice-signal handlers are registered once per session (see the two
+  // joinStudioSessionChannel calls below) and never re-subscribed just because `voice`'s own
+  // handler functions got new identities (e.g. `joined` flipping) — routing through a ref that
+  // always points at the latest versions is what keeps signaling working after the mesh's own
+  // state changes mid-session, mirroring the same stale-closure fix TeamsPanel's hydrateSender
+  // needed for realtime chat messages.
+  const voiceRef = useRef(voice);
+  useEffect(() => { voiceRef.current = voice; }, [voice]);
+  const screenShare = useStudioScreenShare({
+    collabHandleRef,
+    selfUserId: collabSelf?.id ?? null,
+    isHost: isHostingLive,
+    peerUserIds: collabPeers.filter(p => p.userId !== collabSelf?.id).map(p => p.userId),
+  });
+  const screenShareRef = useRef(screenShare);
+  useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
+  const panelLayout = usePanelLayout();
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (!data.user) return;
+      const name = (data.user.user_metadata as { name?: string } | undefined)?.name || data.user.email || 'Someone';
+      setCollabSelf({ id: data.user.id, name });
+    });
+  }, []);
+
+  // Joining as a viewer is driven entirely by the viewOnlySession prop (set once, by whoever
+  // opened this mount) — there's no "Go Live" equivalent gesture for a viewer to trigger this.
+  useEffect(() => {
+    if (!viewOnlySession || !collabSelf) return;
+    const handle = joinStudioSessionChannel(
+      viewOnlySession.sessionId,
+      { userId: collabSelf.id, name: collabSelf.name, isHost: false },
+      {
+        onPeers: setCollabPeers,
+        onFrame: (_userId, dataUrl) => setViewerFrame(dataUrl),
+        onCursor: (userId, name, x, y) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y } })),
+        onChat: (userId, name, text, at) => setCollabMessages(prev => [...prev, { userId, name, text, at }]),
+        onEnded: () => {
+          swalToast({ icon: 'info', title: 'The host ended this live session' });
+          onBack();
+        },
+        onVoiceOffer: (from, sdp) => voiceRef.current.handleOffer(from, sdp),
+        onVoiceAnswer: (from, sdp) => voiceRef.current.handleAnswer(from, sdp),
+        onVoiceIce: (from, candidate) => voiceRef.current.handleIce(from, candidate),
+        onScreenshareOffer: (from, sdp) => screenShareRef.current.handleOffer(from, sdp),
+        onScreenshareAnswer: (from, sdp) => screenShareRef.current.handleAnswer(from, sdp),
+        onScreenshareIce: (from, candidate) => screenShareRef.current.handleIce(from, candidate),
+        onScreenshareEnded: () => screenShareRef.current.handleEnded(),
+        onControlGranted: setControlGrantedTo,
+      },
+    );
+    collabHandleRef.current = handle;
+    return () => { handle.leave(); collabHandleRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewOnlySession?.sessionId, collabSelf?.id]);
+
+  // Core "start hosting" logic, with the team already decided — Go Live is now initiated from
+  // Teams' own Live section (which already knows which team it's in), not from inside Studio, so
+  // there's no team picker here anymore. self is passed explicitly rather than read from
+  // `collabSelf` closure state, since the auto-start effect below fires the instant collabSelf
+  // resolves and can't rely on a stale closure capturing it as still-null.
+  const startHostingForTeam = useCallback(async (teamId: string, self: { id: string; name: string }) => {
+    setGoingLive(true);
+    try {
+      const { session, error } = await startStudioSession(teamId, chapterId);
+      if (!session) {
+        swalToast({ icon: 'error', title: error || 'Could not start the live session' });
+        return;
+      }
+      setLiveSession(session);
+      panelLayout.reveal('collab');
+      const handle = joinStudioSessionChannel(
+        session.id,
+        { userId: self.id, name: self.name, isHost: true },
+        {
+          onPeers: setCollabPeers,
+          onCursor: (userId, name, x, y) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y } })),
+          onChat: (userId, name, text, at, tts) => {
+            setCollabMessages(prev => [...prev, { userId, name, text, at }]);
+            // Only the host ever speaks a tts-flagged message — reading it aloud on every
+            // viewer's device too would be a nonsensical, noisy default for what's meant to be a
+            // "make sure the host specifically hears this" gesture (e.g. a viewer flagging
+            // something urgent while the host is heads-down painting and not watching chat).
+            if (tts && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+              window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+            }
+          },
+          onVoiceOffer: (from, sdp) => voiceRef.current.handleOffer(from, sdp),
+          onVoiceAnswer: (from, sdp) => voiceRef.current.handleAnswer(from, sdp),
+          onVoiceIce: (from, candidate) => voiceRef.current.handleIce(from, candidate),
+          onScreenshareAnswer: (from, sdp) => screenShareRef.current.handleAnswer(from, sdp),
+          onScreenshareIce: (from, candidate) => screenShareRef.current.handleIce(from, candidate),
+          onControlRequest: async (userId, name) => {
+            const r = await swal({
+              icon: 'question',
+              title: 'Control request',
+              text: `${name} wants to drive your Studio (paint/use tools remotely). Allow?`,
+              showCancelButton: true,
+              confirmButtonText: 'Allow',
+              cancelButtonText: 'Deny',
+            });
+            if (r.isConfirmed) collabHandleRef.current?.grantControl(userId);
+          },
+          onControlGranted: setControlGrantedTo,
+          onRemoteInput: (fromUserId, kind, x, y, button) => {
+            if (fromUserId !== controlGrantedToRef.current) return; // stale/unauthorized — ignore
+            canvasRef.current?.dispatchRemotePointerEvent(kind, { x, y }, button);
+          },
+        },
+      );
+      collabHandleRef.current = handle;
+    } finally {
+      setGoingLive(false);
+    }
+  }, [chapterId, panelLayout]);
+
+  // Arriving here via Teams' "Go Live" button (App.tsx's autoStartLiveSession) — starts hosting
+  // automatically the moment both this chapter's Studio has mounted and the user's own identity
+  // has resolved, instead of requiring a second click once already inside Studio.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (!autoStartLiveSession || !collabSelf || autoStartedRef.current || liveSession) return;
+    autoStartedRef.current = true;
+    startHostingForTeam(autoStartLiveSession.teamId, collabSelf);
+    onConsumeAutoStartLiveSession?.();
+  }, [autoStartLiveSession, collabSelf, liveSession, startHostingForTeam, onConsumeAutoStartLiveSession]);
+
+  const handleEndLive = useCallback(() => {
+    if (!liveSession) return;
+    collabHandleRef.current?.announceEnded();
+    collabHandleRef.current?.leave();
+    collabHandleRef.current = null;
+    void endStudioSession(liveSession.id);
+    setLiveSession(null);
+    setCollabPeers([]);
+    setCollabMessages([]);
+    setCollabCursors({});
+  }, [liveSession]);
+
+  // Best-effort: a host closing the tab/navigating away without clicking "End Live Session"
+  // shouldn't leave a phantom "live" row other users keep seeing as joinable.
+  useEffect(() => {
+    if (!liveSession || viewOnlySession) return;
+    return () => {
+      collabHandleRef.current?.announceEnded();
+      collabHandleRef.current?.leave();
+      void endStudioSession(liveSession.id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveSession?.id]);
+
+  // The host can't just wander off mid-session — leaving requires an explicit "yes, stop the
+  // session" confirmation, not just clicking Back/Home. The unmount-cleanup effect above still
+  // exists as a safety net for a crashed tab/lost connection, but a deliberate exit is gated.
+  const handleBackClick = useCallback(async () => {
+    if (!isHostingLive) { onBack(); return; }
+    const r = await swal({
+      icon: 'warning',
+      title: "You're live",
+      text: 'Leaving now ends the session for everyone watching. Stop the session and leave?',
+      showCancelButton: true,
+      confirmButtonText: 'Stop & Leave',
+      cancelButtonText: 'Stay',
+    });
+    if (!r.isConfirmed) return;
+    handleEndLive();
+    onBack();
+  }, [isHostingLive, onBack, handleEndLive]);
+
+  // Same guard for closing/refreshing the tab outright — the browser's own native "leave site?"
+  // prompt is the only thing that can interrupt that, and only if the handler calls
+  // preventDefault() synchronously (an async confirm dialog of our own can't run in time here).
+  useEffect(() => {
+    if (!isHostingLive) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [isHostingLive]);
+
   const { foreground, background, setForeground, swap: swapColors, reset: resetColors } = useColor();
   const history = useHistory();
   useKeyboardUndo();
-  const panelLayout = usePanelLayout();
   const [brushSize, setBrushSize] = useState(24);
   const [brushHardness, setBrushHardness] = useState(0.8);
   const [brushOpacity, setBrushOpacity] = useState(1);
@@ -294,6 +527,38 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
+
+  // Host broadcast loop: a throttled, downscaled flattened snapshot of the active page — not a
+  // layer/diff replication model (see "Live collaborative Studio" in CLAUDE.md). Viewers never
+  // edit, so there's nothing to gain from shipping the real paint/mask canvas registries and
+  // Konva render pipeline to them. Deliberately kept running even while screen-sharing is active
+  // (CollabViewerCanvas prefers the live video when present) — it's each viewer's own fallback if
+  // *their specific* WebRTC video connection fails while everyone else's is fine, not something
+  // to shut off just because sharing is nominally on.
+  useEffect(() => {
+    if (!isHostingLive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const interval = setInterval(() => {
+      if (inFlight || cancelled) return;
+      const snapshot = canvasRef.current?.getExportSnapshot();
+      if (!snapshot) return;
+      inFlight = true;
+      renderFlattenedPage(snapshot).then((fullCanvas) => {
+        if (cancelled) return;
+        const maxEdge = 1200;
+        const scale = Math.min(1, maxEdge / Math.max(fullCanvas.width, fullCanvas.height));
+        const out = document.createElement('canvas');
+        out.width = Math.max(1, Math.round(fullCanvas.width * scale));
+        out.height = Math.max(1, Math.round(fullCanvas.height * scale));
+        const ctx = out.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(fullCanvas, 0, 0, out.width, out.height);
+        collabHandleRef.current?.broadcastFrame(out.toDataURL('image/jpeg', 0.6));
+      }).catch(() => {}).finally(() => { inFlight = false; });
+    }, 500);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isHostingLive, activePageId]);
   const [pagesManagerOpen, setPagesManagerOpen] = useState(pages.length === 0);
   const [activeTool, setActiveTool] = useState('select');
   const [showCleaned, setShowCleaned] = useState(false);
@@ -1988,9 +2253,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
+  const collabPanel = (
+    <CollabSessionPanel
+      peers={collabPeers}
+      messages={collabMessages}
+      selfUserId={collabSelf?.id ?? ''}
+      onSend={(text, tts) => collabHandleRef.current?.sendChat(text, tts)}
+      speakingUserIds={voice.speakingUserIds}
+      voiceJoined={voice.joined}
+      voiceMuted={voice.muted}
+      onToggleVoiceJoined={voice.toggleJoined}
+      onToggleVoiceMuted={voice.toggleMuted}
+      isHost={isHostingLive}
+      controlGrantedTo={controlGrantedTo}
+      onRequestControl={() => collabHandleRef.current?.requestControl()}
+      onRevokeControl={() => collabHandleRef.current?.grantControl(null)}
+      hideTitle
+    />
+  );
+
   const allTabs = [
     ...(textPanel ? [{ id: 'text', label: 'Text', content: textPanel }] : []),
     ...(adjustmentPanel ? [{ id: 'adjustment', label: 'Adjustment', content: adjustmentPanel }] : []),
+    ...(liveSession ? [{ id: 'collab', label: 'Live Session', content: collabPanel }] : []),
     { id: 'typer', label: 'TypeR', content: typerPanel },
     { id: 'magicerase', label: 'Magic Erase', content: magicErasePanel },
     { id: 'translation', label: 'Translation', content: translationPanel },
@@ -2029,7 +2314,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
 
   const menus = buildMenus({
-    onBack: onBack,
+    onBack: handleBackClick,
     onExport: () => setExportOpen(true),
     onExportSlices: handleExportSlices,
     hasSliceRects: sliceRects.length > 0,
@@ -2237,8 +2522,25 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
       typerArmed={typerArmed}
       typerPreviewLine={typerPreviewLine}
+      onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
     />
   );
+
+  const remoteCollabCursors = Object.entries(collabCursors)
+    .filter(([userId]) => userId !== collabSelf?.id)
+    .map(([userId, c]) => ({ userId, name: c.name, x: c.x, y: c.y }));
+
+  const collabCursorsOverlay = (liveSession && remoteCollabCursors.length > 0) ? (
+    <CollabCursors
+      cursors={remoteCollabCursors}
+      peers={collabPeers}
+      toContainer={(x, y) => {
+        const vt = canvasRef.current?.getViewTransform();
+        if (!vt) return { x, y };
+        return { x: x * vt.scale + vt.pos.x, y: y * vt.scale + vt.pos.y };
+      }}
+    />
+  ) : null;
 
   // Every real panel now stacks vertically in one column (PanelStack), each independently visible/
   // collapsed/reordered/maximized via PanelLayoutContext — replacing the old fixed 3-block layout
@@ -2252,6 +2554,51 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     </div>
   );
 
+  // A read-only spectator mount: a completely separate, self-contained shell rather than the full
+  // edit UI with flags sprinkled through it — the real Konva StudioCanvas (and its paint/mask
+  // canvas registries) never mounts here at all, since a viewer never needs any of that.
+  if (viewOnlySession) {
+    const remoteCursors = Object.entries(collabCursors)
+      .filter(([userId]) => userId !== collabSelf?.id)
+      .map(([userId, c]) => ({ userId, name: c.name, x: c.x, y: c.y }));
+    return (
+      <div className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+        <div className="liquid-glass-bar flex items-center gap-2 px-3 h-12 shrink-0 border-b border-hairline">
+          <IconButton size="sm" aria-label="Leave live session" title="Leave" onClick={onBack} className="!bg-transparent !border-0 shrink-0">
+            <Home size={16} />
+          </IconButton>
+          <span className="flex items-center gap-1.5 text-ui font-medium text-danger">
+            <Radio size={13} className="animate-pulse" /> Live
+          </span>
+          <span className="text-title font-display font-semibold text-ink truncate max-w-[14rem]">{chapterName}</span>
+        </div>
+        <div className="flex-1 flex min-h-0">
+          <div className="flex-1 min-h-0 min-w-0">
+            <CollabViewerCanvas
+              frameDataUrl={viewerFrame}
+              videoStream={screenShare.remoteStream}
+              cursors={remoteCursors}
+              peers={collabPeers}
+              onPointerMove={(x, y) => {
+                collabHandleRef.current?.broadcastCursor(x, y);
+                // Also relayed as remote input while in control, not just down/up — a paint
+                // stroke is a drag, and the host's tools need every point along it, not just the
+                // two endpoints.
+                if (controlGrantedTo === collabSelf?.id) collabHandleRef.current?.sendRemoteInput('move', x, y, 0);
+              }}
+              hasControl={controlGrantedTo === collabSelf?.id}
+              onPointerDown={(x, y, button) => collabHandleRef.current?.sendRemoteInput('down', x, y, button)}
+              onPointerUp={(x, y, button) => collabHandleRef.current?.sendRemoteInput('up', x, y, button)}
+            />
+          </div>
+          <div className="w-72 shrink-0 h-full border-l border-hairline hidden md:block">
+            {collabPanel}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {/* No overflow-x here (there used to be one): per the CSS Overflow spec, 'overflow-x: auto'
@@ -2264,7 +2611,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           Ten short menu labels fit comfortably down to a 768px-wide viewport without scrolling. */}
       {!panelsHidden && (
         <div className="relative z-40">
-          <MenuBar menus={menus} />
+          <MenuBar menus={menus} compact={layoutMode === 'phone'} />
         </div>
       )}
       <StudioToolbar
@@ -2274,7 +2621,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         overlayOpacity={overlayOpacity}
         onOverlayOpacityChange={setOverlayOpacity}
         onFit={() => setFitSignal(s => s + 1)}
-        onBack={onBack}
+        onBack={handleBackClick}
         onToggleLeftSidebar={toggleLeftSidebar}
         onToggleRightSidebar={toggleRightSidebar}
         hasCleaned={!!activePage?.cleaned}
@@ -2283,10 +2630,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         workflowStages={workflowStages}
         typeRegionArmed={typeRegionArmed}
         onToggleTypeRegion={() => setTypeRegionArmed(v => !v)}
+        isLive={isHostingLive}
+        goingLive={goingLive}
+        liveViewerCount={Math.max(0, collabPeers.length - 1)}
+        onToggleLive={isHostingLive ? handleEndLive : undefined}
+        isSharingScreen={screenShare.sharing}
+        onToggleScreenShare={screenShare.toggleSharing}
+        onOpenTextEditor={onOpenTextEditor}
       />
 
       {!panelsHidden && optionsBarVisible && (
         <ToolOptionsBar
+          layoutMode={layoutMode}
           activeTool={activeTool}
           size={brushSize}
           onSizeChange={setBrushSize}
@@ -2336,6 +2691,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
         <div className="flex-1 min-h-0 min-w-0 relative">
           {canvasNode}
+          {collabCursorsOverlay}
           {(magicEraseBusy || magicEraseDetecting) && (
             <MagicEraseLoadingOverlay label={magicEraseDetecting ? 'Scanning for text…' : 'Erasing with AI…'} />
           )}

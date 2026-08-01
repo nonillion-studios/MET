@@ -170,6 +170,10 @@ interface StudioCanvasProps {
    *  isn't armed, in which case the drag preview stays exactly as before (dashed box + W×H only). */
   typerArmed?: boolean;
   typerPreviewLine?: TyperPreviewLine | null;
+  /** Live collab: the pointer's page-image-space position on every move (null on leave), for
+   *  broadcasting this user's cursor to other participants of a hosted session. Independent of
+   *  SVG_OVERLAY_TOOLS — fires for any tool, unlike the brush outline's own tracking. */
+  onLiveCursorMove?: (pagePos: { x: number; y: number } | null) => void;
 }
 
 /** The subset of a resolved TypeR line's style the drag preview needs to render — see
@@ -262,6 +266,20 @@ export interface StudioCanvasHandle {
    * Photoshop's "Add Layer Mask" behavior of masking to the current selection when one exists.
    */
   createMask: (maskId: string) => void;
+  /** Live collab: the current stage pan/zoom, so a caller outside this component (Studio.tsx) can
+   *  convert other participants' page-space cursor broadcasts into this view's own container-space
+   *  to overlay them — mirrors the same `(v - pos) / scale` <-> `v * scale + pos` math this file
+   *  already uses internally for its own pointer handling. */
+  getViewTransform: () => { pos: { x: number; y: number }; scale: number };
+  /** Live collab remote control: turns a controlling viewer's page-space pointer event into a
+   *  real synthetic PointerEvent dispatched on the Konva stage's own DOM container — the same
+   *  element real mouse/touch/pen input already arrives on, so it flows through the exact same
+   *  `handlePaintPointerDown/Move/Up`/Stage props a genuine local click would, no separate
+   *  "remote input" code path to keep in sync with every tool. Best-effort: synthetic PointerEvents
+   *  driving a canvas library not designed for this can behave subtly differently from a real
+   *  device in edge cases (e.g. drag-and-drop-sensitive browser chrome), which is an accepted
+   *  limit, not something this tries to paper over. */
+  dispatchRemotePointerEvent: (kind: 'down' | 'move' | 'up', pagePos: { x: number; y: number }, button: number) => void;
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
@@ -272,7 +290,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
-  typerArmed = false, typerPreviewLine = null,
+  typerArmed = false, typerPreviewLine = null, onLiveCursorMove,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -897,6 +915,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
       maskCanvasRegistry.current[maskId] = canvas;
+    },
+    getViewTransform() {
+      return { pos, scale };
+    },
+    dispatchRemotePointerEvent(kind, pagePos, button) {
+      const el = stageRef.current?.container();
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const clientX = rect.left + pagePos.x * scale + pos.x;
+      const clientY = rect.top + pagePos.y * scale + pos.y;
+      const type = kind === 'down' ? 'pointerdown' : kind === 'up' ? 'pointerup' : 'pointermove';
+      el.dispatchEvent(new PointerEvent(type, {
+        clientX, clientY, button, buttons: kind === 'up' ? 0 : 1,
+        bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true,
+      }));
     },
   }), [onUpdateTextLayer, scale, pos, containerSize, page, selection]);
 
@@ -2219,12 +2252,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       ref={containerRef}
       className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}
       onPointerMove={(e) => {
-        if (!SVG_OVERLAY_TOOLS.has(activeTool)) return;
+        // Live-collab cursor broadcasting needs a position for any tool, not just the
+        // brush-cursor-chrome ones below — so this rect/cx/cy computation itself can't be
+        // gated behind SVG_OVERLAY_TOOLS the way the rest of this handler still is.
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
-        setBrushCursorPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        onLiveCursorMove?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
+        if (!SVG_OVERLAY_TOOLS.has(activeTool)) return;
+        setBrushCursorPos({ x: cx, y: cy });
       }}
-      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); }}
+      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); }}
     >
       {containerSize.width > 0 && (
         <Stage

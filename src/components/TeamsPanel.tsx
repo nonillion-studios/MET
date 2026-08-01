@@ -1,10 +1,10 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useChatScroll } from '../hooks/useChatScroll';
 import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
   ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank, Home, MessageCircle, Globe, Lock, ArrowLeft, UserPlus,
-  Megaphone, AlertTriangle, ChevronDown, Boxes, Mic,
+  Megaphone, AlertTriangle, ChevronDown, Boxes, Mic, Radio, RefreshCw, Eye,
 } from 'lucide-react';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { GlassCard, Button, Input, Textarea, Modal, Switch, SkeletonCard, SkeletonRow } from './ui';
@@ -73,10 +73,23 @@ import {
 import type { CloudClient, CloudFile, CloudFolder, CloudFileComment } from '../lib/cloudClient';
 import { CloudFolders } from './cloud/CloudFolders';
 import { Folder as FolderIcon, Upload, Download } from 'lucide-react';
+import type { Workspace } from '../types';
+import { getActiveStudioSessionsForTeam, type StudioSessionRow } from '../lib/studioCollab';
 
-type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'files' | 'requests' | 'roster' | 'analytics' | 'admin';
+type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'files' | 'requests' | 'roster' | 'analytics' | 'admin' | 'live';
 
-export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken }: { cc: CloudClient; pendingJoinToken?: string | null; onConsumedJoinToken?: () => void }) {
+export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken, workspaces, onWatchLiveSession, onGoLive }: {
+  cc: CloudClient;
+  pendingJoinToken?: string | null;
+  onConsumedJoinToken?: () => void;
+  /** Read-only, for LiveSessionsSection to resolve a session's chapter_id into a real chapter name
+   *  on this device (chapter ids are only meaningful within this device's own local library). */
+  workspaces: Workspace[];
+  /** "Watch" on a live session — App.tsx resolves the chapter and opens Studio in viewOnly mode. */
+  onWatchLiveSession: (session: StudioSessionRow) => void;
+  /** Teams' own "Go Live": picks a chapter (from `workspaces`) and starts hosting for this team. */
+  onGoLive: (teamId: string, chapterId: string) => void;
+}) {
   const { session, isAdmin } = useTeamAuth();
 
   return (
@@ -94,7 +107,9 @@ export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken }: { cc: 
 
       <PendingOwnerTransfers />
 
-      {isAdmin ? <AdminTeamSection cc={cc} /> : <MemberTeamSection cc={cc} />}
+      {isAdmin
+        ? <AdminTeamSection cc={cc} workspaces={workspaces} onWatchLiveSession={onWatchLiveSession} onGoLive={onGoLive} />
+        : <MemberTeamSection cc={cc} workspaces={workspaces} onWatchLiveSession={onWatchLiveSession} onGoLive={onGoLive} />}
     </div>
   );
 }
@@ -172,6 +187,7 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Users; forOwnerOnly
   { id: 'requests', label: 'Requests', icon: CalendarClock },
   { id: 'roster', label: 'Roster', icon: Users },
   { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+  { id: 'live', label: 'Live', icon: Radio },
   { id: 'admin', label: 'Admin', icon: ShieldCheck, forOwnerOnly: true },
 ];
 
@@ -211,11 +227,12 @@ const SECTION_DESCRIPTIONS: Partial<Record<SectionId, string>> = {
   requests: 'Leave, resignation, and join requests',
   roster: 'Members, roles, and permissions',
   analytics: 'Leaderboard and team-wide report',
+  live: 'Live Studio sessions this team is hosting right now',
   admin: 'Team settings, broadcasts, and danger zone',
 };
 
 function TeamWorkspace({
-  team, members, isOwner, myMember, canManage, onChanged, cc,
+  team, members, isOwner, myMember, canManage, onChanged, cc, workspaces, onWatchLiveSession, onGoLive,
 }: {
   team: Team;
   members: TeamMember[];
@@ -224,6 +241,9 @@ function TeamWorkspace({
   canManage: boolean;
   onChanged: () => void;
   cc: CloudClient;
+  workspaces: Workspace[];
+  onWatchLiveSession: (session: StudioSessionRow) => void;
+  onGoLive: (teamId: string, chapterId: string) => void;
 }) {
   const perms: Perms = {
     isOwner,
@@ -314,6 +334,13 @@ function TeamWorkspace({
         <div>
           <SectionHeader icon={BarChart3} title="Analytics" description={SECTION_DESCRIPTIONS.analytics} />
           <AnalyticsSection team={team} members={members} />
+        </div>
+      )}
+
+      {activeSection === 'live' && (
+        <div>
+          <SectionHeader icon={Radio} title="Live" description={SECTION_DESCRIPTIONS.live} />
+          <LiveSessionsSection team={team} members={members} workspaces={workspaces} onWatchLiveSession={onWatchLiveSession} onGoLive={onGoLive} canManage={canManage} />
         </div>
       )}
 
@@ -1209,7 +1236,7 @@ function ReassignTasksModal({ team, fromMember, members, onClose, onDone }: {
 // Admin / Member section resolution (unchanged shape, now mounts TeamWorkspace)
 // ---------------------------------------------------------------------------
 
-function AdminTeamSection({ cc }: { cc: CloudClient }) {
+function AdminTeamSection({ cc, workspaces, onWatchLiveSession, onGoLive }: { cc: CloudClient; workspaces: Workspace[]; onWatchLiveSession: (session: StudioSessionRow) => void; onGoLive: (teamId: string, chapterId: string) => void }) {
   const { session } = useTeamAuth();
   const [loading, setLoading] = useState(true);
   const [team, setTeam] = useState<Team | null>(null);
@@ -1309,10 +1336,10 @@ function AdminTeamSection({ cc }: { cc: CloudClient }) {
     );
   }
 
-  return <TeamWorkspace team={team} members={members} isOwner myMember={null} canManage onChanged={refresh} cc={cc} />;
+  return <TeamWorkspace team={team} members={members} isOwner myMember={null} canManage onChanged={refresh} cc={cc} workspaces={workspaces} onWatchLiveSession={onWatchLiveSession} onGoLive={onGoLive} />;
 }
 
-function MemberTeamSection({ cc }: { cc: CloudClient }) {
+function MemberTeamSection({ cc, workspaces, onWatchLiveSession, onGoLive }: { cc: CloudClient; workspaces: Workspace[]; onWatchLiveSession: (session: StudioSessionRow) => void; onGoLive: (teamId: string, chapterId: string) => void }) {
   const [loading, setLoading] = useState(true);
   const [memberships, setMemberships] = useState<(TeamMember & { team: Team })[]>([]);
   const [membership, setMembership] = useState<(TeamMember & { team: Team }) | null>(null);
@@ -1400,6 +1427,9 @@ function MemberTeamSection({ cc }: { cc: CloudClient }) {
           canManage={membership.role === 'leader'}
           onChanged={refresh}
           cc={cc}
+          workspaces={workspaces}
+          onWatchLiveSession={onWatchLiveSession}
+          onGoLive={onGoLive}
         />
       </div>
     );
@@ -2863,6 +2893,121 @@ function RequestsTab({ team, myMember, canManageVacations, canManageJoinRequests
 // Analytics (leaderboard + team report, open to every member)
 // ---------------------------------------------------------------------------
 
+/** Locates a chapter across every local workspace by id, for turning a session's chapter_id into
+ *  a real name/breadcrumb — mirrors App.tsx's own findChapterLocation. Chapter ids are only ever
+ *  meaningful on the device that actually has that chapter in its local library, so this can
+ *  legitimately come back null (a teammate hosting a chapter you don't have locally). */
+function resolveChapterLabel(chapterId: string, workspaces: Workspace[]): string | null {
+  for (const ws of workspaces) {
+    for (const manga of ws.mangas) {
+      for (const volume of manga.volumes) {
+        const chapter = volume.chapters.find(c => c.id === chapterId);
+        if (chapter) return `${manga.title} — ${volume.name} — ${chapter.name}`;
+      }
+    }
+  }
+  return null;
+}
+
+/** Live Studio sessions this specific team is hosting right now — scoped strictly to `team.id`
+ *  both by the query (getActiveStudioSessionsForTeam) and by RLS on studio_sessions itself, so
+ *  switching teams (or being a member of several) never shows another team's live sessions here. */
+/** Every chapter across every local workspace, flattened for the Go Live picker's swal `select`
+ *  input — which only takes a flat id→label map, not a tree. */
+function flattenChaptersForPicker(workspaces: Workspace[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ws of workspaces) {
+    for (const manga of ws.mangas) {
+      for (const volume of manga.volumes) {
+        for (const chapter of volume.chapters) {
+          out[chapter.id] = `${manga.title} — ${volume.name} — ${chapter.name}`;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function LiveSessionsSection({ team, members, workspaces, onWatchLiveSession, onGoLive, canManage }: {
+  team: Team; members: TeamMember[]; workspaces: Workspace[];
+  onWatchLiveSession: (session: StudioSessionRow) => void;
+  onGoLive: (teamId: string, chapterId: string) => void;
+  canManage: boolean;
+}) {
+  const [sessions, setSessions] = useState<StudioSessionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = () => { getActiveStudioSessionsForTeam(team.id).then(setSessions).finally(() => setLoading(false)); };
+  useEffect(() => { setLoading(true); refresh(); }, [team.id]);
+
+  const handleGoLive = async () => {
+    const chapterOptions = flattenChaptersForPicker(workspaces);
+    if (Object.keys(chapterOptions).length === 0) {
+      swal({ icon: 'error', title: 'No chapters', text: "You don't have any chapters in your local Library to go live with." });
+      return;
+    }
+    const r = await swal({
+      title: 'Go Live',
+      input: 'select',
+      inputOptions: chapterOptions,
+      inputPlaceholder: 'Choose a chapter',
+      showCancelButton: true,
+      confirmButtonText: 'Go Live',
+    });
+    if (!r.isConfirmed || !r.value) return;
+    onGoLive(team.id, r.value as string);
+  };
+
+  const goLiveButton = canManage && (
+    <Button size="sm" onClick={handleGoLive}><Radio size={13} /> Go Live</Button>
+  );
+
+  if (loading) return <SkeletonCard className="h-32" />;
+
+  if (sessions.length === 0) {
+    return (
+      <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
+        <Radio size={24} className="text-ink-faint" />
+        <p className="text-sm text-ink-muted">No one is live right now.</p>
+        {canManage
+          ? goLiveButton
+          : <p className="text-[11px] text-ink-faint">A leader or admin can go live from here.</p>}
+      </GlassCard>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex justify-end gap-2">
+        {goLiveButton}
+        <Button size="sm" variant="secondary" onClick={refresh}><RefreshCw size={13} /> Refresh</Button>
+      </div>
+      {sessions.map((s) => {
+        const host = members.find(m => m.user_id === s.host_user_id);
+        const label = resolveChapterLabel(s.chapter_id, workspaces);
+        return (
+          <GlassCard key={s.id} className="p-4 flex items-center justify-between gap-3">
+            <div className="min-w-0 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-danger/15 border border-danger/30 flex items-center justify-center shrink-0">
+                <span className="w-2 h-2 rounded-full bg-danger animate-pulse" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-ink truncate">{host?.profile?.name || host?.invited_email || 'Someone'} is live</p>
+                <p className="text-[11px] text-ink-faint truncate">
+                  {label || 'Live Session'} · started {formatMessageTime(s.started_at)}
+                </p>
+              </div>
+            </div>
+            <Button size="sm" onClick={() => onWatchLiveSession(s)} className="shrink-0">
+              <Eye size={13} /> Watch
+            </Button>
+          </GlassCard>
+        );
+      })}
+    </div>
+  );
+}
+
 function AnalyticsSection({ team, members }: { team: Team; members: TeamMember[] }) {
   const [top, setTop] = useState<TeamMember[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -3567,6 +3712,18 @@ function ChatAvatar({ name, avatar, size = 28 }: { name: string; avatar?: string
   );
 }
 
+/** The blue verified badge next to a chat name: the manual per-member toggle (`is_verified`)
+ *  still works as before, but team admins (the owner, or a site-wide admin profile), sub-admins
+ *  (the 'leader' role), and the system bot are always badged too — they don't need to be
+ *  manually verified one by one. */
+function isChatBadgeVerified(senderId: string | null, team: Team, members: TeamMember[]): boolean {
+  if (senderId === null) return true; // system bot
+  if (senderId === team.owner_id) return true; // team admin
+  const m = members.find(mm => mm.user_id === senderId);
+  if (!m) return false;
+  return !!m.is_verified || m.role === 'leader'; // sub-admin, or manually verified
+}
+
 function hydrateSender(msg: TeamMessage, members: TeamMember[]): TeamMessage {
   if (msg.sender?.name) return msg;
   if (msg.sender_id === null) return { ...msg, sender: { name: 'Team Bot', avatar: '' } };
@@ -3674,7 +3831,7 @@ const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, is
         >
           <div className={`flex items-center gap-2 ${isMine ? 'flex-row-reverse' : ''}`}>
             <button type="button" onClick={() => m.sender_id && onOpenProfile(m.sender_id)} disabled={isBot} className="text-[10px] font-semibold hover:underline flex items-center gap-1 disabled:cursor-default" style={{ color: isBot ? undefined : nameColor }}>
-              {m.sender?.name || 'Member'} {isVerified && <ShieldCheck size={10} className="text-accent" />}
+              {m.sender?.name || 'Member'} {isVerified && <ShieldCheck size={10} className="text-blue-500" aria-label="Verified" />}
             </button>
             {m.pinned && <span className="text-[9px] text-ink-faint">📌</span>}
             {m.edited_at && !m.deleted && <span className="text-[9px] text-ink-faint">(edited)</span>}
@@ -3827,14 +3984,19 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
 
   const reload = () => { listTeamMessages(team.id, search ? { search } : undefined).then(setMessages); };
 
-  const membersRef = useRef(members);
-  useEffect(() => { membersRef.current = members; }, [members]);
-
   useEffect(() => {
     let mounted = true;
     reload();
     listReactions(team.id, 'team_messages').then(r => { if (mounted) setReactions(r); });
-    const unsubMsgs = subscribeToTeamMessages(team.id, msg => setMessages(prev => upsertById(prev, hydrateSender(msg, membersRef.current))));
+    // Deliberately not hydrated here: a realtime postgres_changes payload never carries the
+    // joined `sender` the initial listTeamMessages() fetch has, so this used to bake in
+    // whatever `members` looked like at the exact moment the message arrived — if that snapshot
+    // was still empty/stale (e.g. right after mount, or for a member who'd just joined and
+    // hadn't propagated into `members` yet), the message was permanently stuck showing "Member"
+    // forever after, even once `members` caught up, since nothing ever re-visited it. Storing the
+    // raw message and hydrating at render time (see `hydratedMessages` below) means the name
+    // self-corrects the moment `members` refreshes, instead of freezing a bad guess.
+    const unsubMsgs = subscribeToTeamMessages(team.id, msg => setMessages(prev => upsertById(prev, msg)));
     const unsubReactions = subscribeToReactions(team.id, () => listReactions(team.id, 'team_messages').then(setReactions));
     typingRef.current = subscribeToTyping(team.id, (userId, name) => {
       if (userId === myUserId) return;
@@ -3892,8 +4054,11 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     }
   };
 
-  const pinned = messages.filter(m => m.pinned && !m.deleted).slice(0, 3);
-  const messageById = new Map(messages.map(m => [m.id, m]));
+  // Resolved fresh from the current `members` on every render (not baked in once at receipt) —
+  // see the comment at the realtime subscription above for why that matters.
+  const hydratedMessages = useMemo(() => messages.map(m => hydrateSender(m, members)), [messages, members]);
+  const pinned = hydratedMessages.filter(m => m.pinned && !m.deleted).slice(0, 3);
+  const messageById = new Map(hydratedMessages.map(m => [m.id, m]));
   const reactionsByMessageId = new Map<string, MessageReaction[]>();
   for (const r of reactions) {
     const list = reactionsByMessageId.get(r.message_id) ?? [];
@@ -4003,15 +4168,15 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
         <Input placeholder="Search messages..." value={search} onChange={e => setSearch(e.target.value)} className="text-xs" />
       </div>
       <div ref={scrollRef} onScroll={handleScroll} data-testid="chat-scroll" className="flex-1 overflow-y-auto p-4 space-y-3 relative">
-        {messages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
-        {messages.map(m => (
+        {hydratedMessages.length === 0 && <p className="text-xs text-ink-faint text-center py-6">No messages yet — say hello.</p>}
+        {hydratedMessages.map(m => (
           <TeamMessageBubble
             key={m.id}
             message={m}
             replied={m.reply_to_id ? messageById.get(m.reply_to_id) ?? null : null}
             isMine={m.sender_id === myUserId}
             canManage={canManage}
-            isVerified={members.find(mm => mm.user_id === m.sender_id)?.is_verified}
+            isVerified={isChatBadgeVerified(m.sender_id, team, members)}
             reactions={reactionsByMessageId.get(m.id) ?? EMPTY_REACTIONS}
             myUserId={myUserId}
             teamId={team.id}

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Plus, Trash2, BookOpen, Layers, FileStack, ImagePlus, Sparkles, Boxes, Download, Upload,
-  UploadCloud, FileArchive, X, PackagePlus, Pencil, Search
+  UploadCloud, FileArchive, X, PackagePlus, Pencil, Search, FileText
 } from 'lucide-react';
 import { get, set } from 'idb-keyval';
 import { MangaSeries, Volume, Chapter, Workspace, Page } from './types';
@@ -25,6 +25,7 @@ import { Modal, Button, Input, Textarea, GlassCard, SkeletonCard, AppContextMenu
 import { Studio } from './components/studio/Studio';
 import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
 import { TextEditorPage } from './components/textEditor/TextEditorPage';
+import type { StudioSessionRow } from './lib/studioCollab';
 import { applyTyperInsertMode, type TyperSendRequest } from './lib/typerBridge';
 import { loadChapterStudioData, saveChapterStudioData, createEmptyStudioData } from './lib/studioProjectStore';
 import { useAutomationEngine } from './lib/automationEngine';
@@ -130,6 +131,19 @@ export default function App() {
   const [showPrivacyModal, setShowPrivacyModal] = useState(false);
   const [showTermsModal, setShowTermsModal] = useState(false);
 
+  // Carries a chapter's "Open in Text Editor" click into the Text Editor tab — TextEditorPage
+  // consumes and clears this once it resolves/creates that chapter's linked doc.
+  const [pendingTextEditorChapter, setPendingTextEditorChapter] = useState<{ id: string; name: string } | null>(null);
+  // Set by Teams' "Watch" button on a live session (see LiveSessionsSection in TeamsPanel.tsx) —
+  // opens that chapter's Studio in read-only spectator mode instead of the normal edit flow.
+  const [viewOnlySession, setViewOnlySession] = useState<{ sessionId: string; teamId: string } | null>(null);
+  // Set alongside viewOnlySession when the session's chapter_id isn't in this device's local
+  // library (a teammate on another device is hosting) — mounts Studio's spectator shell directly,
+  // bypassing the normal activeWorkspace/manga/volume/chapter chain entirely, since none of that
+  // exists locally for this chapter and the viewer doesn't need it anyway.
+  const [remoteViewOnlyChapter, setRemoteViewOnlyChapter] = useState<{ id: string; name: string } | null>(null);
+  // Set by Teams' "Go Live" button — Studio starts hosting for this team automatically on mount.
+  const [autoStartLiveSession, setAutoStartLiveSession] = useState<{ teamId: string } | null>(null);
   // Carries a `?join=<token>` invite link into the Teams tab on load, redeemed
   // (as a join request, not an auto-join) then cleared from the URL.
   const [pendingJoinToken, setPendingJoinToken] = useState<string | null>(null);
@@ -267,6 +281,63 @@ export default function App() {
     setActiveMangaId(null);
     setActiveVolumeId(null);
     setActiveChapterId(null);
+    setViewOnlySession(null);
+    setAutoStartLiveSession(null);
+    setRemoteViewOnlyChapter(null);
+  };
+
+  /** Finds which workspace/manga/volume a chapter id lives under, for jumping straight to it from
+   *  outside the Library (e.g. Teams' "Watch" button on a live session) — chapter ids are only
+   *  meaningful within this device's own local library, so a session's chapter_id may not resolve
+   *  to anything here at all (see LiveSessionsSection's own handling of that). */
+  const findChapterLocation = (chapterId: string): { workspaceId: string; mangaId: string; volumeId: string; chapterName: string } | null => {
+    for (const ws of workspaces) {
+      for (const manga of ws.mangas) {
+        for (const volume of manga.volumes) {
+          const chapter = volume.chapters.find(c => c.id === chapterId);
+          if (chapter) return { workspaceId: ws.id, mangaId: manga.id, volumeId: volume.id, chapterName: chapter.name };
+        }
+      }
+    }
+    return null;
+  };
+
+  const handleWatchLiveSession = (session: StudioSessionRow) => {
+    // Spectating never actually reads this device's local page data — Studio's viewOnly shell
+    // only ever displays the host's broadcast image + cursors + chat — so a chapter missing from
+    // this device's local library (a teammate on another device, watching) is not a blocker.
+    // Resolving it locally is purely a nicety, for a real chapter name and matching breadcrumbs.
+    const loc = findChapterLocation(session.chapter_id);
+    if (loc) {
+      setActiveWorkspaceId(loc.workspaceId);
+      setActiveMangaId(loc.mangaId);
+      setActiveVolumeId(loc.volumeId);
+      setActiveChapterId(session.chapter_id);
+      setRemoteViewOnlyChapter(null);
+    } else {
+      setActiveWorkspaceId(null);
+      setActiveMangaId(null);
+      setActiveVolumeId(null);
+      setActiveChapterId(null);
+      setRemoteViewOnlyChapter({ id: session.chapter_id, name: 'Live Session' });
+    }
+    setViewOnlySession({ sessionId: session.id, teamId: session.team_id });
+    setActiveNavigationTab('library');
+  };
+
+  // Teams' own "Go Live" button already picked the team and (via a chapter picker built from
+  // this same `workspaces` prop) a local chapter — this just opens that chapter's Studio, which
+  // then starts hosting automatically on mount (Studio.tsx's autoStartLiveSession effect).
+  const handleGoLiveFromTeams = (teamId: string, chapterId: string) => {
+    const loc = findChapterLocation(chapterId);
+    if (!loc) return; // Teams' own picker only offers chapters findChapterLocation can find.
+    setActiveWorkspaceId(loc.workspaceId);
+    setActiveMangaId(loc.mangaId);
+    setActiveVolumeId(loc.volumeId);
+    setActiveChapterId(chapterId);
+    setRemoteViewOnlyChapter(null);
+    setAutoStartLiveSession({ teamId });
+    setActiveNavigationTab('library');
   };
 
   const updateActiveWorkspaceMangas = (updater: (mangas: MangaSeries[]) => MangaSeries[]) => {
@@ -803,15 +874,26 @@ export default function App() {
             </div>
           )}
 
-          {activeNavigationTab === 'teams' && <TeamsPanel cc={cloudClient} pendingJoinToken={pendingJoinToken} onConsumedJoinToken={() => setPendingJoinToken(null)} />}
+          {activeNavigationTab === 'teams' && (
+            <TeamsPanel
+              cc={cloudClient}
+              pendingJoinToken={pendingJoinToken}
+              onConsumedJoinToken={() => setPendingJoinToken(null)}
+              workspaces={workspaces}
+              onWatchLiveSession={handleWatchLiveSession}
+              onGoLive={handleGoLiveFromTeams}
+            />
+          )}
 
           {activeNavigationTab === 'text-editor' && (
-            <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#e9e9ec] dark:bg-[#1c1c1e] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+            <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#e5e7eb] dark:bg-[#1e1e1e] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
               <TextEditorPage
                 workspaces={workspaces}
                 activeChapterId={activeChapterId}
                 studioActivePageId={studioActivePageId}
                 onSendToTyper={handleSendToTyper}
+                pendingChapter={pendingTextEditorChapter}
+                onConsumePendingChapter={() => setPendingTextEditorChapter(null)}
               />
             </div>
           )}
@@ -848,6 +930,21 @@ export default function App() {
                 </div>
               )}
 
+              {/* Spectating a live session whose chapter isn't in this device's local library
+                  (a teammate elsewhere is hosting) — Studio's viewOnly shell needs only
+                  chapterId/chapterName for display, never real page data, so this mounts it
+                  directly instead of going through the normal workspace/manga/volume/chapter
+                  chain, which has nothing to offer for a chapter that doesn't exist here. */}
+              {viewOnlySession && remoteViewOnlyChapter && (
+                <Studio
+                  chapterId={remoteViewOnlyChapter.id}
+                  chapterName={remoteViewOnlyChapter.name}
+                  pages={[]}
+                  onBack={resetToLibraryRoot}
+                  viewOnlySession={viewOnlySession}
+                />
+              )}
+
               {/* Chapter view: straight into the Studio, even with zero pages — page upload/pairing
                   now lives inside the Studio itself (StudioPagesPanel's "Add Pages" modal). */}
               {activeWorkspace && activeChapter && activeVolume && activeManga && (
@@ -858,6 +955,13 @@ export default function App() {
                   onBack={resetToLibraryRoot}
                   onPagesChange={handleChapterPagesChange}
                   onExportMsp={() => handleExportWorkspace(activeWorkspace)}
+                  onOpenTextEditor={() => {
+                    setPendingTextEditorChapter({ id: activeChapter.id, name: activeChapter.name });
+                    setActiveNavigationTab('text-editor');
+                  }}
+                  viewOnlySession={viewOnlySession}
+                  autoStartLiveSession={autoStartLiveSession}
+                  onConsumeAutoStartLiveSession={() => setAutoStartLiveSession(null)}
                   onActivePageChange={setStudioActivePageId}
                 />
               )}
@@ -880,7 +984,7 @@ export default function App() {
                     {interleaveWithAds(activeVolume.chapters, chap => (
                       <button
                         key={chap.id}
-                        onClick={() => { setPendingChapterId(chap.id); setStudioBuilding(true); }}
+                        onClick={() => { setViewOnlySession(null); setRemoteViewOnlyChapter(null); setPendingChapterId(chap.id); setStudioBuilding(true); }}
                         className="stagger-item group relative text-left overflow-hidden rounded-2xl"
                       >
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
@@ -904,6 +1008,14 @@ export default function App() {
                             title="Edit name/cover"
                           >
                             <Pencil size={12} />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setPendingTextEditorChapter({ id: chap.id, name: chap.name }); setActiveNavigationTab('text-editor'); }}
+                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                            aria-label="Open in Text Editor"
+                            title="Open in Text Editor"
+                          >
+                            <FileText size={12} />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDownloadChapterZip(chap); }}
