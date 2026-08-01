@@ -93,6 +93,10 @@ let arabicChecker: NSpell | null = null;
 let loadingEnglish = false;
 let loadingArabic = false;
 
+// Real misspelling -> correction pairs only. Entries where the "fix" is identical to the input
+// (e.g. a colloquial-but-valid word like "تمام" or "يلا") are deliberately excluded: this map is
+// only ever consulted after a word has already failed the dictionary check (see spellCheckText
+// below), so a self-mapping entry can never fire usefully and is dead weight.
 const ARABIC_COLLOQUIAL_CORRECTIONS: Record<string, string> = {
   'لاكن': 'لكن', 'هاذا': 'هذا', 'هاذه': 'هذه', 'انا': 'أنا',
   'اكل': 'أكل', 'امر': 'أمر', 'اعطى': 'أعطى', 'ارض': 'أرض',
@@ -101,6 +105,14 @@ const ARABIC_COLLOQUIAL_CORRECTIONS: Record<string, string> = {
   'علية': 'عليه', 'بية': 'به', 'أنة': 'أنه', 'اللة': 'الله',
   'هاؤلاء': 'هؤلاء', 'الي': 'الذي', 'اللي': 'الذي',
   'دة': 'ده', 'انشاء الله': 'إن شاء الله',
+  // Additional common mistakes:
+  'بالنسبه': 'بالنسبة', 'الحمدالله': 'الحمد لله', 'ماشاء الله': 'ما شاء الله',
+  'يعطيك العافيه': 'يعطيك العافية', 'اهلا': 'أهلاً', 'مرحبا': 'مرحباً',
+  'ايوه': 'أيوه', 'لاء': 'لا', 'مشكله': 'مشكلة', 'قصه': 'قصة',
+  'رساله': 'رسالة', 'جميله': 'جميلة', 'كبيره': 'كبيرة', 'صغيره': 'صغيرة',
+  'حقيقه': 'حقيقة', 'لحظه': 'لحظة', 'فرصه': 'فرصة', 'مره': 'مرة',
+  'غرفه': 'غرفة', 'مدرسه': 'مدرسة', 'سياره': 'سيارة', 'حياه': 'حياة',
+  'ذكرى': 'ذكرى', 'اجازه': 'إجازة', 'مساله': 'مسألة', 'وظيفه': 'وظيفة',
 };
 
 async function waitForChecker(getChecker: () => NSpell | null): Promise<NSpell> {
@@ -166,9 +178,42 @@ function tokenizeWords(text: string): WordToken[] {
   const pattern = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]+|[a-zA-Z']+/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    tokens.push({ word: match[0], start: match.index, end: match.index + match[0].length });
+    let word = match[0];
+    let end = match.index + word.length;
+    // A trailing apostrophe is almost always closing punctuation (quoted dialogue), not part of the
+    // word itself \u2014 strip it for the dictionary lookup but keep the *original* end offset so the
+    // underline/selection in SpellCheckOverlay still covers exactly what was matched on screen.
+    if (word.length > 1 && word.endsWith("'")) word = word.slice(0, -1);
+    tokens.push({ word, start: match.index, end });
   }
   return tokens;
+}
+
+/** Standard Levenshtein edit distance (insert/delete/substitute), used to rank nspell's raw
+ *  suggestions by actual closeness rather than trusting its own internal ordering. Exported for
+ *  direct unit testing (pure function, no DOM). */
+export function levenshteinDistance(a: string, b: string): number {
+  const dp: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+/** nspell's own suggestion order doesn't track actual closeness to the misspelled word \u2014 rerank by
+ *  edit distance (closest first) and drop suggestions that are implausibly longer than the original,
+ *  which nspell's affix-stripping sometimes surfaces ahead of a much closer match. */
+export function rankSuggestions(word: string, suggestions: string[]): string[] {
+  return suggestions
+    .filter((s) => s.length <= word.length + 3)
+    .sort((a, b) => levenshteinDistance(word, a) - levenshteinDistance(word, b))
+    .slice(0, 5);
 }
 
 const ignoredWords = new Set<string>();
@@ -205,7 +250,7 @@ export async function spellCheckText(text: string): Promise<SpellCheckResult[]> 
       if (!enChecker.correct(token.word)) {
         results.push({
           word: token.word, start: token.start, end: token.end,
-          language: 'en', suggestions: enChecker.suggest(token.word).slice(0, 5),
+          language: 'en', suggestions: rankSuggestions(token.word, enChecker.suggest(token.word)),
         });
       }
     }
@@ -220,7 +265,7 @@ export async function spellCheckText(text: string): Promise<SpellCheckResult[]> 
       } else if (!arChecker.correct(token.word)) {
         results.push({
           word: token.word, start: token.start, end: token.end,
-          language: 'ar', suggestions: arChecker.suggest(token.word).slice(0, 5),
+          language: 'ar', suggestions: rankSuggestions(token.word, arChecker.suggest(token.word)),
         });
       }
     }
