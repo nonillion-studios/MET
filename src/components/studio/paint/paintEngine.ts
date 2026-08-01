@@ -3,6 +3,7 @@ import { getBrushTip, type BrushShape } from './brushTip';
 import { traceAnchors } from '../pathGeometry';
 import type { PathLayerData } from '../studioTypes';
 import type { ContentAwareMode } from './contentAwareAlgorithms';
+import type { SampleMode } from '../../../lib/sampleComposite';
 
 export type PaintTool =
   | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone' | 'heal'
@@ -41,6 +42,9 @@ export interface PaintSettings {
   pressureOpacity: boolean;
   /** Spot Healing Brush / Content-Aware Fill's repair algorithm — see `contentAwareAlgorithms.ts`. */
   contentAwareMode: ContentAwareMode;
+  /** Clone/Heal source and Eyedropper pick: which layers contribute to what gets sampled. See
+   *  `sampleComposite.ts`'s `compositeLayersForSampling` for what each option actually composites. */
+  sampleMode: SampleMode;
 }
 
 function hexToRgb(hex: string): [number, number, number] {

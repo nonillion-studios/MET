@@ -11,7 +11,11 @@ import { openStudio, readStudioStore } from './studioFixture';
 const LINES = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett'];
 
 async function openTyperPanel(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: 'TypeR' }).or(page.getByText('TypeR', { exact: true })).first().click();
+  // Same real, found-by-testing bug as studioFixture.ts's openLayersPanel: the panel column has no
+  // "tabs" to switch between anymore, so unconditionally clicking the header text toggles collapse
+  // instead of being a safe no-op — only click the chevron when TypeR is actually collapsed.
+  const expandButton = page.getByRole('button', { name: 'Expand TypeR panel' });
+  if (await expandButton.isVisible().catch(() => false)) await expandButton.click();
   await page.getByPlaceholder(/Paste a script/).fill(LINES.join('\n'));
 }
 

@@ -25,6 +25,9 @@ import {
   selectionBounds, type Selection, type SelectionCombineMode,
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
+import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
+import { Menu } from './menu/Menu';
+import type { MenuItemDef } from './menu/menuDefinitions';
 import { snapSegmentToEdges } from './paint/magneticLasso';
 import { ToolCursorOverlay } from './paint/ToolCursorOverlay';
 import type { SerializedStudioLayer } from '../../lib/studioProjectStore';
@@ -148,6 +151,26 @@ interface StudioCanvasProps {
   /** The layer whose *mask* (not its own content) is the current paint target, or null when
    *  painting normally. Set by clicking a mask's thumbnail in the Layers panel. */
   activeMaskLayerId?: string | null;
+  /** Right-click on a closed path's own "Make Selection" — same effect as Select > Make Selection
+   *  from Path, just reachable from a right-click on the path itself. Undefined (not just disabled)
+   *  for an open path, since an open path has no interior to select — see canBeClipBase's own
+   *  "honest subset" convention for a similar type-gated capability. */
+  onMakeSelectionFromPath?: () => void;
+  /** Right-click "Fill Path"/"Stroke Path" — bakes the active path's geometry onto the topmost
+   *  raster layer, same as the Layer menu's own Stroke/Fill Path items. */
+  onStrokeActivePath?: () => void;
+  onFillActivePath?: () => void;
+  /** Whether Stroke/Fill Path have anywhere to bake onto (a raster layer exists) — both menu items
+   *  disable together rather than silently no-opping. */
+  canBakePath?: boolean;
+  /** Right-click "Delete Path" — removes the active path layer. */
+  onDeleteActivePath?: () => void;
+  /** TypeR armed placement: while dragging out a text box, the current script line previews inside
+   *  it (semi-transparent, in its real font/color/size) — a pure rendering overlay, never touching
+   *  the contentEditable-equivalent text-edit state or any paint canvas. Undefined/false when TypeR
+   *  isn't armed, in which case the drag preview stays exactly as before (dashed box + W×H only). */
+  typerArmed?: boolean;
+  typerPreviewLine?: TyperPreviewLine | null;
   /** Live collab: the pointer's page-image-space position on every move (null on leave), for
    *  broadcasting this user's cursor to other participants of a hosted session. Independent of
    *  SVG_OVERLAY_TOOLS — fires for any tool, unlike the brush outline's own tracking. */
@@ -160,6 +183,18 @@ interface StudioCanvasProps {
    *  the viewport without polling `getViewTransform()`. `containerSize` is the on-screen viewport
    *  size in CSS px — the minimap needs it to size its own viewport-rectangle overlay correctly. */
   onViewportChange?: (v: { pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }) => void;
+}
+
+/** The subset of a resolved TypeR line's style the drag preview needs to render — see
+ *  `typerPreviewLine` above. Deliberately not the full `TyperStyle`/`ParsedTyperLine` shape (stroke,
+ *  page hints, etc.): those don't affect what a quick in-progress preview needs to show. */
+export interface TyperPreviewLine {
+  content: string;
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
 }
 
 export interface StudioCanvasHandle {
@@ -266,6 +301,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
+  onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
+  typerArmed = false, typerPreviewLine = null,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -283,9 +320,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * blend now composites against the background and everything under it, matching the exporter.
    */
   const layerNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  /** Clone/Heal source + Eyedropper sampling composite, cached per `SampleMode` and rebuilt lazily
+   *  (not eagerly on every pixel change) — see `getSampleComposite` below. */
+  const sampleCompositeCacheRef = useRef<Partial<Record<SampleMode, HTMLCanvasElement>>>({});
+  const sampleCompositeDirtyRef = useRef(true);
   /** Groups have no batchDraw of their own — only Layer does — so redraws go via the owning Layer. */
   const redrawLayerNode = useCallback((layerId: string | null | undefined) => {
     layerNodeRefs.current[layerId ?? '']?.getLayer()?.batchDraw();
+    // Every raster mutation anywhere in this file (strokes, filters, seeding, liquify, mask
+    // painting) already calls this right after touching pixels — the one universal chokepoint to
+    // invalidate the sampling composite cache from, instead of chasing every individual call site.
+    sampleCompositeDirtyRef.current = true;
   }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   /** A layer's mask and its own raster content are two separate registry entries, keyed by the
@@ -406,6 +451,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const penPlacingRef = useRef<{ index: number; start: { x: number; y: number } } | null>(null);
   const [lassoPolyPoints, setLassoPolyPoints] = useState<{ x: number; y: number }[]>([]);
   const [overlayImage, setOverlayImage] = useState<HTMLImageElement | null>(null);
+  /** Right-click on a path layer — Make Selection/Fill/Stroke/Delete Path, positioned at the click's
+   *  viewport coordinates (an HTML overlay above the stage, like every other popover in this file). */
+  const [pathContextMenu, setPathContextMenu] = useState<{ layerId: string; x: number; y: number } | null>(null);
+  const pathContextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!pathContextMenu) return;
+    function onPointerDown(e: PointerEvent) {
+      if (pathContextMenuRef.current && !pathContextMenuRef.current.contains(e.target as Node)) setPathContextMenu(null);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setPathContextMenu(null);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [pathContextMenu]);
 
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
   const [spaceDown, setSpaceDown] = useState(false);
@@ -580,6 +645,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     liquifySnapshots,
     getFallbackCanvas: () => sampleCanvasRef.current,
     onCloneSourceSet: setCloneSourceImg,
+    getSampleCanvas: () => getSampleComposite(paintSettings.sampleMode),
   });
 
   useImperativeHandle(ref, () => ({
@@ -941,7 +1007,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [penDraft, lassoPolyPoints, activeTool, onCommitCrop, transformingSelection, transformBox, selection, onSelectionChange]);
 
-  // Eyedropper samples from a hidden replica of the background image (approximation — doesn't include raster layers yet).
+  // Magic Wand's fallback and Magnetic Lasso's edge-snapping both deliberately want the flat
+  // background only, never other layers mixed in — kept separate from getSampleComposite below.
   useEffect(() => {
     if (!image) { sampleCanvasRef.current = null; return; }
     const canvas = document.createElement('canvas');
@@ -950,6 +1017,39 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     canvas.getContext('2d')!.drawImage(image, 0, 0);
     sampleCanvasRef.current = canvas;
   }, [image]);
+
+  // Layer structure changes (add/remove/reorder/opacity/blend/visibility/mask-enable, or switching
+  // page) invalidate every cached sampling mode; redrawLayerNode (called after every pixel-level
+  // mutation elsewhere in this file) invalidates it too. The next getSampleComposite call after
+  // either rebuilds lazily, only for the mode actually requested.
+  useEffect(() => {
+    sampleCompositeDirtyRef.current = true;
+  }, [layers, image]);
+
+  /** Clone/Heal source + Eyedropper pick read through this — a synchronous, live-canvas composite
+   *  (see `sampleComposite.ts`) rather than the async data-URL export pipeline, since both call
+   *  sites need an answer within the same pointer event, not after an await. */
+  const getSampleComposite = useCallback((mode: SampleMode): HTMLCanvasElement | null => {
+    const img = imageRef.current;
+    if (!img) return null;
+    if (sampleCompositeDirtyRef.current) {
+      sampleCompositeCacheRef.current = {};
+      sampleCompositeDirtyRef.current = false;
+    }
+    let canvas = sampleCompositeCacheRef.current[mode];
+    if (!canvas) {
+      canvas = compositeLayersForSampling(mode, activeLayerId, {
+        layers: layersRef.current,
+        background: img,
+        width: img.width,
+        height: img.height,
+        getRaster: (layerId) => paintCanvasRegistry.current[layerId] ?? null,
+        getMask: (maskId) => maskCanvasRegistry.current[maskId] ?? null,
+      });
+      sampleCompositeCacheRef.current[mode] = canvas;
+    }
+    return canvas;
+  }, [activeLayerId]);
 
   // Track container size responsively.
   useEffect(() => {
@@ -1416,7 +1516,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (activeTool === 'eyedropper') {
       const p = imageSpacePointer();
-      const canvas = sampleCanvasRef.current;
+      const canvas = getSampleComposite(paintSettings.sampleMode);
       if (!p || !canvas || !onEyedropperPick) return;
       const x = Math.max(0, Math.min(canvas.width - 1, Math.round(p.x)));
       const y = Math.max(0, Math.min(canvas.height - 1, Math.round(p.y)));
@@ -1507,7 +1607,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // handles this move, since neither tool participates in PAINT_TOOLS or any of those branches.
     if (activeTool === 'eyedropper') {
       const p = imageSpacePointer();
-      const canvas = sampleCanvasRef.current;
+      const canvas = getSampleComposite(paintSettings.sampleMode);
       if (p && canvas) {
         const x = Math.max(0, Math.min(canvas.width - 1, Math.round(p.x)));
         const y = Math.max(0, Math.min(canvas.height - 1, Math.round(p.y)));
@@ -2158,6 +2258,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             directSelect={activeTool === 'direct-select' && !layer.locked}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onUpdate={(patch) => onUpdatePathLayer(layer.id, patch)}
+            onContextMenu={(clientX, clientY) => {
+              const rect = containerRef.current?.getBoundingClientRect();
+              setPathContextMenu({ layerId: layer.id, x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) });
+            }}
           />
         )}
 
@@ -2345,6 +2449,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   width={textDragPreview.width} height={textDragPreview.height}
                   stroke="#38bdf8" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]}
                 />
+                {/* TypeR armed: the current script line previews inside the box being drawn, at
+                    partial opacity, in its own real font/color/size — becomes the actual (fully
+                    opaque) layer content the moment the drag commits (handleAddTextLayer already
+                    reads the same typerLines[typerIndex] entry). Pure Konva rendering, `listening=
+                    {false}` — never touches the contentEditable-equivalent text-edit state or any
+                    paint canvas. */}
+                {typerArmed && typerPreviewLine && (
+                  <KonvaText
+                    text={typerPreviewLine.content}
+                    x={textDragPreview.x}
+                    y={textDragPreview.y}
+                    width={textDragPreview.width}
+                    height={textDragPreview.height}
+                    wrap="word"
+                    fontFamily={typerPreviewLine.fontFamily}
+                    fontSize={typerPreviewLine.fontSize}
+                    fontStyle={[typerPreviewLine.bold ? 'bold' : '', typerPreviewLine.italic ? 'italic' : ''].filter(Boolean).join(' ') || 'normal'}
+                    fill={typerPreviewLine.color}
+                    opacity={0.7}
+                    listening={false}
+                  />
+                )}
                 <KonvaText
                   text={`W: ${Math.round(textDragPreview.width)} px / H: ${Math.round(textDragPreview.height)} px`}
                   x={textDragPreview.x}
@@ -2601,6 +2727,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           cloneSource={cloneSourceContainerPos}
         />
       )}
+      {pathContextMenu && (() => {
+        const pathLayer = findLayer(layers, pathContextMenu.layerId);
+        const closed = pathLayer?.type === 'path' && !!pathLayer.path?.closed;
+        const items: MenuItemDef[] = [
+          // Open paths can be stroked/filled but have no interior to select — the item is absent
+          // rather than a permanently-disabled dead click, matching this codebase's real-vs-grayed
+          // menu convention (grayed is reserved for "no backing subsystem", not "wrong shape now").
+          ...(closed ? [{ id: 'make-selection', label: 'Make Selection', action: onMakeSelectionFromPath }] : []),
+          { id: 'fill-path', label: 'Fill Path', disabled: !canBakePath, action: onFillActivePath },
+          { id: 'stroke-path', label: 'Stroke Path', disabled: !canBakePath, action: onStrokeActivePath },
+          { id: 'sep', label: '', separator: true },
+          { id: 'delete-path', label: 'Delete Path', action: onDeleteActivePath },
+        ];
+        return (
+          <div ref={pathContextMenuRef} className="absolute z-50" style={{ left: pathContextMenu.x, top: pathContextMenu.y }}>
+            <Menu items={items} onItemClick={(action) => { action?.(); setPathContextMenu(null); }} />
+          </div>
+        );
+      })()}
       {!page && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-6">
           <ImageIcon size={28} className="text-white/25" strokeWidth={1.5} />

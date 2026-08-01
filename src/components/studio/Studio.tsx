@@ -3,7 +3,7 @@ import { Home, Radio } from 'lucide-react';
 import { cn, IconButton, Modal } from '../ui';
 import type { Page, ProcessedImage } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
-import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection } from './StudioCanvas';
+import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection, type TyperPreviewLine } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
 import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
@@ -26,6 +26,7 @@ import {
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
+import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
@@ -356,11 +357,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
+  /** Clone/Heal source + Eyedropper pick: which layers they read from. Shared across both tools,
+   *  matching Photoshop's own single "Sample" setting. */
+  const [sampleMode, setSampleMode] = useState<SampleMode>('all');
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
-    scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode,
+    scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode, sampleMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
 
@@ -1678,6 +1682,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
+  /** The style bits StudioCanvas's drag-box preview needs — same resolved entry (override precedence
+   *  already applied by parseTyperScript) that handleAddTextLayer below reads at actual placement
+   *  time, so the preview can never show something different from what committing will produce. */
+  const typerPreviewLine: TyperPreviewLine | null = typerArmed && typerLines[typerIndex] ? (() => {
+    const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
+    return {
+      content, fontFamily: style.fontFamily, fontSize: style.fontSize, color: style.color,
+      bold: boldOverride ?? style.bold, italic: italicOverride ?? style.italic,
+    };
+  })() : null;
+
   function handleAddTextLayer(x: number, y: number, boxWidth?: number, boxHeight?: number) {
     // TypeR auto-detect-bubble: a plain click (not a drag-to-size box) while armed flood-fills
     // from the click point to find the speech bubble there, and sizes/centers the new layer to it
@@ -2548,6 +2563,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onExitTransformSelection={() => setTransformingSelection(false)}
       quickMaskActive={quickMaskActive}
       activeMaskLayerId={activeMaskLayerId}
+      onMakeSelectionFromPath={handleMakeSelectionFromPath}
+      onStrokeActivePath={handleStrokeActivePath}
+      onFillActivePath={handleFillActivePath}
+      canBakePath={canBakePath}
+      onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
+      typerArmed={typerArmed}
+      typerPreviewLine={typerPreviewLine}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
       onCursorImagePosChange={setCursorImagePos}
       onViewportChange={setViewport}
@@ -2699,6 +2721,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onSmoothingChange={setSmoothing}
           contentAwareMode={contentAwareMode}
           onContentAwareModeChange={setContentAwareMode}
+          sampleMode={sampleMode}
+          onSampleModeChange={setSampleMode}
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}

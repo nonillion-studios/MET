@@ -32,10 +32,18 @@ export function ColorPickerModal({ open, onClose, target, initialHex, onCommit, 
   const [localHex, setLocalHex] = useState(initialHex);
   const [mode, setMode] = useState<PickerMode>('hsb');
   const [webSafeOnly, setWebSafeOnly] = useState(false);
+  // Same partial-typing problem (and same fix) as ColorPanel's own Hex field — a plain
+  // `value={localHex}` controlled input snaps back mid-keystroke until the string is a complete
+  // 6-digit hex, since the old onChange only ever called setLocalHex once fully valid.
+  const [hexDraft, setHexDraft] = useState(initialHex);
 
   useEffect(() => {
-    if (open) { setLocalHex(initialHex); setMode('hsb'); setWebSafeOnly(false); }
+    if (open) { setLocalHex(initialHex); setHexDraft(initialHex); setMode('hsb'); setWebSafeOnly(false); }
   }, [open, initialHex]);
+
+  useEffect(() => {
+    setHexDraft(localHex);
+  }, [localHex]);
 
   useEffect(() => {
     if (!open) return;
@@ -191,8 +199,13 @@ export function ColorPickerModal({ open, onClose, target, initialHex, onCommit, 
           <label className="flex items-center gap-2 text-micro text-ink-faint">
             <span className="w-8 shrink-0">Hex</span>
             <Input
-              value={localHex}
-              onChange={(e) => /^#?[0-9a-fA-F]{6}$/.test(e.target.value) && setLocalHex(e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`)}
+              value={hexDraft}
+              onChange={(e) => {
+                setHexDraft(e.target.value);
+                const normalized = e.target.value.startsWith('#') ? e.target.value : `#${e.target.value}`;
+                if (/^#[0-9a-fA-F]{6}$/.test(normalized)) setLocalHex(normalized);
+              }}
+              onBlur={() => setHexDraft(localHex)}
               className="!px-2 !py-1 !text-ui font-mono"
             />
           </label>

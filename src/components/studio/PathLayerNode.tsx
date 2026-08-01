@@ -13,6 +13,9 @@ interface PathLayerNodeProps {
   directSelect: boolean;
   onSelect: (mode: LayerSelectMode) => void;
   onUpdate: (patch: Partial<PathLayerData>) => void;
+  /** Right-click on the path — StudioCanvas renders the actual menu (Make Selection/Fill/Stroke/
+   *  Delete Path) as an HTML overlay above the stage, positioned at these viewport coordinates. */
+  onContextMenu?: (clientX: number, clientY: number) => void;
 }
 
 function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
@@ -32,7 +35,7 @@ function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
  * so committed paths, the live pen preview, and export all trace identical geometry from one
  * function instead of three implementations that could drift.
  */
-export function PathLayerNode({ layer, groupRef, selected, draggable, directSelect, onSelect, onUpdate }: PathLayerNodeProps) {
+export function PathLayerNode({ layer, groupRef, selected, draggable, directSelect, onSelect, onUpdate, onContextMenu }: PathLayerNodeProps) {
   const path = layer.path!;
 
   function updateAnchor(index: number, patch: Partial<PathAnchor>) {
@@ -58,6 +61,14 @@ export function PathLayerNode({ layer, groupRef, selected, draggable, directSele
       draggable={draggable}
       onClick={(e) => onSelect(selectModeFor(e.evt))}
       onTap={(e) => onSelect(selectModeFor(e.evt))}
+      onContextMenu={(e) => {
+        e.evt.preventDefault();
+        // Right-click always selects (replace), same as a plain left-click — the menu's own
+        // actions (Make Selection/Fill/Stroke/Delete) operate on the active layer, so a right-click
+        // on a path that wasn't already selected must select it first.
+        onSelect('replace');
+        onContextMenu?.(e.evt.clientX, e.evt.clientY);
+      }}
       onDragEnd={(e) => {
         const node = e.target as Konva.Group;
         const dx = node.x();

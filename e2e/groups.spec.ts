@@ -17,6 +17,13 @@ const near = (actual: number, expected: number) => Math.abs(actual - expected) <
 const row = (page: import('@playwright/test').Page, name: string) =>
   page.locator('button').filter({ has: page.getByText(name, { exact: true }) }).first();
 
+/** The Layers panel's own per-row Opacity slider, disambiguated from the Brushes panel's identically-
+ *  labeled Opacity slider (Brushes is visible-by-default now, not just collapsed-and-absent) — the
+ *  Brushes control carries `studio-focusable`, the Layers one doesn't. Mirrors adjustments.spec.ts's
+ *  own `slider()` helper and its "must be scoped, two regions render at once" reasoning. */
+const opacitySlider = (page: import('@playwright/test').Page) =>
+  page.locator('label').filter({ hasText: 'Opacity' }).locator('input[type=range]:not(.studio-focusable)');
+
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (e) => { throw new Error(`Uncaught page error: ${e.message}`); });
   await openStudio(page);
@@ -116,7 +123,7 @@ test('lowering a group’s opacity makes it isolated', async ({ page }) => {
   await row(page, 'Layer 1').click();
   await page.getByRole('button', { name: 'Group layers' }).click();
   await row(page, 'Group').click();
-  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
+  await opacitySlider(page).fill('50');
   await page.waitForTimeout(600);
 
   // Isolated: the subtree composites against nothing, so Multiply has no backdrop and the child
@@ -148,7 +155,7 @@ test('a two-child group at partial opacity is isolated before compositing', asyn
   await page.getByRole('button', { name: 'Group layers' }).click();
 
   await row(page, 'Group').click();
-  await page.getByRole('slider', { name: 'Opacity' }).fill('50');
+  await opacitySlider(page).fill('50');
   await page.waitForTimeout(600);
 
   const c = await sampleStageColor(page);
@@ -235,7 +242,7 @@ test('painting inside a group with opacity still shows the stroke live', async (
   // ancestor holds a stale snapshot, so without suspending it during the stroke the brush would
   // appear to do nothing until pointerup.
   await row(page, 'Group').click();
-  await page.getByRole('slider', { name: 'Opacity' }).fill('60');
+  await opacitySlider(page).fill('60');
   await page.waitForTimeout(400);
 
   await row(page, 'Layer 2').click();
