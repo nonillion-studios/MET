@@ -29,6 +29,9 @@ import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
+import { StatusBar } from './StatusBar';
+import { Minimap } from './Minimap';
+import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
 import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
 import { MenuBar } from './menu/MenuBar';
@@ -382,6 +385,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
+  async function handleZoomPrompt() {
+    const result = await swal({
+      title: 'Set Zoom',
+      input: 'number',
+      inputLabel: 'Zoom (%)',
+      inputValue: Math.round(viewport.scale * 100),
+      showCancelButton: true,
+      confirmButtonText: 'Apply',
+    });
+    if (!result.isConfirmed || result.value === undefined || result.value === '') return;
+    const percent = Number(result.value);
+    if (!Number.isFinite(percent) || percent <= 0) return;
+    canvasRef.current?.zoomTo(percent / 100);
+  }
+
   async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
     const result = await swal({
       title,
@@ -465,6 +483,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
+  const [minimapVisible, setMinimapVisible] = useState(true);
+  const [statusBarVisible, setStatusBarVisible] = useState(true);
   const [optionsBarVisible, setOptionsBarVisible] = useState(true);
   const [activeFilterDialog, setActiveFilterDialog] = useState<{
     config: FilterConfig; canvas: HTMLCanvasElement; before: ImageData; layerId: string;
@@ -487,6 +507,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function toggleToolRail() { setToolRailVisible(v => !v); }
+  function toggleMinimap() { setMinimapVisible(v => !v); }
+  function toggleStatusBar() { setStatusBarVisible(v => !v); }
   function toggleOptionsBar() { setOptionsBarVisible(v => !v); }
   /** AI > Content-Aware Fill / Image > Apply Filter > Distort > Liquify — both switch to an existing
    *  real brush-driven tool rather than opening a dialog; see toolGroups.ts for `contentAware`/`liquify`. */
@@ -566,6 +588,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
+  // Status bar + minimap: mirrored from StudioCanvas (which owns pos/scale/cursor internally) via
+  // its onViewportChange/onCursorImagePosChange callbacks — see StudioCanvas.tsx.
+  const [viewport, setViewport] = useState<{ pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }>(
+    { pos: { x: 0, y: 0 }, scale: 1, containerSize: { width: 0, height: 0 } },
+  );
+  const [cursorImagePos, setCursorImagePos] = useState<{ x: number; y: number } | null>(null);
+  const [minimapCollapsed, setMinimapCollapsed] = useState(false);
   // Left (Pages) / right (Tools) sidebar visibility. Desktop keeps both open as fixed columns by
   // default; tablet/phone treat these as slide-out sheets, so opening one there closes the other
   // to avoid covering the whole canvas.
@@ -2389,6 +2418,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleToolRail,
     optionsBarVisible,
     toggleOptionsBar,
+    minimapVisible,
+    toggleMinimap,
+    statusBarVisible,
+    toggleStatusBar,
     resetLayoutEnabled: true,
     resetPanelLayout: panelLayout.resetLayout,
     aboutOpen: () => setAboutOpen(true),
@@ -2516,6 +2549,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       quickMaskActive={quickMaskActive}
       activeMaskLayerId={activeMaskLayerId}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
+      onCursorImagePosChange={setCursorImagePos}
+      onViewportChange={setViewport}
     />
   );
 
@@ -2688,6 +2723,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           {(magicEraseBusy || magicEraseDetecting) && (
             <MagicEraseLoadingOverlay label={magicEraseDetecting ? 'Scanning for text…' : 'Erasing with AI…'} />
           )}
+          {activePage && minimapVisible && (
+            <Minimap
+              imageDataUrl={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).dataUrl}
+              pageWidth={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width}
+              pageHeight={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height}
+              viewportPos={viewport.pos}
+              viewportScale={viewport.scale}
+              containerWidth={viewport.containerSize.width}
+              containerHeight={viewport.containerSize.height}
+              onPan={(x, y) => canvasRef.current?.centerOn(x, y)}
+              collapsed={minimapCollapsed}
+              onToggleCollapsed={() => setMinimapCollapsed(v => !v)}
+            />
+          )}
         </div>
 
         {!panelsHidden && isDesktop && rightOpen && (
@@ -2758,6 +2807,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
       </div>
+
+      {statusBarVisible && <StatusBar
+        zoom={viewport.scale}
+        onZoomClick={handleZoomPrompt}
+        cursorPos={cursorImagePos}
+        imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
+        imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
+        toolLabel={findTool(activeTool)?.label ?? activeTool}
+        layerName={activeLayer?.name ?? null}
+      />}
 
       <ExportDialog
         open={exportOpen}

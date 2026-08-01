@@ -152,6 +152,14 @@ interface StudioCanvasProps {
    *  broadcasting this user's cursor to other participants of a hosted session. Independent of
    *  SVG_OVERLAY_TOOLS — fires for any tool, unlike the brush outline's own tracking. */
   onLiveCursorMove?: (pagePos: { x: number; y: number } | null) => void;
+  /** Status bar: the pointer's page-image-space position on every move (null on leave) — the same
+   *  computation `onLiveCursorMove` already does, kept as a separate callback since the two are
+   *  unrelated concerns (one broadcasts to collab viewers, this one just drives a local readout). */
+  onCursorImagePosChange?: (pos: { x: number; y: number } | null) => void;
+  /** Status bar + minimap: fires whenever pan/zoom/container size changes, so callers can mirror
+   *  the viewport without polling `getViewTransform()`. `containerSize` is the on-screen viewport
+   *  size in CSS px — the minimap needs it to size its own viewport-rectangle overlay correctly. */
+  onViewportChange?: (v: { pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }) => void;
 }
 
 export interface StudioCanvasHandle {
@@ -182,6 +190,9 @@ export interface StudioCanvasHandle {
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  /** Pans (without changing zoom) so page-image point `(x, y)` lands at the viewport's center —
+   *  the minimap's click/drag-to-pan gesture, mirroring how `zoomTo` already re-centers on a point. */
+  centerOn: (x: number, y: number) => void;
   /**
    * Crops the background (original + cleaned) and every raster layer's canvas to `rect` (page-image
    * coordinates), in place. Returns the new original/cleaned image data so the caller (Studio.tsx)
@@ -254,7 +265,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
-  activeMaskLayerId = null, onLiveCursorMove,
+  activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -287,6 +298,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  // Status bar / minimap mirror pan+zoom into their own owner's state via this — pos/scale live
+  // here, not lifted, so this is the only way anything outside this component learns they changed.
+  useEffect(() => { onViewportChange?.({ pos, scale, containerSize }); }, [pos, scale, containerSize, onViewportChange]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
@@ -648,6 +662,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     },
     zoomOut() {
       this.zoomTo(scale / 1.25);
+    },
+    centerOn(x: number, y: number) {
+      setPos({ x: containerSize.width / 2 - x * scale, y: containerSize.height / 2 - y * scale });
     },
     centerTextLayerInBubble(id: string) {
       const layer = findLayer(layersRef.current, id);
@@ -2161,10 +2178,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         onLiveCursorMove?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
+        onCursorImagePosChange?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
         if (!SVG_OVERLAY_TOOLS.has(activeTool)) return;
         setBrushCursorPos({ x: cx, y: cy });
       }}
-      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); }}
+      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); onCursorImagePosChange?.(null); }}
     >
       {containerSize.width > 0 && (
         <Stage

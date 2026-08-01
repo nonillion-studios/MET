@@ -113,6 +113,10 @@ export interface MenuActions {
   toggleToolRail: () => void;
   optionsBarVisible: boolean;
   toggleOptionsBar: () => void;
+  minimapVisible: boolean;
+  toggleMinimap: () => void;
+  statusBarVisible: boolean;
+  toggleStatusBar: () => void;
   /** Window > Arrange > Reset Layout — disabled until Task 2 builds the panel order/collapse state
    *  there is to reset. */
   resetLayoutEnabled: boolean;
@@ -402,8 +406,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         ...a.panelTabs.map(t => ({
           id: `show-${t.id}`, label: `${t.label} Panel`, action: () => a.showPanel(t.id), checked: a.isPanelVisible(t.id),
         })),
-        { id: 'minimap', label: 'Minimap', disabled: true, checked: false },
-        { id: 'status-bar', label: 'Status Bar', disabled: true, checked: false },
+        { id: 'minimap', label: 'Minimap', action: a.toggleMinimap, checked: a.minimapVisible },
+        { id: 'status-bar', label: 'Status Bar', action: a.toggleStatusBar, checked: a.statusBarVisible },
         { id: 'sep1', label: '', separator: true },
         {
           id: 'arrange', label: 'Arrange', submenu: [
