@@ -20,6 +20,7 @@ export function presetToSettings(
     smoothing: preset.smoothing,
     pressureSize: preset.pressureSize,
     pressureOpacity: preset.pressureOpacity,
+    contentAwareMode: 'proximity',
     brushShape: preset.shape,
     tipMask,
     tipMaskId: preset.shape === 'image' ? preset.id : undefined,

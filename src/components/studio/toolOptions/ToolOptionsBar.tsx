@@ -1,6 +1,7 @@
 import { findTool } from '../toolGroups';
 import type { LiquifyMode, SymmetryMode } from '../paint/paintEngine';
 import type { BrushShape } from '../paint/brushTip';
+import type { ContentAwareMode } from '../paint/contentAwareAlgorithms';
 import { PAINT_TOOLS } from '../paint/usePaintLayer';
 import type { SampleMode } from '../../../lib/sampleComposite';
 
@@ -33,6 +34,8 @@ interface ToolOptionsBarProps {
   onScatterChange: (v: number) => void;
   smoothing: number;
   onSmoothingChange: (v: number) => void;
+  contentAwareMode: ContentAwareMode;
+  onContentAwareModeChange: (v: ContentAwareMode) => void;
   sampleMode: SampleMode;
   onSampleModeChange: (v: SampleMode) => void;
   sliceRectCount: number;
@@ -49,6 +52,7 @@ const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient'
 const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
 const SYMMETRY_TOOLS = new Set(['brush', 'pencil', 'eraser']);
 const SELECTION_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'lasso-freehand', 'lasso-polygon', 'lasso-magnetic', 'wand']);
+const CONTENT_AWARE_TOOLS = new Set(['spot-heal', 'contentAware']);
 /** Clone/Heal source and the Eyedropper both read pixels through the same `sampleMode` — matches
  *  Photoshop's single shared "Sample" setting rather than a per-tool copy. */
 const SAMPLE_TOOLS = new Set(['clone', 'heal', 'eyedropper']);
@@ -72,6 +76,12 @@ const SYMMETRY_MODES: { id: SymmetryMode; label: string }[] = [
   { id: 'horizontal', label: 'Horizontal' },
   { id: 'vertical', label: 'Vertical' },
   { id: 'both', label: 'Both' },
+];
+
+const CONTENT_AWARE_MODES: { id: ContentAwareMode; label: string }[] = [
+  { id: 'proximity', label: 'Proximity Match' },
+  { id: 'texture', label: 'Create Texture' },
+  { id: 'contentAware', label: 'Content-Aware' },
 ];
 
 const SAMPLE_MODES: { id: SampleMode; label: string }[] = [
@@ -107,6 +117,7 @@ export function ToolOptionsBar({
   symmetry, onSymmetryChange, spacing, onSpacingChange, brushShape, onBrushShapeChange,
   angle, onAngleChange, roundness, onRoundnessChange, scatter, onScatterChange,
   smoothing, onSmoothingChange,
+  contentAwareMode, onContentAwareModeChange,
   sampleMode, onSampleModeChange,
   sliceRectCount, onAddSliceRect, onExportSlices,
   hasSelection, onDeselect,
@@ -120,12 +131,13 @@ export function ToolOptionsBar({
   const showTolerance = TOLERANCE_TOOLS.has(activeTool);
   const showLiquifyMode = activeTool === 'liquify';
   const showSymmetry = SYMMETRY_TOOLS.has(activeTool);
+  const showContentAwareMode = CONTENT_AWARE_TOOLS.has(activeTool);
   const showSlice = activeTool === 'slice';
   const showDeselect = SELECTION_TOOLS.has(activeTool) && hasSelection;
   const showSelectionHint = (PAINT_TOOLS as readonly string[]).includes(activeTool) && hasSelection;
   const showSample = SAMPLE_TOOLS.has(activeTool);
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showSlice && !showDeselect && !showSelectionHint && !showSample)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showContentAwareMode && !showSlice && !showDeselect && !showSelectionHint && !showSample)) return null;
 
   const controlClass = `studio-interactive studio-focusable bg-ink/5 border border-hairline rounded-control text-ink text-micro shrink-0 ${phone ? 'min-h-11 px-3' : 'px-2 py-1'}`;
   const selectClass = `bg-ink/5 border border-hairline rounded-control text-ink text-micro ${phone ? 'min-h-11 px-2' : 'px-1.5 py-1'}`;
@@ -143,6 +155,18 @@ export function ToolOptionsBar({
             className={selectClass}
           >
             {LIQUIFY_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        </label>
+      )}
+      {showContentAwareMode && (
+        <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+          <span>Mode</span>
+          <select
+            value={contentAwareMode}
+            onChange={(e) => onContentAwareModeChange(e.target.value as ContentAwareMode)}
+            className={selectClass}
+          >
+            {CONTENT_AWARE_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </label>
       )}

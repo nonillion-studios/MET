@@ -22,7 +22,7 @@ import { usePaintLayer, PAINT_TOOLS } from './paint/usePaintLayer';
 import {
   NO_SELECTION, combineModeFromModifiers, combineSelections, hasSelection, rasterizeSelectionMask,
   selectionContainsPoint, translateSelection, transformSelectionMask, selectionToAlphaCanvas, alphaMaskToSelection,
-  type Selection, type SelectionCombineMode,
+  selectionBounds, type Selection, type SelectionCombineMode,
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
@@ -136,8 +136,9 @@ interface StudioCanvasProps {
   onEyedropperPick?: (hex: string) => void;
   /** Fired on Enter/double-click while the Crop tool is active, to commit the current rect selection as a crop. */
   onCommitCrop?: () => void;
-  /** TypeR Multi-Bubble mode's already-queued rects, drawn as a distinct overlay from the live selection. */
-  queuedBubbleRects?: { x: number; y: number; width: number; height: number }[];
+  /** TypeR Multi-Bubble mode's already-queued shapes (any selection kind), drawn as a distinct
+   *  overlay from the live selection. */
+  queuedBubbleShapes?: Selection[];
   /** Slice tool's already-queued rects, drawn as a distinct overlay from the live selection. */
   queuedSliceRects?: { x: number; y: number; width: number; height: number }[];
   /** Select > Transform Selection: shows a free-transform box around the selection's bounds instead
@@ -174,6 +175,14 @@ interface StudioCanvasProps {
    *  broadcasting this user's cursor to other participants of a hosted session. Independent of
    *  SVG_OVERLAY_TOOLS — fires for any tool, unlike the brush outline's own tracking. */
   onLiveCursorMove?: (pagePos: { x: number; y: number } | null) => void;
+  /** Status bar: the pointer's page-image-space position on every move (null on leave) — the same
+   *  computation `onLiveCursorMove` already does, kept as a separate callback since the two are
+   *  unrelated concerns (one broadcasts to collab viewers, this one just drives a local readout). */
+  onCursorImagePosChange?: (pos: { x: number; y: number } | null) => void;
+  /** Status bar + minimap: fires whenever pan/zoom/container size changes, so callers can mirror
+   *  the viewport without polling `getViewTransform()`. `containerSize` is the on-screen viewport
+   *  size in CSS px — the minimap needs it to size its own viewport-rectangle overlay correctly. */
+  onViewportChange?: (v: { pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }) => void;
 }
 
 /** The subset of a resolved TypeR line's style the drag preview needs to render — see
@@ -216,6 +225,9 @@ export interface StudioCanvasHandle {
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
+  /** Pans (without changing zoom) so page-image point `(x, y)` lands at the viewport's center —
+   *  the minimap's click/drag-to-pan gesture, mirroring how `zoomTo` already re-centers on a point. */
+  centerOn: (x: number, y: number) => void;
   /**
    * Crops the background (original + cleaned) and every raster layer's canvas to `rect` (page-image
    * coordinates), in place. Returns the new original/cleaned image data so the caller (Studio.tsx)
@@ -287,10 +299,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
-  queuedBubbleRects, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
-  activeMaskLayerId = null,
+  queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
+  activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
-  typerArmed = false, typerPreviewLine = null, onLiveCursorMove,
+  typerArmed = false, typerPreviewLine = null,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -331,6 +343,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  // Status bar / minimap mirror pan+zoom into their own owner's state via this — pos/scale live
+  // here, not lifted, so this is the only way anything outside this component learns they changed.
+  useEffect(() => { onViewportChange?.({ pos, scale, containerSize }); }, [pos, scale, containerSize, onViewportChange]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
@@ -714,6 +729,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     zoomOut() {
       this.zoomTo(scale / 1.25);
     },
+    centerOn(x: number, y: number) {
+      setPos({ x: containerSize.width / 2 - x * scale, y: containerSize.height / 2 - y * scale });
+    },
     centerTextLayerInBubble(id: string) {
       const layer = findLayer(layersRef.current, id);
       const img = imageRef.current;
@@ -965,6 +983,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (e.key === 'Escape' && penDraft.length > 0) { setPenDraft([]); penPlacingRef.current = null; setPenHoverPos(null); }
       if (e.key === 'Escape' && lassoPolyPoints.length > 0) setLassoPolyPoints([]);
       if (e.key === 'Escape' && transformingSelection) cancelTransformSelection();
+      // Spot Healing Brush / Content-Aware Fill: reverts to the pre-repair snapshot and drops any
+      // in-flight Create-Texture/Content-Aware worker pass. Safe to call unconditionally — it's a
+      // no-op (beyond a cheap worker respawn) when nothing is actually mid-repair.
+      if (e.key === 'Escape') paint.cancelContentAware();
       // Esc deselects while a plain marquee/lasso selection tool is active — but not Crop/Slice,
       // which use Esc for their own draft-cancel flow, and only once nothing else above already
       // consumed it (an in-progress pen/lasso-polygon draft or a live Transform Selection box).
@@ -2260,10 +2282,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         onLiveCursorMove?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
+        onCursorImagePosChange?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
         if (!SVG_OVERLAY_TOOLS.has(activeTool)) return;
         setBrushCursorPos({ x: cx, y: cy });
       }}
-      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); }}
+      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); onCursorImagePosChange?.(null); }}
     >
       {containerSize.width > 0 && (
         <Stage
@@ -2387,10 +2410,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 )}
               </>
             )}
-            {queuedBubbleRects?.map((rect, i) => (
-              <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
-                stroke="#f59e0b" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />
-            ))}
+            {queuedBubbleShapes?.map((shape, i) => {
+              // Renders whatever shape was actually captured (rect/ellipse/polygon) — a mask has no
+              // clean vector outline to draw, so it falls back to its bounds, matching how Type
+              // Region's own clipShape falls back to a plain rect for mask-kind selections.
+              const strokeProps = { stroke: '#f59e0b', strokeWidth: 1.5 / scale, dash: [4 / scale, 3 / scale] };
+              if (shape.kind === 'ellipse') {
+                return (
+                  <Ellipse key={i}
+                    x={shape.x + shape.width / 2} y={shape.y + shape.height / 2}
+                    radiusX={Math.abs(shape.width) / 2} radiusY={Math.abs(shape.height) / 2}
+                    {...strokeProps}
+                  />
+                );
+              }
+              if (shape.kind === 'polygon') {
+                const pts = shape.points.flatMap(p => [p.x, p.y]);
+                return <Line key={i} points={pts} closed {...strokeProps} />;
+              }
+              const bounds = shape.kind === 'rect' ? shape : selectionBounds(shape);
+              if (!bounds) return null;
+              return (
+                <Rect key={i} x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} {...strokeProps} />
+              );
+            })}
             {queuedSliceRects?.map((rect, i) => (
               <Rect key={i} x={rect.x} y={rect.y} width={rect.width} height={rect.height}
                 stroke="#22d3ee" strokeWidth={1.5 / scale} dash={[4 / scale, 3 / scale]} />

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Upload, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ImageOff, Upload, X } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { Chapter, Workspace } from '../../types';
 
@@ -47,10 +47,18 @@ function flattenChapters(workspaces: Workspace[]): FlatChapter[] {
 
 interface SplitScreenPreviewProps {
   workspaces: Workspace[];
+  /** Whichever chapter is currently linked to this doc/open in Studio, used only to pick a
+   *  sensible *default* selection — the dropdown stays fully changeable/browsable afterward, and
+   *  this never overrides an already-stored user selection. */
+  activeChapterId?: string | null;
+  /** Follows Studio's live active page — but only the moment it *changes*, so browsing the preview
+   *  independently afterward (via its own prev/next controls) doesn't keep getting yanked back.
+   *  Mirrors the same snap-once convention this component's own stored-selection restore uses. */
+  studioActivePageId?: string | null;
   onClose: () => void;
 }
 
-export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewProps) {
+export function SplitScreenPreview({ workspaces, activeChapterId, studioActivePageId, onClose }: SplitScreenPreviewProps) {
   const flatChapters = useMemo(() => flattenChapters(workspaces), [workspaces]);
 
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(() => loadStoredSelection().chapterId);
@@ -60,13 +68,23 @@ export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewPr
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadedUrlRef = useRef<string | null>(null);
 
-  // Default to a chapter if none stored yet and one becomes available.
+  // Default to a chapter if none stored yet and one becomes available — prefer whichever chapter
+  // is actively linked/open elsewhere, falling back to the first one that exists at all.
   useEffect(() => {
-    if (selectedChapterId === null && flatChapters.length > 0) {
-      setSelectedChapterId(flatChapters[0].id);
-    }
+    if (selectedChapterId !== null || flatChapters.length === 0) return;
+    const preferred = activeChapterId && flatChapters.some(f => f.id === activeChapterId) ? activeChapterId : flatChapters[0].id;
+    setSelectedChapterId(preferred);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatChapters.length]);
+
+  // Follows Studio's live active page once, the moment it changes — the preview's own prev/next
+  // controls can still browse away from it independently afterward.
+  useEffect(() => {
+    if (!studioActivePageId || !selectedChapter) return;
+    const idx = selectedChapter.pages.findIndex(p => p.id === studioActivePageId);
+    if (idx >= 0) setSelectedPageIndex(idx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studioActivePageId]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -127,21 +145,27 @@ export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewPr
     setUploadedIsPdf(file.type === 'application/pdf');
   }
 
+  const hasSelection = selectedChapterId !== null && flatChapters.length > 0;
+
   return (
-    <div className="w-[360px] shrink-0 border-l border-hairline flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-hairline">
-        <span className="text-xs font-semibold text-ink">Manga Preview</span>
-        <IconButton size="sm" aria-label="Close split screen" onClick={onClose} className="!bg-transparent">
+    // flex-1 (not a fixed width) so it fills whatever the divider's ratio gives it; min-w-[300px]
+    // is the spec's own floor. Always-dark chrome regardless of the app's light/dark theme toggle —
+    // the same "chrome stays dark on purpose" convention Studio's own shell already uses — so it
+    // reads clearly against the white text pages on the left at any theme setting.
+    <div className="flex-1 min-w-[300px] flex flex-col h-full min-h-0 bg-[#1a1a1a]">
+      <div className="flex items-center justify-between px-3 h-10 shrink-0 border-b border-white/10">
+        <span className="text-xs font-semibold text-white/90">Manga Preview</span>
+        <IconButton size="sm" aria-label="Close split screen" onClick={onClose} className="!bg-transparent !text-white/70 hover:!text-white">
           <X size={14} />
         </IconButton>
       </div>
 
-      <div className="flex flex-col gap-2 px-3 py-2 border-b border-hairline">
-        <label className="text-[11px] text-ink-faint font-medium">Chapter</label>
+      <div className="flex flex-col gap-2 px-3 py-2 border-b border-white/10">
+        <label className="text-[11px] text-white/50 font-medium">Chapter</label>
         <select
           value={selectedChapterId ?? ''}
           onChange={(e) => handleChapterChange(e.target.value)}
-          className="w-full bg-ink/5 border border-hairline rounded-md px-2 py-1.5 text-xs text-ink"
+          className="w-full bg-white/10 border border-white/10 rounded-md px-2 py-1.5 text-xs text-white"
         >
           {flatChapters.length === 0 && <option value="">No chapters available</option>}
           {flatChapters.map(f => (
@@ -151,17 +175,17 @@ export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewPr
 
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
-            <IconButton size="sm" aria-label="Previous page" onClick={goPrev} disabled={clampedIndex <= 0} className="!bg-transparent">
+            <IconButton size="sm" aria-label="Previous page" onClick={goPrev} disabled={clampedIndex <= 0} className="!bg-transparent !text-white/70 hover:!text-white">
               <ChevronLeft size={14} />
             </IconButton>
-            <span className="text-[11px] text-ink-faint px-1 tabular-nums">
+            <span className="text-[11px] text-white/50 px-1 tabular-nums">
               {pageCount > 0 ? `Page ${clampedIndex + 1} of ${pageCount}` : 'No pages'}
             </span>
-            <IconButton size="sm" aria-label="Next page" onClick={goNext} disabled={clampedIndex >= pageCount - 1} className="!bg-transparent">
+            <IconButton size="sm" aria-label="Next page" onClick={goNext} disabled={clampedIndex >= pageCount - 1} className="!bg-transparent !text-white/70 hover:!text-white">
               <ChevronRight size={14} />
             </IconButton>
           </div>
-          <IconButton size="sm" aria-label="Upload reference image" onClick={() => fileInputRef.current?.click()} className="!bg-transparent">
+          <IconButton size="sm" aria-label="Upload reference image" onClick={() => fileInputRef.current?.click()} className="!bg-transparent !text-white/70 hover:!text-white">
             <Upload size={14} />
           </IconButton>
           <input
@@ -174,7 +198,7 @@ export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewPr
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto bg-[#e9e9ec] dark:bg-[#2a2a2a] flex items-center justify-center p-4">
+      <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center p-4">
         {uploadedPreviewUrl ? (
           uploadedIsPdf ? (
             <embed src={uploadedPreviewUrl} type="application/pdf" className="w-full h-full rounded-sm shadow-lg" />
@@ -184,7 +208,10 @@ export function SplitScreenPreview({ workspaces, onClose }: SplitScreenPreviewPr
         ) : currentImage ? (
           <img src={currentImage.dataUrl} alt={currentPage?.id ?? 'page'} className="max-w-full max-h-full rounded-sm shadow-lg" />
         ) : (
-          <span className="text-xs text-ink-faint">No page to preview</span>
+          <div className="flex flex-col items-center gap-2 text-white/40">
+            <ImageOff size={28} strokeWidth={1.5} />
+            <span className="text-xs">{hasSelection ? 'No pages in this chapter' : 'Select a chapter to preview pages'}</span>
+          </div>
         )}
       </div>
     </div>

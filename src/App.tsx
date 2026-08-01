@@ -22,6 +22,8 @@ import { AuthGate } from './components/AuthGate';
 import { PrivacyPolicy } from './components/legal/PrivacyPolicy';
 import { UserAgreement } from './components/legal/UserAgreement';
 import { Modal, Button, Input, Textarea, GlassCard, SkeletonCard, AppContextMenu } from './components/ui';
+import { MusicPlayer } from './components/musicPlayer/MusicPlayer';
+import { MusicPlayerVisibilityProvider } from './components/musicPlayer/MusicPlayerContext';
 import { Studio } from './components/studio/Studio';
 import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
 import { TextEditorPage } from './components/textEditor/TextEditorPage';
@@ -816,6 +818,7 @@ export default function App() {
   };
 
   return (
+    <MusicPlayerVisibilityProvider>
     <div className="min-h-screen app-shell-bg dynamic-bg text-ink">
       {showSplash && <SplashScreen onFinish={() => setShowSplash(false)} />}
       {!showSplash && <AuthGate>
@@ -1598,7 +1601,9 @@ export default function App() {
           while the Cloud tab happens to be open. */}
       <CloudTransferModals cc={cloudClient} />
       <AppContextMenu />
+      <MusicPlayer />
       </AuthGate>}
     </div>
+    </MusicPlayerVisibilityProvider>
   );
 }

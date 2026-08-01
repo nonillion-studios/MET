@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   Plus, X, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight,
   List, ListOrdered, Search, Download, FileType, Printer, Send, Heading1, Heading2,
@@ -14,6 +14,8 @@ import { swal, swalToast, Swal } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import { loadTextEditorDocs, saveTextEditorDocs, defaultDocStatus, findOrCreateChapterDoc, type TextEditorDoc, type TextEditorDocStatus } from '../../lib/textEditorStore';
 import { stripSpellMarks } from '../../lib/spellCheck';
+import { SpellCheckOverlay } from '../../editor/SpellCheckOverlay';
+import { MusicPlayerToggleButton } from '../musicPlayer/MusicPlayer';
 import { exportDocAsTxt, exportDocAsDocx, printDocAsPdf, downloadBlob } from '../../lib/textEditorExport';
 import { SplitScreenPreview } from './SplitScreenPreview';
 import { DocumentLibrary } from './DocumentLibrary';
@@ -80,6 +82,38 @@ import type { Workspace } from '../../types';
 const PAGE_WIDTH = 794; // A4 at 96dpi
 const PAGE_HEIGHT = 1123;
 const AUTOSAVE_MS = 1000;
+const SPLIT_RATIO_KEY = 'text_editor_split_ratio';
+const MIN_SPLIT_RATIO = 0.3;
+const MAX_SPLIT_RATIO = 0.8;
+
+const SEND_TO_TYPER_BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote', 'pre']);
+
+/**
+ * Send to TypeR: one line per block element, instead of reading `.innerText` off the whole page
+ * (which collapses every paragraph into a single run). Each `blockTags` element becomes exactly
+ * one line (trimmed, but otherwise untouched — a TypeR prefix like "SFX:"/"~"/"!!" at the start of
+ * a line survives as-is), a bare `<br>` becomes a blank line, and anything else (inline formatting)
+ * recurses without emitting its own line.
+ */
+function extractLinesFromEditor(el: HTMLElement): string[] {
+  const lines: string[] = [];
+
+  const walkNode = (node: ChildNode): void => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    if (SEND_TO_TYPER_BLOCK_TAGS.has(tag)) {
+      lines.push(element.innerText.trim());
+    } else if (tag === 'br') {
+      lines.push('');
+    } else {
+      element.childNodes.forEach(walkNode);
+    }
+  };
+
+  el.childNodes.forEach(walkNode);
+  return lines;
+}
 
 function newDoc(title = 'Untitled'): TextEditorDoc {
   return { id: genId('tedoc'), title, dir: 'ltr', pages: [''], updatedAt: Date.now(), status: defaultDocStatus() };
@@ -169,6 +203,12 @@ interface TextEditorPageProps {
 
 export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter }: TextEditorPageProps) {
   const [splitScreenOpen, setSplitScreenOpen] = useState(false);
+  // The ratio itself persists across sessions; whether split screen is *open* deliberately does
+  // not — a fresh session always starts full-width, matching the spec's own "not persisted" rule.
+  const [splitRatio, setSplitRatio] = useState(() => {
+    const stored = Number(localStorage.getItem(SPLIT_RATIO_KEY));
+    return Number.isFinite(stored) && stored >= MIN_SPLIT_RATIO && stored <= MAX_SPLIT_RATIO ? stored : 0.5;
+  });
   // The app-wide theme (same one TopBar/SettingsPanel toggle) — not a second, editor-local theme
   // system. Pages themselves stay bg-white/text-black regardless (see the page div's own
   // className below), since they represent paper, not chrome.
@@ -219,6 +259,45 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     }
   }
 
+  // Escape closes split screen — same dismiss convention as every other overlay/panel in this file.
+  useEffect(() => {
+    if (!splitScreenOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSplitScreenOpen(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [splitScreenOpen]);
+
+  /** Drag-to-resize the split divider. Uses real pointer capture (not just window-level move/up
+   *  listeners) so a fast drag that momentarily leaves the 4px divider under the cursor doesn't
+   *  drop the gesture — the pointer stays "captured" by the divider element regardless of what's
+   *  actually under the cursor mid-drag. */
+  function handleSplitDividerPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    const divider = e.currentTarget;
+    const container = divider.parentElement;
+    if (!container) return;
+    divider.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startRatio = splitRatio;
+    const width = container.getBoundingClientRect().width;
+    function onMove(ev: PointerEvent) {
+      const next = Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, startRatio + (ev.clientX - startX) / width));
+      setSplitRatio(next);
+    }
+    function onUp(ev: PointerEvent) {
+      divider.releasePointerCapture(ev.pointerId);
+      divider.removeEventListener('pointermove', onMove);
+      divider.removeEventListener('pointerup', onUp);
+      setSplitRatio(current => {
+        try { localStorage.setItem(SPLIT_RATIO_KEY, String(current)); } catch { /* not fatal */ }
+        return current;
+      });
+    }
+    divider.addEventListener('pointermove', onMove);
+    divider.addEventListener('pointerup', onUp);
+  }
+
   const pageRefs = useRef<(HTMLDivElement | null)[]>([]);
   const dirtyRef = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -231,6 +310,38 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
    *  across renders is required for `EditablePage`'s `memo` to bail out (a
    *  fresh inline arrow function every render would look like a changed prop). */
   const pageRefCallbacksRef = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
+  /** `SpellCheckOverlay` needs a stable `RefObject` per page (not a plain array index) — one
+   *  overlay instance is mounted per page, each watching that page's own contenteditable and
+   *  positioned against that page's own untransformed wrapper. Populated by the same ref
+   *  callbacks that already populate `pageRefs`/`pageContainerRefs`, so there's no second
+   *  source of truth for "what DOM node is page i" — just a second place it's written to. */
+  const spellCheckContentRefsRef = useRef<Map<number, RefObject<HTMLDivElement | null>>>(new Map());
+  const spellCheckContainerRefsRef = useRef<Map<number, RefObject<HTMLDivElement | null>>>(new Map());
+  const pageContainerRefCallbacksRef = useRef<Map<number, (el: HTMLDivElement | null) => void>>(new Map());
+
+  function getSpellCheckContentRef(i: number): RefObject<HTMLDivElement | null> {
+    const cache = spellCheckContentRefsRef.current;
+    let ref = cache.get(i);
+    if (!ref) { ref = { current: null }; cache.set(i, ref); }
+    return ref;
+  }
+
+  function getSpellCheckContainerRef(i: number): RefObject<HTMLDivElement | null> {
+    const cache = spellCheckContainerRefsRef.current;
+    let ref = cache.get(i);
+    if (!ref) { ref = { current: null }; cache.set(i, ref); }
+    return ref;
+  }
+
+  function getPageContainerRefCallback(i: number): (el: HTMLDivElement | null) => void {
+    const cache = pageContainerRefCallbacksRef.current;
+    let cb = cache.get(i);
+    if (!cb) {
+      cb = (el: HTMLDivElement | null) => { getSpellCheckContainerRef(i).current = el; };
+      cache.set(i, cb);
+    }
+    return cb;
+  }
   /** "Latest logic" refs backing the stable `handleInput`/`handleSpellClick`
    *  wrappers below — lets those exposed callbacks keep one identity forever
    *  (required for `EditablePage`'s `memo` to bail out) while always running
@@ -246,7 +357,10 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     const cache = pageRefCallbacksRef.current;
     let cb = cache.get(i);
     if (!cb) {
-      cb = (el: HTMLDivElement | null) => { pageRefs.current[i] = el; };
+      cb = (el: HTMLDivElement | null) => {
+        pageRefs.current[i] = el;
+        getSpellCheckContentRef(i).current = el;
+      };
       cache.set(i, cb);
     }
     return cb;
@@ -1199,20 +1313,18 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
 
   const [tabMenu, setTabMenu] = useState<{ docId: string; x: number; y: number } | null>(null);
 
-  /** Native browser spellcheck only — toggles the `spellcheck` DOM property directly on every
-   *  page's contentEditable, imperatively, rather than passing it down as an EditablePage prop.
-   *  EditablePage must never re-render past its initial mount (see its own comment) — a prop here
-   *  would trigger exactly that. The browser underlines misspelled words and offers its own
-   *  right-click suggestions; nothing here ever touches page content, so there's nothing that can
-   *  lose or corrupt text the way the old dictionary-based implementation could (it rewrote every
-   *  page's innerHTML and forced a full remount just to apply/clear marks). */
-  const [spellCheckActive, setSpellCheckActive] = useState(true);
+  /** Real EN/AR dictionary spell check (`src/editor/spellCheck.ts` + `SpellCheckOverlay.tsx`),
+   *  replacing the old native-`spellcheck`-attribute toggle this button used to drive. The overlay
+   *  is a sibling absolutely-positioned div per page — never a prop into `EditablePage` (which
+   *  must never re-render past its initial mount, see its own comment) and never a write to any
+   *  page's `innerHTML`, so it can't lose or corrupt text the way the old from-scratch dictionary
+   *  implementation could (that one rewrote every page's `innerHTML` and forced a full remount
+   *  just to apply/clear marks — see `src/lib/spellCheck.ts`'s history). Defaults off: dictionaries
+   *  are real (multi-hundred-KB to multi-MB) and load lazily on first activation. */
+  const [spellCheckEnabled, setSpellCheckEnabled] = useState(false);
   function toggleSpellCheck() {
-    setSpellCheckActive(v => !v);
+    setSpellCheckEnabled(v => !v);
   }
-  useEffect(() => {
-    pageRefs.current.forEach((p) => { if (p) p.spellcheck = spellCheckActive; });
-  });
 
   function runPageClickLogic(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
@@ -1657,15 +1769,6 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     return () => document.removeEventListener('focusin', onFocusIn);
   }, []);
 
-  // The suggestion/"Ignore" action in the global right-click menu (ContextMenu.tsx) can't reach
-  // into this component directly — it dispatches this custom event on the fixed span instead.
-  useEffect(() => {
-    function onSpellFix() { scheduleAutosave(); }
-    document.addEventListener('te-spell-fix', onSpellFix);
-    return () => document.removeEventListener('te-spell-fix', onSpellFix);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   function buildFindRegex(): RegExp | null {
     const q = query.trim();
     if (!q) return null;
@@ -1949,7 +2052,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     const text = selectedPages.map((html) => {
       const container = document.createElement('div');
       container.innerHTML = stripStatusMarks(stripSpellMarks(html));
-      return container.innerText;
+      return extractLinesFromEditor(container).join('\n');
     }).join('\n');
     setSendToTyperOpen(false);
     onSendToTyper({ chapterId: result.chapterId, text, mode: result.mode });
@@ -2057,8 +2160,14 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         onDelete={closeDoc}
         onToggleStatus={toggleDocStatus}
       />
-      <div ref={rootRef} className="flex flex-col flex-1 min-w-0 h-full min-h-0">
-    <div className="flex flex-col h-full min-h-0">
+      {/* A real flex row, not a portal/popup: split screen is [editor column][divider][preview
+          column] as ordinary flex siblings — the manga preview is always on the right and never
+          overlaps, since it's laid out, not floated. This whole subtree (including the preview and
+          its controls) is inside rootRef, so entering fullscreen with split screen active keeps
+          everything visible and correctly proportioned; only the document-library sidebar sits
+          outside it (fullscreen hides chrome, matching this app's own convention elsewhere). */}
+      <div ref={rootRef} className="flex flex-1 min-w-0 h-full min-h-0">
+    <div className="flex flex-col h-full min-h-0 min-w-0" style={{ width: splitScreenOpen ? `${splitRatio * 100}%` : '100%' }}>
       <TextEditorMenuBar actions={menuActions} />
 
       {/* Document tabs */}
@@ -2219,13 +2328,14 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         <div className="w-px h-5 bg-hairline mx-1.5" />
         <Button
           size="sm"
-          variant={spellCheckActive ? 'primary' : 'secondary'}
-          aria-pressed={spellCheckActive}
-          title={spellCheckActive ? 'Spell check on — click to turn off' : 'Spell check off — click to turn on'}
+          variant={spellCheckEnabled ? 'primary' : 'secondary'}
+          aria-pressed={spellCheckEnabled}
+          title={spellCheckEnabled ? 'Spell check on — click to turn off' : 'Spell check off — click to turn on'}
           onClick={toggleSpellCheck}
         >
           Spell Check
         </Button>
+        <MusicPlayerToggleButton className="!bg-transparent w-8 h-8 flex items-center justify-center rounded-control text-ink" />
         <div className="flex-1" />
         <Button size="sm" variant="secondary" onClick={handleSendToTyper}><Send size={13} /> Send to TypeR</Button>
         <Button size="sm" variant="secondary" onClick={() => activeDoc && exportDocAsTxt({ ...activeDoc, pages: capturePagesForExport() })}>
@@ -2293,7 +2403,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         {activeDoc && (
           <div key={`${activeDoc.id}-${renderKey}`} className="flex flex-col items-center gap-6" dir={activeDoc.dir}>
             {activeDoc.pages.map((html, i) => (
-              <div key={i} className="shrink-0 relative" style={{ width: PAGE_WIDTH * zoom, height: PAGE_HEIGHT * zoom }}>
+              <div key={i} className="shrink-0 relative" style={{ width: PAGE_WIDTH * zoom, height: PAGE_HEIGHT * zoom }} ref={getPageContainerRefCallback(i)}>
                 <div
                   className="overflow-hidden rounded-sm shadow-2xl"
                   style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT, transform: `scale(${zoom})`, transformOrigin: 'top left' }}
@@ -2310,13 +2420,63 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
                 <div className="absolute bottom-1 inset-x-0 text-center text-[11px] text-ink-faint pointer-events-none select-none">
                   {i + 1} / {activeDoc.pages.length}
                 </div>
+                <SpellCheckOverlay
+                  contentEditableRef={getSpellCheckContentRef(i)}
+                  enabled={spellCheckEnabled}
+                  containerRef={getSpellCheckContainerRef(i)}
+                />
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* Status bar — part of the editor column (spec: "the status bar at the bottom" sits inside
+          the left side), not spanning both columns, so it moves with the ratio like everything
+          else in this column rather than sitting below the whole split. */}
+      {activeDoc && (
+        <div className="flex items-center gap-3 px-3 h-7 shrink-0 border-t border-hairline text-[11px] text-ink-faint overflow-x-auto">
+          <span className="whitespace-nowrap">
+            Page {Math.min(activePageIndex, activeDoc.pages.length - 1) + 1} of {activeDoc.pages.length}
+          </span>
+          <span className="whitespace-nowrap">{wordCount} word{wordCount === 1 ? '' : 's'}</span>
+          <span className="whitespace-nowrap">{charCount.toLocaleString()} characters / {charCountNoSpaces.toLocaleString()} without spaces</span>
+          <span className="whitespace-nowrap flex items-center gap-1"><Clock size={11} /> ~{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
+          <button type="button" onClick={toggleDir} className="whitespace-nowrap hover:text-ink transition-colors" title="Toggle text direction">
+            {activeDoc.dir === 'rtl' ? 'AR-RTL' : 'EN-LTR'}
+          </button>
+          <span className="flex-1" />
+          <div className="flex items-center gap-1 shrink-0">
+            <IconButton size="sm" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
+              <Minus size={11} />
+            </IconButton>
+            <button type="button" onClick={() => setZoom(1)} className="w-10 text-center hover:text-ink transition-colors" title="Reset zoom">
+              {Math.round(zoom * 100)}%
+            </button>
+            <IconButton size="sm" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(2, Math.round((z + 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
+              <Plus size={11} />
+            </IconButton>
+          </div>
+        </div>
+      )}
       </div>
-      {splitScreenOpen && <SplitScreenPreview workspaces={workspaces} onClose={() => setSplitScreenOpen(false)} />}
+      {splitScreenOpen && (
+        <>
+          <div
+            onPointerDown={handleSplitDividerPointerDown}
+            role="separator"
+            aria-label="Resize split screen"
+            aria-orientation="vertical"
+            className="w-1 shrink-0 cursor-col-resize bg-hairline hover:bg-accent transition-colors touch-none"
+          />
+          <SplitScreenPreview
+            workspaces={workspaces}
+            activeChapterId={activeChapterId}
+            studioActivePageId={studioActivePageId}
+            onClose={() => setSplitScreenOpen(false)}
+          />
+        </>
+      )}
       {activeTable && (
         <TableToolbar
           table={activeTable}
@@ -2389,33 +2549,6 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
           <button className="block w-full text-left text-[12px] px-3 py-1.5 hover:bg-ink/10 text-ink whitespace-nowrap" onClick={() => applyMark('reviewed')}>
             🟣 Reviewed
           </button>
-        </div>
-      )}
-
-      {/* Status bar */}
-      {activeDoc && (
-        <div className="flex items-center gap-3 px-3 h-7 shrink-0 border-t border-hairline text-[11px] text-ink-faint overflow-x-auto">
-          <span className="whitespace-nowrap">
-            Page {Math.min(activePageIndex, activeDoc.pages.length - 1) + 1} of {activeDoc.pages.length}
-          </span>
-          <span className="whitespace-nowrap">{wordCount} word{wordCount === 1 ? '' : 's'}</span>
-          <span className="whitespace-nowrap">{charCount.toLocaleString()} characters / {charCountNoSpaces.toLocaleString()} without spaces</span>
-          <span className="whitespace-nowrap flex items-center gap-1"><Clock size={11} /> ~{Math.max(1, Math.ceil(wordCount / 200))} min read</span>
-          <button type="button" onClick={toggleDir} className="whitespace-nowrap hover:text-ink transition-colors" title="Toggle text direction">
-            {activeDoc.dir === 'rtl' ? 'AR-RTL' : 'EN-LTR'}
-          </button>
-          <span className="flex-1" />
-          <div className="flex items-center gap-1 shrink-0">
-            <IconButton size="sm" aria-label="Zoom out" onClick={() => setZoom(z => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
-              <Minus size={11} />
-            </IconButton>
-            <button type="button" onClick={() => setZoom(1)} className="w-10 text-center hover:text-ink transition-colors" title="Reset zoom">
-              {Math.round(zoom * 100)}%
-            </button>
-            <IconButton size="sm" aria-label="Zoom in" onClick={() => setZoom(z => Math.min(2, Math.round((z + 0.1) * 10) / 10))} className="!bg-transparent !w-5 !h-5">
-              <Plus size={11} />
-            </IconButton>
-          </div>
         </div>
       )}
 

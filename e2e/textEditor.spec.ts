@@ -1,35 +1,19 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openStudio } from './studioFixture';
 
 /**
  * Covers the Text Editor's page-model engine — reflow, hard breaks, cross-page focus, page
- * footers — all of which is direct DOM manipulation invisible to vitest. `seedSession` is
- * duplicated from `studioFixture.ts` (kept private there, scoped to Studio) rather than exported
- * cross-file for one shared helper.
+ * footers — all of which is direct DOM manipulation invisible to vitest.
+ *
+ * A real, found-by-testing bug: this used to reach the editor via a top-level "Text Editor" nav
+ * button (`seedSession` + a direct click), which stopped existing once Text Editor became
+ * chapter-linked and moved into Studio's toolbar (`a0d5175`) — every test here was failing at the
+ * very first navigation step against current `main`. Now goes through Studio like `studioFixture.ts`'s
+ * own `openStudio`, then clicks the toolbar's "Open Text Editor" button.
  */
-async function seedSession(page: Page): Promise<void> {
-  await page.goto('/');
-  await page.evaluate(() => {
-    const oneHourFromNow = Math.floor(Date.now() / 1000) + 3600;
-    localStorage.setItem('sb-localhost-auth-token', JSON.stringify({
-      access_token: 'e2e-fake-access-token',
-      token_type: 'bearer',
-      expires_in: 3600,
-      expires_at: oneHourFromNow,
-      refresh_token: 'e2e-fake-refresh-token',
-      user: {
-        id: '00000000-0000-0000-0000-000000000001',
-        aud: 'authenticated', role: 'authenticated', email: 'e2e@test.local',
-        app_metadata: {}, user_metadata: { name: 'E2E User', avatar: '' },
-        created_at: new Date().toISOString(),
-      },
-    }));
-  });
-  await page.reload();
-}
-
 async function openTextEditor(page: Page): Promise<void> {
-  await seedSession(page);
-  await page.getByRole('button', { name: 'Text Editor', exact: true }).click();
+  await openStudio(page);
+  await page.getByRole('button', { name: 'Open Text Editor', exact: true }).click();
   await page.locator('.te-page').first().waitFor({ state: 'visible' });
 }
 

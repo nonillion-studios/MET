@@ -25,10 +25,14 @@ import {
 } from './layerTree';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
+import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
+import { StatusBar } from './StatusBar';
+import { Minimap } from './Minimap';
+import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
 import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
 import { MenuBar } from './menu/MenuBar';
@@ -349,6 +353,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [smoothing, setSmoothing] = useState(0);
   const [pressureSize, setPressureSize] = useState(true);
   const [pressureOpacity, setPressureOpacity] = useState(false);
+  const [contentAwareMode, setContentAwareMode] = useState<ContentAwareMode>('proximity');
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
@@ -359,7 +364,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
-    scatter, smoothing, pressureSize, pressureOpacity, sampleMode,
+    scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode, sampleMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
 
@@ -383,6 +388,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     if (!(PAINT_TOOLS as readonly string[]).includes(activeTool)) setActiveTool('brush');
   }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
+
+  async function handleZoomPrompt() {
+    const result = await swal({
+      title: 'Set Zoom',
+      input: 'number',
+      inputLabel: 'Zoom (%)',
+      inputValue: Math.round(viewport.scale * 100),
+      showCancelButton: true,
+      confirmButtonText: 'Apply',
+    });
+    if (!result.isConfirmed || result.value === undefined || result.value === '') return;
+    const percent = Number(result.value);
+    if (!Number.isFinite(percent) || percent <= 0) return;
+    canvasRef.current?.zoomTo(percent / 100);
+  }
 
   async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
     const result = await swal({
@@ -467,6 +487,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
+  const [minimapVisible, setMinimapVisible] = useState(true);
+  const [statusBarVisible, setStatusBarVisible] = useState(true);
   const [optionsBarVisible, setOptionsBarVisible] = useState(true);
   const [activeFilterDialog, setActiveFilterDialog] = useState<{
     config: FilterConfig; canvas: HTMLCanvasElement; before: ImageData; layerId: string;
@@ -489,6 +511,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function toggleToolRail() { setToolRailVisible(v => !v); }
+  function toggleMinimap() { setMinimapVisible(v => !v); }
+  function toggleStatusBar() { setStatusBarVisible(v => !v); }
   function toggleOptionsBar() { setOptionsBarVisible(v => !v); }
   /** AI > Content-Aware Fill / Image > Apply Filter > Distort > Liquify — both switch to an existing
    *  real brush-driven tool rather than opening a dialog; see toolGroups.ts for `contentAware`/`liquify`. */
@@ -568,6 +592,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
+  // Status bar + minimap: mirrored from StudioCanvas (which owns pos/scale/cursor internally) via
+  // its onViewportChange/onCursorImagePosChange callbacks — see StudioCanvas.tsx.
+  const [viewport, setViewport] = useState<{ pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }>(
+    { pos: { x: 0, y: 0 }, scale: 1, containerSize: { width: 0, height: 0 } },
+  );
+  const [cursorImagePos, setCursorImagePos] = useState<{ x: number; y: number } | null>(null);
+  const [minimapCollapsed, setMinimapCollapsed] = useState(false);
   // Left (Pages) / right (Tools) sidebar visibility. Desktop keeps both open as fixed columns by
   // default; tablet/phone treat these as slide-out sheets, so opening one there closes the other
   // to avoid covering the whole canvas.
@@ -757,7 +788,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // All replays each capture's own line/style rather than re-deriving position from sequential
   // order at fill time.
   const [multiBubbleMode, setMultiBubbleModeState] = useState(false);
-  const [multiBubbleRects, setMultiBubbleRects] = useState<{ rect: { x: number; y: number; width: number; height: number }; lineIndex: number }[]>([]);
+  const [multiBubbleRects, setMultiBubbleRects] = useState<{ shape: Selection; lineIndex: number }[]>([]);
   // Script-line indices already stamped onto the canvas (single-click placement or a multi-bubble
   // fill) — drives the line list's ✓ badge. Not persisted (mirrors typerIndex's own current
   // session-only behaviour); cleared whenever the script itself changes or progress is reset.
@@ -770,15 +801,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   function handleAddBubbleRect() {
-    if (selection.kind !== 'rect') {
-      swalToast({ icon: 'info', title: 'Draw a rectangle around a bubble first' });
+    // Accepts any real selection shape (rect/ellipse/polygon/mask), not just a rectangle —
+    // handlePlaceAllBubbles below derives bounds/clipShape from whatever was actually drawn,
+    // the same way Type Region's handleCreateTypeRegion already does for a single bubble.
+    if (selection.kind === 'none') {
+      swalToast({ icon: 'info', title: 'Draw a selection around a bubble first' });
       return;
     }
     if (!typerLines[typerIndex]) {
       swalToast({ icon: 'info', title: 'No more lines to capture' });
       return;
     }
-    setMultiBubbleRects(prev => [...prev, { rect: selection, lineIndex: typerIndex }]);
+    setMultiBubbleRects(prev => [...prev, { shape: selection, lineIndex: typerIndex }]);
     setSelection(NO_SELECTION);
     // Auto-advance, same as a single armed canvas click — lets the user jump to a different line
     // in the panel before drawing the *next* bubble, which is what lets each capture carry its own
@@ -811,7 +845,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         pageBoundaryHint = line.pageHint;
         break;
       }
-      const { rect } = capture;
+      const { shape } = capture;
+      const rect = selectionBounds(shape);
+      if (!rect) continue;
       const { content, style, boldOverride, italicOverride } = line;
       const lineCount = content.split('\n').length || 1;
       const textWidth = Math.max(40, Math.min(rect.width, 400));
@@ -830,6 +866,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         strokeColor: style.strokeColor,
         strokeWidth: style.strokeWidth,
       };
+      // Clip to the captured shape exactly like Type Region's own single-bubble path
+      // (handleCreateTypeRegion below) — a rect needs no clip, a mask has no clean vector
+      // form to persist, so both fall back to the plain rectangular container at bounds.
+      if (shape.kind === 'ellipse') {
+        layer.text!.clipShape = { kind: 'ellipse', x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      } else if (shape.kind === 'polygon') {
+        layer.text!.clipShape = { kind: 'polygon', points: shape.points };
+      }
       newLayers.push(layer);
       placedNow.push(capture.lineIndex);
     }
@@ -2389,6 +2433,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleToolRail,
     optionsBarVisible,
     toggleOptionsBar,
+    minimapVisible,
+    toggleMinimap,
+    statusBarVisible,
+    toggleStatusBar,
     resetLayoutEnabled: true,
     resetPanelLayout: panelLayout.resetLayout,
     aboutOpen: () => setAboutOpen(true),
@@ -2509,7 +2557,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onPaintStrokeEnd={handlePaintStrokeEnd}
       onEyedropperPick={setForeground}
       onCommitCrop={handleCommitCrop}
-      queuedBubbleRects={multiBubbleRects.map(c => c.rect)}
+      queuedBubbleShapes={multiBubbleRects.map(c => c.shape)}
       queuedSliceRects={sliceRects}
       transformingSelection={transformingSelection}
       onExitTransformSelection={() => setTransformingSelection(false)}
@@ -2523,6 +2571,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       typerArmed={typerArmed}
       typerPreviewLine={typerPreviewLine}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
+      onCursorImagePosChange={setCursorImagePos}
+      onViewportChange={setViewport}
     />
   );
 
@@ -2669,6 +2719,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onScatterChange={setScatter}
           smoothing={smoothing}
           onSmoothingChange={setSmoothing}
+          contentAwareMode={contentAwareMode}
+          onContentAwareModeChange={setContentAwareMode}
           sampleMode={sampleMode}
           onSampleModeChange={setSampleMode}
           sliceRectCount={sliceRects.length}
@@ -2694,6 +2746,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           {collabCursorsOverlay}
           {(magicEraseBusy || magicEraseDetecting) && (
             <MagicEraseLoadingOverlay label={magicEraseDetecting ? 'Scanning for text…' : 'Erasing with AI…'} />
+          )}
+          {activePage && minimapVisible && (
+            <Minimap
+              imageDataUrl={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).dataUrl}
+              pageWidth={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width}
+              pageHeight={(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height}
+              viewportPos={viewport.pos}
+              viewportScale={viewport.scale}
+              containerWidth={viewport.containerSize.width}
+              containerHeight={viewport.containerSize.height}
+              onPan={(x, y) => canvasRef.current?.centerOn(x, y)}
+              collapsed={minimapCollapsed}
+              onToggleCollapsed={() => setMinimapCollapsed(v => !v)}
+            />
           )}
         </div>
 
@@ -2765,6 +2831,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
       </div>
+
+      {statusBarVisible && <StatusBar
+        zoom={viewport.scale}
+        onZoomClick={handleZoomPrompt}
+        cursorPos={cursorImagePos}
+        imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
+        imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
+        toolLabel={findTool(activeTool)?.label ?? activeTool}
+        layerName={activeLayer?.name ?? null}
+      />}
 
       <ExportDialog
         open={exportOpen}

@@ -65,7 +65,7 @@ test('switching to a tool outside the group closes an open flyout', async ({ pag
   await page.getByRole('button', { name: 'Lasso' }).click({ button: 'right' });
   await expect(page.getByRole('button', { name: 'Polygonal Lasso' })).toBeVisible();
 
-  await page.keyboard.press('e'); // Eraser, a different group entirely
+  await page.keyboard.press('e'); // Eraser (now grouped under Brush, but still a different group than Lasso)
   await expect(page.getByRole('button', { name: 'Polygonal Lasso' })).toBeHidden();
 });
 

@@ -2,6 +2,7 @@ import { clipToSelection, magicWandMask, type Selection } from './selection';
 import { getBrushTip, type BrushShape } from './brushTip';
 import { traceAnchors } from '../pathGeometry';
 import type { PathLayerData } from '../studioTypes';
+import type { ContentAwareMode } from './contentAwareAlgorithms';
 import type { SampleMode } from '../../../lib/sampleComposite';
 
 export type PaintTool =
@@ -39,6 +40,8 @@ export interface PaintSettings {
   /** Whether stylus pressure drives size / opacity (PointerEvent.pressure). */
   pressureSize: boolean;
   pressureOpacity: boolean;
+  /** Spot Healing Brush / Content-Aware Fill's repair algorithm — see `contentAwareAlgorithms.ts`. */
+  contentAwareMode: ContentAwareMode;
   /** Clone/Heal source and Eyedropper pick: which layers contribute to what gets sampled. See
    *  `sampleComposite.ts`'s `compositeLayersForSampling` for what each option actually composites. */
   sampleMode: SampleMode;
@@ -304,38 +307,6 @@ export function applyPatch(
     return Math.min(1, edgeDist / feather);
   });
   ctx.putImageData(blended, x, y);
-}
-
-/** Content-Aware Fill (basic, non-AI): averages the colors just outside a rect and fills it with light organic noise. Ported from the legacy prototype. */
-export function contentAwareFill(ctx: CanvasRenderingContext2D, rect: { x: number; y: number; width: number; height: number }) {
-  const { x, y, width, height } = rect;
-  const clampX = (v: number) => Math.max(0, Math.min(ctx.canvas.width - 1, v));
-  const clampY = (v: number) => Math.max(0, Math.min(ctx.canvas.height - 1, v));
-  const samplePts: [number, number][] = [
-    [x - 6, y + height / 2], [x + width + 6, y + height / 2],
-    [x + width / 2, y - 6], [x + width / 2, y + height + 6],
-  ];
-  let r = 0, g = 0, b = 0;
-  for (const [sx, sy] of samplePts) {
-    const d = ctx.getImageData(clampX(sx), clampY(sy), 1, 1).data;
-    r += d[0]; g += d[1]; b += d[2];
-  }
-  r = Math.round(r / samplePts.length);
-  g = Math.round(g / samplePts.length);
-  b = Math.round(b / samplePts.length);
-
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = `rgb(${r},${g},${b})`;
-  ctx.fillRect(x, y, width, height);
-  for (let i = 0; i < (width * height) / 300; i++) {
-    ctx.globalAlpha = 0.05 + Math.random() * 0.06;
-    ctx.fillStyle = Math.random() > 0.5 ? '#000' : '#fff';
-    ctx.beginPath();
-    ctx.arc(x + Math.random() * width, y + Math.random() * height, 1 + Math.random() * 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
 }
 
 type FilterKind = 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn' | 'sponge';
