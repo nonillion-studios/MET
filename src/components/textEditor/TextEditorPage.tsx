@@ -15,6 +15,7 @@ import { genId } from '../../lib/id';
 import { loadTextEditorDocs, saveTextEditorDocs, defaultDocStatus, findOrCreateChapterDoc, type TextEditorDoc, type TextEditorDocStatus } from '../../lib/textEditorStore';
 import { stripSpellMarks } from '../../lib/spellCheck';
 import { SpellCheckOverlay } from '../../editor/SpellCheckOverlay';
+import { MusicPlayerToggleButton } from '../musicPlayer/MusicPlayer';
 import { exportDocAsTxt, exportDocAsDocx, printDocAsPdf, downloadBlob } from '../../lib/textEditorExport';
 import { SplitScreenPreview } from './SplitScreenPreview';
 import { DocumentLibrary } from './DocumentLibrary';
@@ -2334,6 +2335,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         >
           Spell Check
         </Button>
+        <MusicPlayerToggleButton className="!bg-transparent w-8 h-8 flex items-center justify-center rounded-control text-ink" />
         <div className="flex-1" />
         <Button size="sm" variant="secondary" onClick={handleSendToTyper}><Send size={13} /> Send to TypeR</Button>
         <Button size="sm" variant="secondary" onClick={() => activeDoc && exportDocAsTxt({ ...activeDoc, pages: capturePagesForExport() })}>

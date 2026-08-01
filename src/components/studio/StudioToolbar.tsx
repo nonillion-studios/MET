@@ -1,6 +1,7 @@
 import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText, Radio, Users, FileText, ScreenShare, ScreenShareOff } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { WorkflowStage } from './WorkflowBar';
+import { MusicPlayerToggleButton } from '../musicPlayer/MusicPlayer';
 
 interface StudioToolbarProps {
   chapterName: string;
@@ -159,6 +160,8 @@ export function StudioToolbar({
           <FileText size={15} />
         </IconButton>
       )}
+
+      <MusicPlayerToggleButton className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11 w-8 h-8 flex items-center justify-center rounded-control text-ink" />
 
       <IconButton size="sm" aria-label="Fit to screen" onClick={onFit} className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11">
         <Maximize2 size={15} />
