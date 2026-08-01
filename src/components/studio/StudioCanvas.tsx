@@ -221,6 +221,11 @@ export interface StudioCanvasHandle {
   loadRasterLayer: (layerId: string, dataUrl: string) => Promise<void>;
   /** Snapshots the active page's background + full layer stack for flatten/PSD export. Null if no page is loaded. */
   getExportSnapshot: () => ExportSnapshot | null;
+  /** The full, real, tree-aware composite of the current page (`getSampleComposite('all')`) — same
+   *  synchronous live-canvas machinery Clone/Heal/Eyedropper already read through. Used by Levels'
+   *  histogram + Auto button and Black & White's Auto button, which both need "what the image
+   *  actually looks like right now" rather than the flat background alone. */
+  getHistogramSourceCanvas: () => HTMLCanvasElement | null;
   getZoom: () => number;
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
@@ -706,6 +711,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
       redrawLayerNode(layerId);
+    },
+    getHistogramSourceCanvas() {
+      return getSampleComposite('all');
     },
     getExportSnapshot() {
       const img = imageRef.current;

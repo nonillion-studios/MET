@@ -23,9 +23,11 @@ describe('levenshteinDistance', () => {
 
 describe('rankSuggestions', () => {
   it('sorts by ascending edit distance from the original word', () => {
-    // "wrold" -> "world" (1 swap) should rank ahead of a more distant candidate.
-    const ranked = rankSuggestions('wrold', ['word', 'world', 'worlds']);
-    expect(ranked[0]).toBe('world');
+    // 'wold' is one deletion away from 'wrold' (distance 1); 'world'/'word' are both distance 2 —
+    // 'wold' must rank first regardless of the tied pair's relative order.
+    const ranked = rankSuggestions('wrold', ['world', 'word', 'wold']);
+    expect(ranked[0]).toBe('wold');
+    expect(ranked.slice(1)).toEqual(expect.arrayContaining(['world', 'word']));
   });
 
   it('filters out suggestions much longer than the original', () => {

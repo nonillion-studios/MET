@@ -1254,17 +1254,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     }
   }
 
-  /**
-   * `LayersPanel`'s own "Add adjustment layer" button passes this straight to `onClick`
-   * (`onClick={onAddAdjustment}`), so React hands it the click event as a real runtime argument —
-   * a default parameter here would never apply (defaults only kick in for `undefined`, not "some
-   * other value was passed"). Keeping this a true zero-arg function and giving the
-   * Image-menu-with-a-kind path its own separate wrapper avoids that exact footgun.
-   */
-  function handleAddAdjustmentLayer() {
-    handleAddAdjustmentLayerOfKind('brightness-contrast');
-  }
-
+  /** `LayersPanel`'s "Add adjustment layer" button opens `AdjustmentPickerPopover` (an icon-grid
+   *  picker) rather than defaulting straight to Brightness/Contrast — this is the one place that
+   *  actually creates the layer, called with whichever kind the user picked (or from the Image menu
+   *  the same way, `Studio.tsx`'s menu actions call this directly with a fixed kind). */
   function handleAddAdjustmentLayerOfKind(kind: AdjustmentKind) {
     const layer = createAdjustmentLayer(kind);
     updateLayers(current => [...current, layer], 'Add Adjustment Layer');
@@ -2168,7 +2161,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
       onAddBlank={handleAddBlankLayer}
-      onAddAdjustment={handleAddAdjustmentLayer}
+      onAddAdjustmentOfKind={handleAddAdjustmentLayerOfKind}
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
       onDeleteMany={handleDeleteLayers}
@@ -2204,7 +2197,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   ) : null;
 
   const adjustmentPanel = activeLayer?.type === 'adjustment' ? (
-    <AdjustmentPanel layer={activeLayer} onUpdate={handleUpdateAdjustmentLayer} hideTitle />
+    <AdjustmentPanel
+      layer={activeLayer}
+      onUpdate={handleUpdateAdjustmentLayer}
+      getHistogramSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null}
+      onToggleVisible={() => handleToggleVisible(activeLayer.id)}
+      hideTitle
+    />
   ) : null;
 
   const brushesPanel = (

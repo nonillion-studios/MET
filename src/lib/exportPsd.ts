@@ -165,12 +165,68 @@ function psdAdjustment(data: AdjustmentLayerData): PsdLayer['adjustment'] {
       return {
         type: 'gradient map',
         gradientType: 'solid',
+        dither: data.gradientMap.dither,
+        reverse: data.gradientMap.reverse,
         colorStops: [
           { color: hexToRgb(data.gradientMap.from), location: 0, midpoint: 0.5 },
           { color: hexToRgb(data.gradientMap.to), location: 1, midpoint: 0.5 },
         ],
       };
+    case 'black-white':
+      return {
+        type: 'black & white',
+        reds: data.blackWhite.reds, yellows: data.blackWhite.yellows, greens: data.blackWhite.greens,
+        cyans: data.blackWhite.cyans, blues: data.blackWhite.blues, magentas: data.blackWhite.magentas,
+        useTint: data.blackWhite.tint, tintColor: hexToRgb(data.blackWhite.tintColor),
+      };
+    case 'photo-filter':
+      return {
+        type: 'photo filter',
+        color: hexToRgb(data.photoFilter.color),
+        density: data.photoFilter.density,
+        preserveLuminosity: data.photoFilter.preserveLuminosity,
+      };
+    case 'channel-mixer':
+      return {
+        type: 'channel mixer',
+        monochrome: data.channelMixer.monochrome,
+        red: data.channelMixer.red, green: data.channelMixer.green, blue: data.channelMixer.blue,
+      };
+    case 'color-lookup':
+      // No .cube file infra exists in this app (see ColorLookupData's own doc comment) — the built-
+      // in grade is baked into pixels by the live filter already; the PSD-native adjustment just
+      // records which one was selected as a named 3dlut entry, editable-in-name only (Photoshop has
+      // no matching built-in LUT to actually apply from this).
+      return data.colorLookup.lutId
+        ? { type: 'color lookup', lookupType: '3dlut', name: data.colorLookup.lutId }
+        : { type: 'color lookup', lookupType: '3dlut', name: 'none' };
+    case 'invert':
+      return { type: 'invert' };
+    case 'selective-color':
+      return {
+        type: 'selective color',
+        mode: data.selectiveColor.method,
+        reds: cmyk(data.selectiveColor.colors.reds), yellows: cmyk(data.selectiveColor.colors.yellows),
+        greens: cmyk(data.selectiveColor.colors.greens), cyans: cmyk(data.selectiveColor.colors.cyans),
+        blues: cmyk(data.selectiveColor.colors.blues), magentas: cmyk(data.selectiveColor.colors.magentas),
+        whites: cmyk(data.selectiveColor.colors.whites), neutrals: cmyk(data.selectiveColor.colors.neutrals),
+        blacks: cmyk(data.selectiveColor.colors.blacks),
+      };
+    // Shadows/Highlights and HDR Toning have no ag-psd adjustment-layer type — verified against the
+    // installed type defs (AdjustmentLayer's own union has no matching member). Their *visual
+    // result* still exports correctly everywhere else (PNG/JPG/WEBP, the live Konva canvas); only
+    // the PSD-native, re-editable-in-Photoshop adjustment layer is unavailable for these two. Return
+    // undefined rather than fabricate a mapping to the nearest unrelated type.
+    case 'shadows-highlights':
+    case 'hdr-toning':
+      return undefined;
   }
+}
+
+/** `AdjustmentLayerData`'s CmykInk fields are 0-100 already, the same range ag-psd's own CMYK type
+ *  (`{c,m,y,k}`) expects. */
+function cmyk(ink: { cyan: number; magenta: number; yellow: number; black: number }) {
+  return { c: ink.cyan, m: ink.magenta, y: ink.yellow, k: ink.black };
 }
 
 async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height: number): Promise<PsdLayer> {

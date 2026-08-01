@@ -1,5 +1,9 @@
 import type { LucideIcon } from 'lucide-react';
-import { Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder, PenTool } from 'lucide-react';
+import {
+  Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder, PenTool,
+  Contrast, Palette, Spline, Sun, Droplets, Scale, Grid2x2, CircleDot, Blend,
+  Aperture, Camera, Shuffle, Table2, FlipHorizontal2, Paintbrush2, CloudSun, Sparkles,
+} from 'lucide-react';
 import type { Point } from './paint/selection';
 
 export type BlendMode =
@@ -178,7 +182,9 @@ export const DEFAULT_TEXT_GRADIENT: TextGradient = {
 
 export type AdjustmentKind =
   | 'brightness-contrast' | 'hue-saturation' | 'levels'
-  | 'curves' | 'exposure' | 'vibrance' | 'color-balance' | 'posterize' | 'threshold' | 'gradient-map';
+  | 'curves' | 'exposure' | 'vibrance' | 'color-balance' | 'posterize' | 'threshold' | 'gradient-map'
+  | 'black-white' | 'photo-filter' | 'channel-mixer' | 'color-lookup' | 'invert' | 'selective-color'
+  | 'shadows-highlights' | 'hdr-toning';
 
 export const ADJUSTMENT_KIND_LABEL: Record<AdjustmentKind, string> = {
   'brightness-contrast': 'Brightness/Contrast',
@@ -191,6 +197,37 @@ export const ADJUSTMENT_KIND_LABEL: Record<AdjustmentKind, string> = {
   posterize: 'Posterize',
   threshold: 'Threshold',
   'gradient-map': 'Gradient Map',
+  'black-white': 'Black & White',
+  'photo-filter': 'Photo Filter',
+  'channel-mixer': 'Channel Mixer',
+  'color-lookup': 'Color Lookup',
+  invert: 'Invert',
+  'selective-color': 'Selective Color',
+  'shadows-highlights': 'Shadows/Highlights',
+  'hdr-toning': 'HDR Toning',
+};
+
+/** Icon-grid picker (`AdjustmentPickerPopover.tsx`) — one entry per kind, matching Photoshop's own
+ *  Adjustments panel icon grid. */
+export const ADJUSTMENT_KIND_ICON: Record<AdjustmentKind, LucideIcon> = {
+  'brightness-contrast': Contrast,
+  'hue-saturation': Palette,
+  levels: SlidersHorizontal,
+  curves: Spline,
+  exposure: Sun,
+  vibrance: Droplets,
+  'color-balance': Scale,
+  posterize: Grid2x2,
+  threshold: CircleDot,
+  'gradient-map': Blend,
+  'black-white': Aperture,
+  'photo-filter': Camera,
+  'channel-mixer': Shuffle,
+  'color-lookup': Table2,
+  invert: FlipHorizontal2,
+  'selective-color': Paintbrush2,
+  'shadows-highlights': CloudSun,
+  'hdr-toning': Sparkles,
 };
 
 /** One curve control point — `input`/`output` are both 0-255. */
@@ -198,6 +235,144 @@ export interface CurvePoint { input: number; output: number; }
 
 /** Cyan-Red / Magenta-Green / Yellow-Blue sliders, each -100..100 — one per Color Balance tonal range. */
 export interface ColorBalanceRange { cyanRed: number; magentaGreen: number; yellowBlue: number; }
+
+/** Input/output levels for one channel — same shape whether it's the RGB composite or a single
+ *  R/G/B channel, so `levelsFilter`'s per-channel pass and its RGB composite pass share one type. */
+export interface LevelsData {
+  inBlack: number; // 0-255
+  inWhite: number; // 0-255
+  gamma: number; // 0.1-9.99
+  outBlack: number; // 0-255
+  outWhite: number; // 0-255
+}
+
+function defaultLevels(): LevelsData {
+  return { inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 };
+}
+
+/** Photoshop's Hue/Saturation targets one of 6 overlapping hue bands, or "Master" (all pixels
+ *  uniformly — the pre-existing `hue`/`saturation`/`lightness` top-level fields). */
+export type HueBand = 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas';
+export interface HueSatBandValues { hue: number; saturation: number; lightness: number; }
+/** Exported so `adjustments.ts`'s shared hue-bucket-membership helper and the panel's channel
+ *  selector dropdown both iterate the same 6 bands in the same order, rather than each hardcoding
+ *  their own copy. */
+export const HUE_BAND_LIST: HueBand[] = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas'];
+export const HUE_BAND_LABEL: Record<HueBand, string> = {
+  reds: 'Reds', yellows: 'Yellows', greens: 'Greens', cyans: 'Cyans', blues: 'Blues', magentas: 'Magentas',
+};
+function defaultHueSatByChannel(): Record<HueBand, HueSatBandValues> {
+  const out = {} as Record<HueBand, HueSatBandValues>;
+  for (const band of HUE_BAND_LIST) out[band] = { hue: 0, saturation: 0, lightness: 0 };
+  return out;
+}
+
+/** Black & White's 6 color-family sliders, Photoshop's own -200..300 range. */
+export interface BlackWhiteData {
+  reds: number; yellows: number; greens: number; cyans: number; blues: number; magentas: number;
+  tint: boolean;
+  tintColor: string;
+}
+
+export type PhotoFilterPreset =
+  | 'warming-85' | 'warming-lba' | 'warming-81' | 'cooling-80' | 'cooling-82'
+  | 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'violet' | 'magenta' | 'sepia' | 'custom';
+
+/** Named starting colors for Photo Filter's preset dropdown — approximate real-world color-
+ *  temperature-filter hues (Adobe's own exact swatch values aren't published), used only to seed
+ *  `PhotoFilterData.color` when a preset (not Custom) is picked. */
+export const PHOTO_FILTER_PRESET_COLOR: Record<Exclude<PhotoFilterPreset, 'custom'>, string> = {
+  'warming-85': '#F0A030',
+  'warming-lba': '#F5CC55',
+  'warming-81': '#E9B36E',
+  'cooling-80': '#0059B3',
+  'cooling-82': '#3FA9D6',
+  red: '#FF0000',
+  orange: '#FF8000',
+  yellow: '#FFFF00',
+  green: '#00B300',
+  cyan: '#00CCCC',
+  blue: '#0000FF',
+  violet: '#7F00FF',
+  magenta: '#FF00FF',
+  sepia: '#6E4B2A',
+};
+
+export const PHOTO_FILTER_PRESET_LABEL: Record<PhotoFilterPreset, string> = {
+  'warming-85': 'Warming Filter (85)',
+  'warming-lba': 'Warming Filter (LBA)',
+  'warming-81': 'Warming Filter (81)',
+  'cooling-80': 'Cooling Filter (80)',
+  'cooling-82': 'Cooling Filter (82)',
+  red: 'Red', orange: 'Orange', yellow: 'Yellow', green: 'Green', cyan: 'Cyan',
+  blue: 'Blue', violet: 'Violet', magenta: 'Magenta', sepia: 'Sepia',
+  custom: 'Custom',
+};
+
+export interface PhotoFilterData {
+  preset: PhotoFilterPreset;
+  color: string;
+  density: number; // 1-100
+  preserveLuminosity: boolean;
+}
+
+/** One output channel's mix of the *original* R/G/B (Photoshop's Channel Mixer never chains output
+ *  channels off each other's already-mixed values) plus a constant offset. */
+export interface ChannelMix { red: number; green: number; blue: number; constant: number; }
+
+export interface ChannelMixerData {
+  monochrome: boolean;
+  red: ChannelMix;
+  green: ChannelMix;
+  blue: ChannelMix;
+}
+
+/** No `.cube`/3D-LUT file infrastructure exists anywhere in this app (no parser, no asset pipeline)
+ *  — `lutId` selects one of a small set of real, hardcoded color-grade transforms baked directly
+ *  into `colorLookupFilter` instead (see `lib/adjustments.ts`), which is a genuine, working, if
+ *  deliberately small-scoped feature rather than a no-op stub. The original spec's own "3DLUT File
+ *  dropdown (if any LUT files are available)" phrasing already anticipates an environment with no
+ *  importable LUT files. */
+export type BuiltInLut = 'warm' | 'cool' | 'cross-process' | 'bw-high-contrast';
+export const BUILT_IN_LUT_LABEL: Record<BuiltInLut, string> = {
+  warm: 'Warm', cool: 'Cool', 'cross-process': 'Cross Process', 'bw-high-contrast': 'B&W High Contrast',
+};
+export interface ColorLookupData { lutId: BuiltInLut | null; }
+
+export type SelectiveColorFamily = 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas' | 'whites' | 'neutrals' | 'blacks';
+export interface CmykInk { cyan: number; magenta: number; yellow: number; black: number; }
+export const SELECTIVE_COLOR_FAMILY_LIST: SelectiveColorFamily[] = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'];
+export const SELECTIVE_COLOR_FAMILY_LABEL: Record<SelectiveColorFamily, string> = {
+  reds: 'Reds', yellows: 'Yellows', greens: 'Greens', cyans: 'Cyans', blues: 'Blues', magentas: 'Magentas',
+  whites: 'Whites', neutrals: 'Neutrals', blacks: 'Blacks',
+};
+function defaultSelectiveColors(): Record<SelectiveColorFamily, CmykInk> {
+  const out = {} as Record<SelectiveColorFamily, CmykInk>;
+  for (const family of SELECTIVE_COLOR_FAMILY_LIST) out[family] = { cyan: 0, magenta: 0, yellow: 0, black: 0 };
+  return out;
+}
+export interface SelectiveColorData {
+  method: 'relative' | 'absolute';
+  colors: Record<SelectiveColorFamily, CmykInk>;
+}
+
+export interface ShadowsHighlightsData {
+  shadowsAmount: number; // 0-100
+  shadowsTone: number; // 0-100
+  shadowsRadius: number; // 1-2500
+  highlightsAmount: number; // 0-100
+  highlightsTone: number; // 0-100
+  highlightsRadius: number; // 1-2500
+  colorCorrection: number; // -100..100
+  midtoneContrast: number; // -100..100
+}
+
+export interface HdrToningData {
+  edgeGlowRadius: number; // 1-500
+  edgeGlowStrength: number; // 0-100
+  gamma: number; // 0.1-10
+  exposure: number; // -10..10
+}
 
 /**
  * Non-destructive adjustment applied to **everything below it in its parent** — its position in the
@@ -209,30 +384,44 @@ export interface ColorBalanceRange { cyanRed: number; magentaGreen: number; yell
  * **not** honoured and `LayersPanel` hides the control: Photoshop blends an adjustment's result
  * against its unadjusted backdrop, and the wrapper contains the very stack that backdrop would come
  * from.
+ *
+ * One flat interface carries every kind's fields simultaneously (not a discriminated union) —
+ * deliberate, matching how the original three kinds were already shaped; a new kind is "add fields +
+ * a default + a kind value", never a reshape.
  */
 export interface AdjustmentLayerData {
   kind: AdjustmentKind;
-  /** -100..100 */
+  /** -150..150 */
   brightness: number;
-  /** -100..100 */
+  /** -50..100 */
   contrast: number;
-  /** -180..180 degrees */
+  /** Brightness/Contrast only. Legacy is the original flat linear op this app already had; the
+   *  non-legacy path is a genuinely different, non-linear algorithm (screen/multiply-style
+   *  brightness scale + an S-curve contrast pivot) — a real qualitative match for what
+   *  distinguishes Photoshop's Legacy checkbox from its modern default, not a re-labeled copy of
+   *  the same math. See `legacyBrightnessContrastFilter`/`modernBrightnessContrastFilter`. */
+  useLegacy: boolean;
+  /** -180..180 degrees. Hue/Saturation's Master band. */
   hue: number;
-  /** -100..100 */
   saturation: number;
-  /** -100..100 */
   lightness: number;
-  levels: {
-    inBlack: number; // 0-255
-    inWhite: number; // 0-255
-    gamma: number; // 0.1-9.99
-    outBlack: number; // 0-255
-    outWhite: number; // 0-255
-  };
+  hueSaturationChannel: 'master' | HueBand;
+  hueSaturationByChannel: Record<HueBand, HueSatBandValues>;
+  /** Converts to monochrome, then tints with `colorizeHue`/`colorizeSaturation` at flat
+   *  `colorizeLightness` — Photoshop's Hue/Saturation "Colorize" checkbox. */
+  colorize: boolean;
+  colorizeHue: number; // 0-360
+  colorizeSaturation: number; // 0-100
+  colorizeLightness: number; // -100..100
+  levels: LevelsData;
+  levelsChannel: 'rgb' | 'r' | 'g' | 'b';
+  levelsByChannel: { r: LevelsData; g: LevelsData; b: LevelsData };
   /** Control points, sorted by `input`, identity (no-op) by default. Edited by CurvesEditor.tsx;
    *  `adjustments.ts`'s `curveLut` is the single source of truth for what they render to, shared by
    *  the live filter and the editor's own on-screen preview so the two can't drift. */
-  curves: { rgb: CurvePoint[] };
+  curves: { rgb: CurvePoint[]; r: CurvePoint[]; g: CurvePoint[]; b: CurvePoint[]; luminosity: CurvePoint[] };
+  curveChannel: 'rgb' | 'r' | 'g' | 'b' | 'luminosity';
+  curvePreset: 'default' | 'linear' | 'strong-contrast' | 'darker' | 'lighter';
   /** ag-psd's ExposureAdjustment field names, reused verbatim so exportPsd needs no renaming. */
   exposure: number; // -20..20 stops
   exposureOffset: number; // -0.5..0.5
@@ -251,7 +440,14 @@ export interface AdjustmentLayerData {
   threshold: number;
   /** Deliberately 2-stop only, matching this app's one Gradient tool (also foreground->background
    *  only) — there's no multi-stop gradient editor anywhere in this codebase yet. */
-  gradientMap: { from: string; to: string };
+  gradientMap: { from: string; to: string; dither: boolean; reverse: boolean };
+  blackWhite: BlackWhiteData;
+  photoFilter: PhotoFilterData;
+  channelMixer: ChannelMixerData;
+  colorLookup: ColorLookupData;
+  selectiveColor: SelectiveColorData;
+  shadowsHighlights: ShadowsHighlightsData;
+  hdrToning: HdrToningData;
 }
 
 export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-contrast'): AdjustmentLayerData {
@@ -259,11 +455,28 @@ export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-c
     kind,
     brightness: 0,
     contrast: 0,
+    useLegacy: true,
     hue: 0,
     saturation: 0,
     lightness: 0,
-    levels: { inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 },
-    curves: { rgb: [{ input: 0, output: 0 }, { input: 255, output: 255 }] },
+    hueSaturationChannel: 'master',
+    hueSaturationByChannel: defaultHueSatByChannel(),
+    colorize: false,
+    colorizeHue: 0,
+    colorizeSaturation: 25,
+    colorizeLightness: 0,
+    levels: defaultLevels(),
+    levelsChannel: 'rgb',
+    levelsByChannel: { r: defaultLevels(), g: defaultLevels(), b: defaultLevels() },
+    curves: {
+      rgb: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      r: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      g: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      b: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      luminosity: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+    },
+    curveChannel: 'rgb',
+    curvePreset: 'default',
     exposure: 0,
     exposureOffset: 0,
     exposureGamma: 1,
@@ -276,7 +489,19 @@ export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-c
     },
     posterizeLevels: 4,
     threshold: 128,
-    gradientMap: { from: '#000000', to: '#ffffff' },
+    gradientMap: { from: '#000000', to: '#ffffff', dither: false, reverse: false },
+    blackWhite: { reds: 40, yellows: 60, greens: 40, cyans: 60, blues: 20, magentas: 80, tint: false, tintColor: '#7a5230' },
+    photoFilter: { preset: 'warming-85', color: PHOTO_FILTER_PRESET_COLOR['warming-85'], density: 25, preserveLuminosity: true },
+    channelMixer: {
+      monochrome: false,
+      red: { red: 100, green: 0, blue: 0, constant: 0 },
+      green: { red: 0, green: 100, blue: 0, constant: 0 },
+      blue: { red: 0, green: 0, blue: 100, constant: 0 },
+    },
+    colorLookup: { lutId: null },
+    selectiveColor: { method: 'relative', colors: defaultSelectiveColors() },
+    shadowsHighlights: { shadowsAmount: 35, shadowsTone: 50, shadowsRadius: 30, highlightsAmount: 0, highlightsTone: 50, highlightsRadius: 30, colorCorrection: 20, midtoneContrast: 0 },
+    hdrToning: { edgeGlowRadius: 30, edgeGlowStrength: 50, gamma: 1, exposure: 0 },
   };
 }
 

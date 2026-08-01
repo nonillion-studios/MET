@@ -10,7 +10,8 @@ import { swal } from '../../lib/swalTheme';
 import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
-import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer, type LayerSelectMode } from './studioTypes';
+import { LAYER_TYPE_ICON, BLEND_MODES, type StudioLayer, type LayerSelectMode, type AdjustmentKind } from './studioTypes';
+import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
 
 /** Where a drop lands relative to the row under the cursor. */
 type DropZone = 'above' | 'into' | 'below';
@@ -36,7 +37,9 @@ interface LayersPanelProps {
   onAdd: () => void;
   /** Alt-click on the Add-layer button — a truly empty layer, no background copy. */
   onAddBlank: () => void;
-  onAddAdjustment: () => void;
+  /** Opens the Photoshop-style icon-grid picker (`AdjustmentPickerPopover`) instead of always
+   *  defaulting to Brightness/Contrast. */
+  onAddAdjustmentOfKind: (kind: AdjustmentKind) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
   onDeleteMany?: (ids: string[]) => void;
@@ -84,7 +87,7 @@ interface LayersPanelProps {
 
 export function LayersPanel({
   layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
-  onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustment, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
+  onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode,
@@ -94,6 +97,7 @@ export function LayersPanel({
   const [dropTarget, setDropTarget] = useState<{ id: string; zone: DropZone } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [adjustmentPickerOpen, setAdjustmentPickerOpen] = useState(false);
 
   function commitRename() {
     const id = renamingId;
@@ -249,9 +253,23 @@ export function LayersPanel({
           <IconButton size="sm" aria-label="Group layers" title="Group selected layers" onClick={onGroup} className="!bg-transparent">
             <FolderPlus size={13} />
           </IconButton>
-          <IconButton size="sm" aria-label="Add adjustment layer" title="Add adjustment layer" onClick={onAddAdjustment} className="!bg-transparent">
-            <SlidersHorizontal size={13} />
-          </IconButton>
+          <div className="relative">
+            <IconButton
+              size="sm"
+              aria-label="Add adjustment layer"
+              title="Add adjustment layer"
+              onClick={() => setAdjustmentPickerOpen((v) => !v)}
+              className="!bg-transparent"
+            >
+              <SlidersHorizontal size={13} />
+            </IconButton>
+            {adjustmentPickerOpen && (
+              <AdjustmentPickerPopover
+                onPick={onAddAdjustmentOfKind}
+                onClose={() => setAdjustmentPickerOpen(false)}
+              />
+            )}
+          </div>
           <IconButton
             size="sm"
             aria-label="Add layer"
