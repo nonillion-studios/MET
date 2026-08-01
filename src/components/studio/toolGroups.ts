@@ -70,12 +70,15 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
   },
   { id: 'clone', tools: [{ id: 'clone', label: 'Clone Stamp', icon: Stamp, enabled: true, shortcut: 's' }] },
 
+  // Eraser gets its own permanent rail slot, matching Photoshop — not folded into the brush flyout
+  // group, so it's always a single click away rather than a long-press/right-click away.
+  { id: 'eraser', groupStart: true, tools: [{ id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' }] },
+
   {
-    id: 'brush', groupStart: true,
+    id: 'brush',
     tools: [
       { id: 'brush', label: 'Brush', icon: Paintbrush, enabled: true, shortcut: 'b' },
       { id: 'pencil', label: 'Pencil', icon: Pencil, enabled: true },
-      { id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' },
     ],
   },
   {
