@@ -84,6 +84,35 @@ const SPLIT_RATIO_KEY = 'text_editor_split_ratio';
 const MIN_SPLIT_RATIO = 0.3;
 const MAX_SPLIT_RATIO = 0.8;
 
+const SEND_TO_TYPER_BLOCK_TAGS = new Set(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'li', 'blockquote', 'pre']);
+
+/**
+ * Send to TypeR: one line per block element, instead of reading `.innerText` off the whole page
+ * (which collapses every paragraph into a single run). Each `blockTags` element becomes exactly
+ * one line (trimmed, but otherwise untouched — a TypeR prefix like "SFX:"/"~"/"!!" at the start of
+ * a line survives as-is), a bare `<br>` becomes a blank line, and anything else (inline formatting)
+ * recurses without emitting its own line.
+ */
+function extractLinesFromEditor(el: HTMLElement): string[] {
+  const lines: string[] = [];
+
+  const walkNode = (node: ChildNode): void => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    if (SEND_TO_TYPER_BLOCK_TAGS.has(tag)) {
+      lines.push(element.innerText.trim());
+    } else if (tag === 'br') {
+      lines.push('');
+    } else {
+      element.childNodes.forEach(walkNode);
+    }
+  };
+
+  el.childNodes.forEach(walkNode);
+  return lines;
+}
+
 function newDoc(title = 'Untitled'): TextEditorDoc {
   return { id: genId('tedoc'), title, dir: 'ltr', pages: [''], updatedAt: Date.now(), status: defaultDocStatus() };
 }
@@ -1997,7 +2026,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     const text = selectedPages.map((html) => {
       const container = document.createElement('div');
       container.innerHTML = stripStatusMarks(stripSpellMarks(html));
-      return container.innerText;
+      return extractLinesFromEditor(container).join('\n');
     }).join('\n');
     setSendToTyperOpen(false);
     onSendToTyper({ chapterId: result.chapterId, text, mode: result.mode });
