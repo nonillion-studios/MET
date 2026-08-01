@@ -325,7 +325,10 @@ export type PathFillRule = 'nonzero' | 'evenodd';
 export interface PathLayerData {
   anchors: PathAnchor[];
   closed: boolean;
-  fill: { enabled: boolean; color: string };
+  /** `blendMode`/`opacity`/`preserveTransparency` are read by `fillPathOntoCanvas` at bake time —
+   *  set by the Fill Path dialog, not exposed anywhere else (a live path's own on-canvas fill, when
+   *  `enabled`, is always fully opaque/normal-blend; only the one-shot bake honours them). */
+  fill: { enabled: boolean; color: string; blendMode?: BlendMode; opacity?: number; preserveTransparency?: boolean };
   stroke: { enabled: boolean; color: string; width: number };
   fillRule: PathFillRule;
 }
@@ -429,7 +432,11 @@ export function createPathLayer(anchors: PathAnchor[], closed: boolean, style: {
       anchors,
       closed,
       fill: { enabled: false, color: '#000000' },
-      stroke: { enabled: true, color: style.strokeColor, width: style.strokeWidth },
+      // Disabled by default — a new path is a working guide, not committed color. `color`/`width`
+      // are just the starting values Stroke Path's dialog seeds itself from; nothing renders until
+      // the user explicitly enables fill or runs Stroke Path/Fill Path. Was `enabled: true`, which
+      // baked a visible stroke onto every path the instant it was drawn — a real, user-facing bug.
+      stroke: { enabled: false, color: style.strokeColor, width: style.strokeWidth },
       fillRule: 'nonzero',
     },
   };

@@ -2799,8 +2799,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // rather than a permanently-disabled dead click, matching this codebase's real-vs-grayed
           // menu convention (grayed is reserved for "no backing subsystem", not "wrong shape now").
           ...(closed ? [{ id: 'make-selection', label: 'Make Selection', action: onMakeSelectionFromPath }] : []),
-          { id: 'fill-path', label: 'Fill Path', disabled: !canBakePath, action: onFillActivePath },
-          { id: 'stroke-path', label: 'Stroke Path', disabled: !canBakePath, action: onStrokeActivePath },
+          { id: 'fill-path', label: 'Fill Path…', disabled: !canBakePath, action: onFillActivePath },
+          { id: 'stroke-path', label: 'Stroke Path…', disabled: !canBakePath, action: onStrokeActivePath },
           { id: 'sep', label: '', separator: true },
           { id: 'delete-path', label: 'Delete Path', action: onDeleteActivePath },
         ];

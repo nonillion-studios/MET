@@ -56,6 +56,8 @@ import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
 import { FilterDialog } from './filters/FilterDialog';
+import { FillPathDialog, type FillPathResult } from './FillPathDialog';
+import { StrokePathDialog, type StrokePathResult } from './StrokePathDialog';
 import { FILTER_DIALOG_CONFIGS, type FilterConfig } from './filters/filterDialogConfigs';
 import { MagicErasePanel } from './MagicErasePanel';
 import { MagicEraseLoadingOverlay } from './MagicEraseLoadingOverlay';
@@ -493,6 +495,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeFilterDialog, setActiveFilterDialog] = useState<{
     config: FilterConfig; canvas: HTMLCanvasElement; before: ImageData; layerId: string;
   } | null>(null);
+  const [fillPathDialogOpen, setFillPathDialogOpen] = useState(false);
+  const [strokePathDialogOpen, setStrokePathDialogOpen] = useState(false);
 
   useEffect(() => {
     function onFullscreenChange() { setIsFullscreen(document.fullscreenElement === studioRootRef.current); }
@@ -1921,9 +1925,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handlePaintStrokeEnd(target.id, before);
   }
 
-  const handleStrokeActivePath = () => bakeActivePath(strokePathOntoCanvas);
-  const handleFillActivePath = () => bakeActivePath(fillPathOntoCanvas);
   const canBakePath = activeLayer?.type === 'path' && !!topmostRasterLayer();
+  // Both used to bake immediately with whatever the current tool color/settings happened to be —
+  // these now just open a dialog asking first, matching Photoshop's own Stroke/Fill Path prompts.
+  // The actual bake (confirmFillPath/confirmStrokePath, below) only runs once the dialog's own OK
+  // is clicked; Cancel/close leaves the canvas untouched.
+  const handleStrokeActivePath = () => { if (canBakePath) setStrokePathDialogOpen(true); };
+  const handleFillActivePath = () => { if (canBakePath) setFillPathDialogOpen(true); };
+
+  function confirmFillPath(result: FillPathResult) {
+    bakeActivePath((ctx, path, selection) => {
+      // The dialog's resolved fill settings ride along on a throwaway copy of the path's `fill`
+      // data that fillPathOntoCanvas reads — deliberately not persisted onto the layer itself via
+      // handleUpdatePathLayer, since these are one-shot bake parameters, not path styling that
+      // should stick around for the next time this path is filled or shown in Direct Selection.
+      fillPathOntoCanvas(ctx, { ...path, fill: { ...path.fill, enabled: true, ...result } }, selection);
+    });
+  }
+
+  function confirmStrokePath(result: StrokePathResult) {
+    bakeActivePath((ctx, path, selection) => {
+      strokePathOntoCanvas(ctx, path, selection, paintSettings, result.tool, result.simulatePressure);
+    });
+  }
 
   /** Image > Apply Filter's bake target: the active layer if it's already raster, otherwise the
    *  same "topmost existing raster layer" fallback Stroke/Fill Path and the paint-tool
@@ -2881,6 +2905,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onApply={handleFilterDialogApply}
         />
       )}
+      <FillPathDialog
+        open={fillPathDialogOpen}
+        onClose={() => setFillPathDialogOpen(false)}
+        onConfirm={confirmFillPath}
+        foregroundColor={paintSettings.color}
+        backgroundColor={paintSettings.bgColor}
+      />
+      <StrokePathDialog
+        open={strokePathDialogOpen}
+        onClose={() => setStrokePathDialogOpen(false)}
+        onConfirm={confirmStrokePath}
+      />
     </div>
   );
 }
