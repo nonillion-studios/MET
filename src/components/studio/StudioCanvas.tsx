@@ -900,6 +900,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (e.key === 'Escape' && penDraft.length > 0) { setPenDraft([]); penPlacingRef.current = null; setPenHoverPos(null); }
       if (e.key === 'Escape' && lassoPolyPoints.length > 0) setLassoPolyPoints([]);
       if (e.key === 'Escape' && transformingSelection) cancelTransformSelection();
+      // Spot Healing Brush / Content-Aware Fill: reverts to the pre-repair snapshot and drops any
+      // in-flight Create-Texture/Content-Aware worker pass. Safe to call unconditionally — it's a
+      // no-op (beyond a cheap worker respawn) when nothing is actually mid-repair.
+      if (e.key === 'Escape') paint.cancelContentAware();
       // Esc deselects while a plain marquee/lasso selection tool is active — but not Crop/Slice,
       // which use Esc for their own draft-cancel flow, and only once nothing else above already
       // consumed it (an in-progress pen/lasso-polygon draft or a live Transform Selection box).

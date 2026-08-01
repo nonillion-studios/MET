@@ -25,6 +25,7 @@ import {
 } from './layerTree';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
+import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
@@ -348,6 +349,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [smoothing, setSmoothing] = useState(0);
   const [pressureSize, setPressureSize] = useState(true);
   const [pressureOpacity, setPressureOpacity] = useState(false);
+  const [contentAwareMode, setContentAwareMode] = useState<ContentAwareMode>('proximity');
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
@@ -355,7 +357,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
-    scatter, smoothing, pressureSize, pressureOpacity,
+    scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
   };
 
@@ -2660,6 +2662,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onScatterChange={setScatter}
           smoothing={smoothing}
           onSmoothingChange={setSmoothing}
+          contentAwareMode={contentAwareMode}
+          onContentAwareModeChange={setContentAwareMode}
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}
