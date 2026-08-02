@@ -1,7 +1,17 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal } from 'lucide-react';
 import { IconButton } from '../../ui';
 import { cn } from '../../ui/cn';
+import { swal } from '../../../lib/swalTheme';
+
+/** Extra, panel-specific actions folded into the same combined menu the universal Close/Reset
+ *  Height items render in — e.g. Layers' New Layer/New Blank Layer/Flatten/Merge Visible. Plain
+ *  data (not a callback that opens its own separate dialog), so there's exactly one menu
+ *  implementation for every panel, not one generic one plus a handful of bespoke ones. */
+export interface PanelMenuItem {
+  label: string;
+  onSelect: () => void;
+}
 
 interface CollapsiblePanelProps {
   id: string;
@@ -12,14 +22,14 @@ interface CollapsiblePanelProps {
   maximized: boolean;
   onToggleMaximized: () => void;
   /** The Layers panel: fills remaining column space with its own internal scroll while expanded,
-   *  instead of the usual measured max-height animation — it can still be collapsed/expanded like
-   *  any other panel, just via a plain instant swap between the two layouts rather than an animated
-   *  one (a grow panel's "natural height" isn't a fixed number to animate toward the way the
-   *  measured branch's is). */
+   *  instead of a stored height — it can still be collapsed/expanded like any other panel, just
+   *  via a plain instant swap between the two layouts rather than an animated height transition. */
   grow?: boolean;
-  /** Opens this panel's own small swal menu — omitted (not rendered) when a panel has nothing real
-   *  to put there, rather than showing an empty/fake menu button. */
-  onMenu?: () => void;
+  /** Explicit stored height in px (absent for `grow` panels, which don't have one). */
+  height?: number;
+  onClose: () => void;
+  onResetHeight: () => void;
+  menuItems?: PanelMenuItem[];
   draggedOver: 'above' | 'below' | null;
   onDragStart: () => void;
   onDragEnd: () => void;
@@ -33,34 +43,16 @@ interface CollapsiblePanelProps {
  *  fires. Debouncing the single-click action lets a fast second click cancel it outright. */
 const DOUBLE_CLICK_WINDOW_MS = 220;
 
-/** A non-grow panel's expanded content used to animate open to its full natural `scrollHeight` with
- *  no cap, which is what made only the *whole column* scrollable — a tall panel (TypeR's line list,
- *  a long layer's worth of Adjustment controls) just pushed everything below it down instead of
- *  scrolling on its own. Capping the max-height target and switching to overflow-y-auto gives every
- *  panel its own scroll once its content exceeds this, while shorter panels are unaffected (auto
- *  overflow only shows a scrollbar when content actually exceeds the box). */
-const MAX_PANEL_HEIGHT = 320;
+/** Defensive fallback only — every non-`grow` panel always has a stored height (seeded from the
+ *  registry's `defaultHeight` on first load), so this should never actually be read. */
+const FALLBACK_HEIGHT = 240;
 
 export function CollapsiblePanel({
-  id, title, children, collapsed, onToggleCollapsed, maximized, onToggleMaximized, grow, onMenu,
-  draggedOver, onDragStart, onDragEnd, onDragOverHeader, onDropOnHeader,
+  id, title, children, collapsed, onToggleCollapsed, maximized, onToggleMaximized, grow, height,
+  onClose, onResetHeight, menuItems, draggedOver, onDragStart, onDragEnd, onDragOverHeader, onDropOnHeader,
 }: CollapsiblePanelProps) {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const [contentHeight, setContentHeight] = useState(0);
   const clickTimer = useRef<number | null>(null);
   const isGrowExpanded = !!grow && !collapsed;
-
-  useLayoutEffect(() => {
-    const el = contentRef.current;
-    // A grow panel never uses the measured-height branch while expanded (it flexes instead), and
-    // its measurement is moot while collapsed (max-height is forced to 0 either way) — no observer
-    // needed in either of its states.
-    if (!el || grow) return;
-    const observer = new ResizeObserver(() => setContentHeight(el.scrollHeight));
-    observer.observe(el);
-    setContentHeight(el.scrollHeight);
-    return () => observer.disconnect();
-  }, [grow]);
 
   function handleChevronClick() {
     if (clickTimer.current) {
@@ -80,6 +72,26 @@ export function CollapsiblePanel({
       clickTimer.current = null;
     }
     onToggleMaximized();
+  }
+
+  function handleMenuClick() {
+    const inputOptions: Record<string, string> = {};
+    if (!grow) inputOptions.resetHeight = 'Reset to Default Height';
+    inputOptions.close = 'Close Panel';
+    menuItems?.forEach((item, i) => { inputOptions[`extra-${i}`] = item.label; });
+    swal({
+      title,
+      input: 'select',
+      inputOptions,
+      inputPlaceholder: 'Choose an action',
+      showCancelButton: true,
+      confirmButtonText: 'Go',
+    }).then((r) => {
+      if (!r.isConfirmed || typeof r.value !== 'string') return;
+      if (r.value === 'close') onClose();
+      else if (r.value === 'resetHeight') onResetHeight();
+      else if (r.value.startsWith('extra-')) menuItems?.[Number(r.value.slice('extra-'.length))]?.onSelect();
+    });
   }
 
   const header = (
@@ -114,16 +126,14 @@ export function CollapsiblePanel({
           {title}
         </span>
       </button>
-      {onMenu && (
-        <IconButton
-          size="sm"
-          aria-label={`${title} panel menu`}
-          onClick={(e) => { e.stopPropagation(); onMenu(); }}
-          className="!bg-transparent max-lg:!w-11 max-lg:!h-11"
-        >
-          <MoreHorizontal size={13} />
-        </IconButton>
-      )}
+      <IconButton
+        size="sm"
+        aria-label={`${title} panel menu`}
+        onClick={(e) => { e.stopPropagation(); handleMenuClick(); }}
+        className="!bg-transparent max-lg:!w-11 max-lg:!h-11"
+      >
+        <MoreHorizontal size={13} />
+      </IconButton>
     </div>
   );
 
@@ -148,10 +158,10 @@ export function CollapsiblePanel({
         <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
       ) : (
         <div
-          style={{ maxHeight: collapsed ? 0 : Math.min(contentHeight, MAX_PANEL_HEIGHT), transition: 'max-height 200ms ease' }}
+          style={{ maxHeight: collapsed ? 0 : (height ?? FALLBACK_HEIGHT), transition: 'max-height 200ms ease' }}
           className="overflow-y-auto"
         >
-          <div ref={contentRef}>{children}</div>
+          {children}
         </div>
       )}
     </div>
