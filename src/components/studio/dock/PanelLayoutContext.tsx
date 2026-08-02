@@ -1,47 +1,36 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { PANEL_REGISTRY, PANEL_BY_ID, PANEL_IDS } from './panelRegistry';
 
-/**
- * Every known right-column panel, in its default stack order. 'text'/'adjustment' additionally stay
- * gated on "is there an applicable active layer" wherever they're rendered (PanelStack's caller) —
- * this context only tracks whether the *user* has asked to see them, not whether there's currently
- * anything to show.
- */
-const DEFAULT_ORDER = ['collab', 'color', 'typer', 'magicerase', 'translation', 'layers', 'brushes', 'fonts', 'adjustment', 'text', 'history'];
-
-const DEFAULT_COLLAPSED: Record<string, boolean> = {
-  collab: false, color: false, typer: false, magicerase: true, translation: true, layers: false,
-  brushes: true, fonts: true, adjustment: true, text: false, history: false,
-};
-
-// Fonts/Adjustments (and Magic Erase) start absent (not just collapsed) so Window > "<Panel>"
-// reads as a real on/off toggle — "appears… disappears" — rather than merely expanding something
-// already present. Brushes is the one exception: it's visible-but-collapsed by default (paired
-// with DEFAULT_COLLAPSED's brushes:true above), not hidden — a core painting panel a manga-cleanup
-// workflow reaches for constantly, unlike the other three, which stay opt-in.
-//
-// Magic Erase was missing from DEFAULT_ORDER entirely until now (not just DEFAULT_VISIBLE) — since
-// PanelStack's visibleOrder is `layout.order.filter(...)`, an id absent from `order` can never
-// render no matter what `visible` says, and loadLayout's migration for existing saved layouts
-// (`parsed.order.filter(id => DEFAULT_ORDER.includes(id))`) only ever backfills ids that are
-// *already* in DEFAULT_ORDER — so this was unreachable for every session, new or existing, until
-// this array itself listed it.
-const DEFAULT_VISIBLE: Record<string, boolean> = {
-  collab: false, color: true, typer: true, magicerase: false, translation: true, layers: true,
-  brushes: true, fonts: false, adjustment: false, text: false, history: false,
-};
+function defaultLayout(): PanelLayoutState {
+  const order = [...PANEL_IDS];
+  const collapsed: Record<string, boolean> = {};
+  const visible: Record<string, boolean> = {};
+  const height: Record<string, number> = {};
+  for (const def of PANEL_REGISTRY) {
+    collapsed[def.id] = def.defaultCollapsed;
+    visible[def.id] = def.defaultVisible;
+    if (!def.grow) height[def.id] = def.defaultHeight;
+  }
+  return { order, collapsed, visible, height };
+}
 
 interface PanelLayoutState {
   order: string[];
   collapsed: Record<string, boolean>;
   visible: Record<string, boolean>;
+  /** Absent for `grow` panels (Layers) — they flex-fill remaining space instead of storing one. */
+  height: Record<string, number>;
 }
 
-function defaultLayout(): PanelLayoutState {
-  return { order: [...DEFAULT_ORDER], collapsed: { ...DEFAULT_COLLAPSED }, visible: { ...DEFAULT_VISIBLE } };
-}
-
-const SCHEMA_VERSION = 1;
-interface StoredLayout { v: number; order: string[]; collapsed: Record<string, boolean>; visible: Record<string, boolean>; }
+// v1 had no `height` field at all (panel height was purely content-driven, capped at a flat
+// 320px). v2 adds explicit per-panel height + the resize-divider system — a v1 layout is migrated
+// forward (order/collapsed/visible preserved, height backfilled from the registry) rather than
+// hard-reset, so upgrading doesn't discard a user's saved order/collapsed/visible just for one new
+// field.
+const SCHEMA_VERSION = 2;
+interface StoredLayoutV2 { v: 2; order: string[]; collapsed: Record<string, boolean>; visible: Record<string, boolean>; height: Record<string, number>; }
+interface StoredLayoutV1 { v: 1; order: string[]; collapsed: Record<string, boolean>; visible: Record<string, boolean>; }
+type StoredLayout = StoredLayoutV2 | StoredLayoutV1;
 
 function loadLayout(storageKey: string | undefined): PanelLayoutState {
   const fallback = defaultLayout();
@@ -50,14 +39,16 @@ function loadLayout(storageKey: string | undefined): PanelLayoutState {
     const raw = localStorage.getItem(`studio_panel_layout_${storageKey}`);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as StoredLayout;
-    if (parsed.v !== SCHEMA_VERSION) return fallback;
+    if (parsed.v !== 1 && parsed.v !== SCHEMA_VERSION) return fallback;
     // A panel id this saved layout has never heard of (introduced since, or never touched by the
     // user) still needs a real default rather than silently vanishing from `order`.
-    const order = [...parsed.order.filter(id => DEFAULT_ORDER.includes(id)), ...DEFAULT_ORDER.filter(id => !parsed.order.includes(id))];
+    const order = [...parsed.order.filter(id => PANEL_IDS.includes(id)), ...PANEL_IDS.filter(id => !parsed.order.includes(id))];
+    const height = { ...fallback.height, ...(parsed.v === SCHEMA_VERSION ? parsed.height : {}) };
     return {
       order,
-      collapsed: { ...DEFAULT_COLLAPSED, ...parsed.collapsed },
-      visible: { ...DEFAULT_VISIBLE, ...parsed.visible },
+      collapsed: { ...fallback.collapsed, ...parsed.collapsed },
+      visible: { ...fallback.visible, ...parsed.visible },
+      height,
     };
   } catch {
     return fallback;
@@ -68,12 +59,21 @@ interface PanelLayoutContextValue {
   order: string[];
   isVisible: (id: string) => boolean;
   isCollapsed: (id: string) => boolean;
+  /** Undefined for a `grow` panel (Layers), which has no stored height. */
+  heightOf: (id: string) => number | undefined;
   setVisible: (id: string, visible: boolean) => void;
   toggleCollapsed: (id: string) => void;
   /** Makes a panel visible and expanded — the panel-stack successor to the old dock's "select this
    *  tab": there's no single active tab anymore, so "reveal" is the closest real equivalent. */
   reveal: (id: string) => void;
   reorder: (draggedId: string, targetId: string, before: boolean) => void;
+  /** Adjusts two adjacent panels' stored heights by `delta` (grows `aboveId`, shrinks `belowId`),
+   *  clamped so neither passes its registry `minHeight`. A `grow` neighbor (Layers) has no stored
+   *  height to adjust — its side of the drag is a no-op, since its flex sizing already absorbs
+   *  whatever the fixed-height side gives up. */
+  resizeAdjacent: (aboveId: string, belowId: string, delta: number) => void;
+  /** Resets one panel back to its registry default height. No-op for a `grow` panel. */
+  resetHeight: (id: string) => void;
   maximizedId: string | null;
   toggleMaximized: (id: string) => void;
   resetLayout: () => void;
@@ -103,7 +103,7 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
     if (!storageKey) return;
     const timeout = setTimeout(() => {
       try {
-        const stored: StoredLayout = { v: SCHEMA_VERSION, order: state.order, collapsed: state.collapsed, visible: state.visible };
+        const stored: StoredLayoutV2 = { v: SCHEMA_VERSION, order: state.order, collapsed: state.collapsed, visible: state.visible, height: state.height };
         localStorage.setItem(`studio_panel_layout_${storageKey}`, JSON.stringify(stored));
       } catch {
         // Storage full/unavailable — layout just won't persist this time, not fatal.
@@ -114,6 +114,7 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
 
   const isVisible = useCallback((id: string) => state.visible[id] ?? false, [state.visible]);
   const isCollapsed = useCallback((id: string) => state.collapsed[id] ?? false, [state.collapsed]);
+  const heightOf = useCallback((id: string) => state.height[id], [state.height]);
 
   const setVisible = useCallback((id: string, visible: boolean) => {
     setState(s => ({ ...s, visible: { ...s.visible, [id]: visible } }));
@@ -139,6 +140,29 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
     });
   }, []);
 
+  const resizeAdjacent = useCallback((aboveId: string, belowId: string, delta: number) => {
+    setState(s => {
+      const aboveDef = PANEL_BY_ID.get(aboveId);
+      const belowDef = PANEL_BY_ID.get(belowId);
+      const height = { ...s.height };
+      if (aboveDef && !aboveDef.grow) {
+        const current = height[aboveId] ?? aboveDef.defaultHeight;
+        height[aboveId] = Math.max(aboveDef.minHeight, current + delta);
+      }
+      if (belowDef && !belowDef.grow) {
+        const current = height[belowId] ?? belowDef.defaultHeight;
+        height[belowId] = Math.max(belowDef.minHeight, current - delta);
+      }
+      return { ...s, height };
+    });
+  }, []);
+
+  const resetHeight = useCallback((id: string) => {
+    const def = PANEL_BY_ID.get(id);
+    if (!def || def.grow) return;
+    setState(s => ({ ...s, height: { ...s.height, [id]: def.defaultHeight } }));
+  }, []);
+
   const toggleMaximized = useCallback((id: string) => {
     setMaximizedId(current => (current === id ? null : id));
   }, []);
@@ -149,9 +173,9 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
   }, []);
 
   const value = useMemo<PanelLayoutContextValue>(() => ({
-    order: state.order, isVisible, isCollapsed, setVisible, toggleCollapsed, reveal, reorder,
-    maximizedId, toggleMaximized, resetLayout,
-  }), [state.order, isVisible, isCollapsed, setVisible, toggleCollapsed, reveal, reorder, maximizedId, toggleMaximized, resetLayout]);
+    order: state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder,
+    resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout,
+  }), [state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder, resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout]);
 
   return <PanelLayoutContext.Provider value={value}>{children}</PanelLayoutContext.Provider>;
 }

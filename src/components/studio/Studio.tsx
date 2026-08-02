@@ -9,6 +9,7 @@ import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { PanelStack, type PanelStackEntry } from './dock/PanelStack';
+import { PANEL_BY_ID } from './dock/panelRegistry';
 import { LayersPanel } from './LayersPanel';
 import { TextPanel } from './TextPanel';
 import { TyperPanel } from './TyperPanel';
@@ -2362,18 +2363,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
+  // Titles come from panelRegistry.ts (the single source of truth for panel identity/sizing) —
+  // 'pages' is the one id that isn't in that registry (it's the separate left-side sidebar, not a
+  // PanelLayoutContext-tracked stack panel), so it keeps its own literal label.
   const allTabs = [
-    ...(textPanel ? [{ id: 'text', label: 'Text', content: textPanel }] : []),
-    ...(adjustmentPanel ? [{ id: 'adjustment', label: 'Adjustment', content: adjustmentPanel }] : []),
-    ...(liveSession ? [{ id: 'collab', label: 'Live Session', content: collabPanel }] : []),
-    { id: 'typer', label: 'TypeR', content: typerPanel },
-    { id: 'magicerase', label: 'Magic Erase', content: magicErasePanel },
-    { id: 'translation', label: 'Translation', content: translationPanel },
-    { id: 'brushes', label: 'Brushes', content: brushesPanel },
-    { id: 'color', label: 'Color', content: colorPanel },
-    { id: 'fonts', label: 'Fonts', content: fontsPanel },
-    { id: 'history', label: 'History', content: historyPanel },
-    { id: 'layers', label: 'Layers', content: layersPanel },
+    ...(textPanel ? [{ id: 'text', label: PANEL_BY_ID.get('text')!.title, content: textPanel }] : []),
+    ...(adjustmentPanel ? [{ id: 'adjustment', label: PANEL_BY_ID.get('adjustment')!.title, content: adjustmentPanel }] : []),
+    ...(liveSession ? [{ id: 'collab', label: PANEL_BY_ID.get('collab')!.title, content: collabPanel }] : []),
+    { id: 'typer', label: PANEL_BY_ID.get('typer')!.title, content: typerPanel },
+    { id: 'magicerase', label: PANEL_BY_ID.get('magicerase')!.title, content: magicErasePanel },
+    { id: 'translation', label: PANEL_BY_ID.get('translation')!.title, content: translationPanel },
+    { id: 'brushes', label: PANEL_BY_ID.get('brushes')!.title, content: brushesPanel },
+    { id: 'color', label: PANEL_BY_ID.get('color')!.title, content: colorPanel },
+    { id: 'fonts', label: PANEL_BY_ID.get('fonts')!.title, content: fontsPanel },
+    { id: 'history', label: PANEL_BY_ID.get('history')!.title, content: historyPanel },
+    { id: 'layers', label: PANEL_BY_ID.get('layers')!.title, content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
   // Every real stackable panel except Pages, which is the separate left-side sidebar the Window
@@ -2384,21 +2388,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       id: t.id,
       label: t.label,
       content: t.content,
+      // These fold into CollapsiblePanel's own combined menu alongside the universal Close/Reset
+      // Height entries — Layers is the one panel with real actions to add there.
       ...(t.id === 'layers' ? {
-        onMenu: () => swal({
-          title: 'Layers',
-          input: 'select',
-          inputOptions: { add: 'New Layer', addBlank: 'New Blank Layer', flatten: 'Flatten Image', mergeVisible: 'Merge Visible' },
-          inputPlaceholder: 'Choose an action',
-          showCancelButton: true,
-          confirmButtonText: 'Go',
-        }).then((r) => {
-          if (!r.isConfirmed) return;
-          if (r.value === 'add') handleAddLayer();
-          else if (r.value === 'addBlank') handleAddBlankLayer();
-          else if (r.value === 'flatten') void handleFlattenImage();
-          else if (r.value === 'mergeVisible') void handleMergeVisible();
-        }),
+        menuItems: [
+          { label: 'New Layer', onSelect: handleAddLayer },
+          { label: 'New Blank Layer', onSelect: handleAddBlankLayer },
+          { label: 'Flatten Image', onSelect: () => { void handleFlattenImage(); } },
+          { label: 'Merge Visible', onSelect: () => { void handleMergeVisible(); } },
+        ],
       } : {}),
     }));
   const pagesTabHorizontal = <StudioPagesPanel pages={pages} activePageId={activePageId} onSelect={setActivePageId} orientation="horizontal" onManagePages={() => setPagesManagerOpen(true)} />;
