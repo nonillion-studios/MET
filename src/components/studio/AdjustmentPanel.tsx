@@ -32,6 +32,16 @@ const KIND_LABELS = ADJUSTMENT_KIND_LABEL;
 export function AdjustmentPanel({ layer, onUpdate, getHistogramSource, onToggleVisible, hideTitle }: AdjustmentPanelProps) {
   const data = layer.adjustment;
   const [histogramImage, setHistogramImage] = useState<ImageData | null>(null);
+  // Channel Mixer's output-channel tab and Selective Color's ink-family selector — lifted to the
+  // top of the component (rather than declared inside their own conditional render blocks below)
+  // so they're called unconditionally on every render regardless of `data.kind`. A hook call
+  // gated behind `data.kind === '...'` fires or doesn't depending on which kind is currently
+  // selected, and since the *same* AdjustmentPanel instance stays mounted across a kind switch
+  // (the `kind` dropdown just patches the layer's data, it doesn't remount this component), that
+  // changes the hook count between renders — exactly React error #310 ("rendered more hooks than
+  // during the previous render"). Both are real, if not currently rendered.
+  const [channelMixerOutput, setChannelMixerOutput] = useState<'red' | 'green' | 'blue'>('red');
+  const [selectiveColorFamily, setSelectiveColorFamily] = useState<SelectiveColorFamily>('reds');
 
   // Only Levels/Threshold/Black & White (its Auto button) need real pixels — read them lazily once
   // per kind switch rather than on every render, matching FilterDialog.tsx's own
@@ -327,18 +337,17 @@ export function AdjustmentPanel({ layer, onUpdate, getHistogramSource, onToggleV
 
         {data.kind === 'channel-mixer' && (() => {
           const outputs: { id: 'red' | 'green' | 'blue'; label: string }[] = [{ id: 'red', label: 'Red' }, { id: 'green', label: 'Green' }, { id: 'blue', label: 'Blue' }];
-          const [outputChannel, setOutputChannel] = useState<'red' | 'green' | 'blue'>('red');
-          const mix = data.channelMixer[outputChannel];
+          const mix = data.channelMixer[channelMixerOutput];
           return (
             <div className="flex flex-col gap-2 pt-1">
               <CheckboxRow label="Monochrome" checked={data.channelMixer.monochrome} onChange={(v) => set({ channelMixer: { ...data.channelMixer, monochrome: v } })} />
               {!data.channelMixer.monochrome && (
-                <ChannelTabs options={outputs} value={outputChannel} onChange={(v) => setOutputChannel(v)} />
+                <ChannelTabs options={outputs} value={channelMixerOutput} onChange={(v) => setChannelMixerOutput(v)} />
               )}
-              <Slider label="Red" min={-200} max={200} value={mix.red} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [outputChannel]: { ...mix, red: v } } })} />
-              <Slider label="Green" min={-200} max={200} value={mix.green} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [outputChannel]: { ...mix, green: v } } })} />
-              <Slider label="Blue" min={-200} max={200} value={mix.blue} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [outputChannel]: { ...mix, blue: v } } })} />
-              <Slider label="Constant" min={-100} max={100} value={mix.constant} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [outputChannel]: { ...mix, constant: v } } })} />
+              <Slider label="Red" min={-200} max={200} value={mix.red} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [channelMixerOutput]: { ...mix, red: v } } })} />
+              <Slider label="Green" min={-200} max={200} value={mix.green} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [channelMixerOutput]: { ...mix, green: v } } })} />
+              <Slider label="Blue" min={-200} max={200} value={mix.blue} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [channelMixerOutput]: { ...mix, blue: v } } })} />
+              <Slider label="Constant" min={-100} max={100} value={mix.constant} onChange={(v) => set({ channelMixer: { ...data.channelMixer, [channelMixerOutput]: { ...mix, constant: v } } })} />
             </div>
           );
         })()}
@@ -376,16 +385,15 @@ export function AdjustmentPanel({ layer, onUpdate, getHistogramSource, onToggleV
         )}
 
         {data.kind === 'selective-color' && (() => {
-          const [family, setFamily] = useState<SelectiveColorFamily>('reds');
-          const ink = data.selectiveColor.colors[family];
-          const patchInk = (patch: Partial<typeof ink>) => set({ selectiveColor: { ...data.selectiveColor, colors: { ...data.selectiveColor.colors, [family]: { ...ink, ...patch } } } });
+          const ink = data.selectiveColor.colors[selectiveColorFamily];
+          const patchInk = (patch: Partial<typeof ink>) => set({ selectiveColor: { ...data.selectiveColor, colors: { ...data.selectiveColor.colors, [selectiveColorFamily]: { ...ink, ...patch } } } });
           return (
             <div className="flex flex-col gap-2 pt-1">
               <label className="flex flex-col gap-1 text-micro text-ink-faint">
                 <span>Colors</span>
                 <select
-                  value={family}
-                  onChange={(e) => setFamily(e.target.value as SelectiveColorFamily)}
+                  value={selectiveColorFamily}
+                  onChange={(e) => setSelectiveColorFamily(e.target.value as SelectiveColorFamily)}
                   className="studio-interactive bg-ink/5 border border-hairline rounded-control px-2 py-1.5 text-ink text-micro"
                 >
                   {SELECTIVE_COLOR_FAMILY_LIST.map(f => <option key={f} value={f}>{SELECTIVE_COLOR_FAMILY_LABEL[f]}</option>)}
