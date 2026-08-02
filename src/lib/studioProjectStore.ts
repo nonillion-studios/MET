@@ -1,10 +1,15 @@
 import { get, set } from 'idb-keyval';
 import { genId } from './id';
-import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
+import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, createDefaultAdjustmentData, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
 
 /** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes.
- *  v7 added the 'path' layer type — no backfill needed (old data simply has zero path layers). */
-export const STUDIO_SCHEMA_VERSION = 7;
+ *  v7 added the 'path' layer type — no backfill needed (old data simply has zero path layers).
+ *  v8 added 8 new AdjustmentKind values plus per-channel Curves/Hue-Saturation/Levels — every new
+ *  AdjustmentLayerData field backfills from createDefaultAdjustmentData(a.kind), see migrateLayer.
+ *  v9 added StudioLayer.effects (Blending Options) — optional, and absent is precisely the pre-v9
+ *  behaviour (no styles applied), the same reasoning v5's `mask`/`clipped`/`collapsed` already used.
+ *  No backfill of its own. */
+export const STUDIO_SCHEMA_VERSION = 9;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
 
@@ -63,20 +68,51 @@ export function createEmptyStudioData(): ChapterStudioData {
 /** Backfills one layer. Recurses into groups; on pre-v5 data no layer has children, so it bottoms
  *  out immediately and this is exactly the old flat `.map`. */
 function migrateLayer(l: SerializedStudioLayer): SerializedStudioLayer {
-  const migrated: SerializedStudioLayer =
-    l.type === 'text' && l.text
-      ? {
-          ...l,
-          text: {
-            ...l.text,
-            autoWidth: l.text.autoWidth ?? false,
-            letterSpacing: l.text.letterSpacing ?? 0,
-            shadow: l.text.shadow ?? { ...DEFAULT_TEXT_SHADOW },
-            gradient: l.text.gradient ?? { ...DEFAULT_TEXT_GRADIENT },
-            runs: l.text.runs ?? [],
-          },
-        }
-      : l;
+  let migrated: SerializedStudioLayer = l;
+
+  if (l.type === 'text' && l.text) {
+    migrated = {
+      ...migrated,
+      text: {
+        ...l.text,
+        autoWidth: l.text.autoWidth ?? false,
+        letterSpacing: l.text.letterSpacing ?? 0,
+        shadow: l.text.shadow ?? { ...DEFAULT_TEXT_SHADOW },
+        gradient: l.text.gradient ?? { ...DEFAULT_TEXT_GRADIENT },
+        runs: l.text.runs ?? [],
+      },
+    };
+  }
+
+  // v7 -> v8: 8 new AdjustmentKind values plus per-channel Curves/Hue-Saturation/Levels. Every new
+  // field backfills from a fresh default object for this layer's own kind (matching this file's
+  // idempotent-?? convention, just computed via createDefaultAdjustmentData instead of one literal
+  // per field, since there are now ~20 of them) — nested objects merge shallowly so an old partial
+  // shape (e.g. `curves: { rgb }` with no `r`/`g`/`b`/`luminosity`) keeps its real old data and only
+  // gains the new keys.
+  if (l.type === 'adjustment' && l.adjustment) {
+    const a = l.adjustment;
+    const d = createDefaultAdjustmentData(a.kind);
+    migrated = {
+      ...migrated,
+      adjustment: {
+        ...d,
+        ...a,
+        curves: { ...d.curves, ...a.curves },
+        hueSaturationByChannel: { ...d.hueSaturationByChannel, ...a.hueSaturationByChannel },
+        levelsByChannel: { ...d.levelsByChannel, ...a.levelsByChannel },
+        gradientMap: { ...d.gradientMap, ...a.gradientMap },
+        blackWhite: { ...d.blackWhite, ...a.blackWhite },
+        photoFilter: { ...d.photoFilter, ...a.photoFilter },
+        channelMixer: { ...d.channelMixer, ...a.channelMixer },
+        colorLookup: { ...d.colorLookup, ...a.colorLookup },
+        selectiveColor: { ...d.selectiveColor, ...a.selectiveColor, colors: { ...d.selectiveColor.colors, ...a.selectiveColor?.colors } },
+        shadowsHighlights: { ...d.shadowsHighlights, ...a.shadowsHighlights },
+        hdrToning: { ...d.hdrToning, ...a.hdrToning },
+      },
+    };
+  }
+
   return l.children ? { ...migrated, children: l.children.map(migrateLayer) } : migrated;
 }
 

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, useCallback, forwardRef, useImperativeHandle, type ReactNode } from 'react';
 import { Image as ImageIcon } from 'lucide-react';
-import { Stage, Layer, Group, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer, Shape } from 'react-konva';
+import { Stage, Layer, Group, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer, Shape, Arrow } from 'react-konva';
 import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
-import { BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type LayerSelectMode } from './studioTypes';
+import { compositeOperationFor, hasAnyEnabledStyle, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type LayerSelectMode } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
@@ -221,6 +221,11 @@ export interface StudioCanvasHandle {
   loadRasterLayer: (layerId: string, dataUrl: string) => Promise<void>;
   /** Snapshots the active page's background + full layer stack for flatten/PSD export. Null if no page is loaded. */
   getExportSnapshot: () => ExportSnapshot | null;
+  /** The full, real, tree-aware composite of the current page (`getSampleComposite('all')`) — same
+   *  synchronous live-canvas machinery Clone/Heal/Eyedropper already read through. Used by Levels'
+   *  histogram + Auto button and Black & White's Auto button, which both need "what the image
+   *  actually looks like right now" rather than the flat background alone. */
+  getHistogramSourceCanvas: () => HTMLCanvasElement | null;
   getZoom: () => number;
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
@@ -367,6 +372,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   /** Live dashed-rectangle preview (image-space) while dragging out a new area text box — the
    *  W×H readout reads straight off this, matching Photoshop's live-drag box readout. */
   const [textDragPreview, setTextDragPreview] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  /** Live gradient-drag preview (Section 6) — start is fixed at pointerdown, current tracks the
+   *  pointer every move (already shift-snapped by usePaintLayer when applicable), null/null once
+   *  the drag commits or the tool changes. */
+  const [gradientPreview, setGradientPreview] = useState<{ start: { x: number; y: number }; current: { x: number; y: number } } | null>(null);
   /** Hovering a text layer's own box body (not one of the Transformer's handles, which sit on top
    *  and win the hit-test first) — drives the move-cursor over the container below. */
   const [hoveringTextBody, setHoveringTextBody] = useState(false);
@@ -646,7 +655,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     getFallbackCanvas: () => sampleCanvasRef.current,
     onCloneSourceSet: setCloneSourceImg,
     getSampleCanvas: () => getSampleComposite(paintSettings.sampleMode),
+    onGradientPreview: (start, current) => setGradientPreview(start && current ? { start, current } : null),
+    getShiftHeld: () => shiftHeld,
   });
+
+  // Switching away from the gradient tool mid-drag (a keyboard shortcut, picking another tool) has
+  // no pointerUp to clear the preview through — drop it explicitly so it can never linger stale,
+  // mirroring how ToolGroupButton's own flyout closes the moment the active tool changes elsewhere.
+  useEffect(() => {
+    if (activeTool !== 'gradient') setGradientPreview(null);
+  }, [activeTool]);
 
   useImperativeHandle(ref, () => ({
     getPaintCanvas(layerId: string) {
@@ -693,6 +711,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
       redrawLayerNode(layerId);
+    },
+    getHistogramSourceCanvas() {
+      return getSampleComposite('all');
     },
     getExportSnapshot() {
       const img = imageRef.current;
@@ -1147,9 +1168,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * overlap, so the cache looks redundant) but it's wrong: isolation changes what the child blends
    * *against*, not just how the results stack, so skipping it for single-child groups makes the
    * canvas disagree with the exporter.
+   *
+   * A group with any enabled Layer Style also isolates — mirrors `isolatesGroup` in
+   * `exportImage.ts`'s own identical extension, kept true regardless of which specific effects this
+   * file actually renders live (see the caching effect below) so the pass-through/isolated boolean
+   * itself never drifts between the two renderers even where the visual result still does.
    */
   const needsIsolation = useCallback((layer: StudioLayer) =>
-    layer.type === 'group' && (layer.opacity < 1 || layer.blendMode !== 'normal'), []);
+    layer.type === 'group' && (layer.opacity < 1 || layer.blendMode !== 'normal' || (layer.effects != null && hasAnyEnabledStyle(layer.effects))), []);
 
   /** True when `layerId` is a clip base with layers riding on it — i.e. it renders as a clip run. */
   const hasClippedFollowers = useCallback((layerId: string) => {
@@ -1161,7 +1187,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // subtree, so calling it per slider frame would turn a blit into a full page render.
   const groupStructureKey = useMemo(
     () => flattenTree(layers)
-      .map(l => `${l.id}:${l.type}:${l.visible}:${l.opacity}:${l.blendMode}:${l.clipped ?? false}:${l.children?.length ?? 0}:${l.mask?.id ?? ''}:${l.mask?.enabled ?? false}`)
+      .map(l => `${l.id}:${l.type}:${l.visible}:${l.opacity}:${l.blendMode}:${l.clipped ?? false}:${l.children?.length ?? 0}:${l.mask?.id ?? ''}:${l.mask?.enabled ?? false}:${l.effects ? JSON.stringify(l.effects) : ''}`)
       .join('|'),
     [layers],
   );
@@ -1180,10 +1206,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // A layer with an enabled mask needs the identical reasoning: its mask filter (below) only
       // has something to read once the layer is cached — `renderLeaf`'s own content would otherwise
       // draw straight onto the shared canvas with nothing to trim it.
+      //
+      // Any layer (leaf or group) with an enabled Layer Style isolates too, for the same reason —
+      // Color/Gradient Overlay (the two styles this file actually paints live, via a `source-atop`
+      // node inside the layer's own Group below) need the layer already rasterized to know what
+      // "atop" means; the other style types isolate here for boolean parity with `exportImage.ts`'s
+      // `isolatesGroup` even though they don't yet render live (see `needsIsolation`'s own comment).
       const isolate = needsIsolation(layer)
         || (layer.type === 'adjustment' && layer.visible)
         || hasClippedFollowers(layer.id)
-        || layer.mask?.enabled === true;
+        || layer.mask?.enabled === true
+        || (layer.effects != null && hasAnyEnabledStyle(layer.effects));
       if (isolate) {
         // pixelRatio 1 = page-space pixels. The stage scale is a transform above the cache, so
         // caching at devicePixelRatio would make cost (and memory) scale with zoom for no gain.
@@ -2148,7 +2181,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         ref={(node) => { layerNodeRefs.current[base.id] = node; }}
         visible={base.visible}
         opacity={base.opacity}
-        globalCompositeOperation={BLEND_TO_COMPOSITE[base.blendMode]}
+        globalCompositeOperation={compositeOperationFor(base.blendMode)}
         listening={base.visible && !base.locked}
       >
         <KonvaImage image={baseCanvas} width={image.width} height={image.height} listening={false} />
@@ -2198,7 +2231,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         ref={(node) => { layerNodeRefs.current[layer.id] = node; }}
         visible={layer.visible}
         opacity={layer.opacity}
-        globalCompositeOperation={BLEND_TO_COMPOSITE[layer.blendMode]}
+        globalCompositeOperation={compositeOperationFor(layer.blendMode)}
         listening={layer.visible && !layer.locked}
       >
         {layer.type === 'group' && renderLayerNodes(layer.children ?? [])}
@@ -2265,6 +2298,63 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           />
         )}
 
+        {/* Color Overlay / Gradient Overlay — the two Layer Style effects this file renders live
+            (see needsIsolation's own comment for why the rest don't yet). `source-atop` composites
+            the fill only where this Group has already drawn something, i.e. tints the layer's own
+            visible silhouette — the same trick a layer mask's own filter conceptually achieves, just
+            via native compositing instead of a filter pass. Requires this layer to already be
+            isolated/cached (see the caching effect above), same as masks. */}
+        {image && layer.effects?.colorOverlay.enabled && (
+          <Rect
+            x={0} y={0} width={image.width} height={image.height}
+            fill={layer.effects.colorOverlay.color}
+            opacity={layer.effects.colorOverlay.opacity / 100}
+            globalCompositeOperation="source-atop"
+            listening={false}
+          />
+        )}
+        {image && layer.effects?.gradientOverlay.enabled && (() => {
+          const go = layer.effects!.gradientOverlay;
+          const cx = image.width / 2, cy = image.height / 2;
+          const isRadial = go.style === 'radial' || go.style === 'diamond';
+          if (isRadial) {
+            const r = Math.max(1, (Math.max(image.width, image.height) / 2) * (go.scale / 100));
+            return (
+              <Rect
+                x={0} y={0} width={image.width} height={image.height}
+                opacity={go.opacity / 100}
+                globalCompositeOperation="source-atop"
+                listening={false}
+                fillPriority="radial-gradient"
+                fillRadialGradientStartPointX={cx} fillRadialGradientStartPointY={cy} fillRadialGradientStartRadius={0}
+                fillRadialGradientEndPointX={cx} fillRadialGradientEndPointY={cy} fillRadialGradientEndRadius={r}
+                fillRadialGradientColorStops={[0, go.gradient.from, 1, go.gradient.to]}
+              />
+            );
+          }
+          // Linear/Angle/Reflected all render as a real linear gradient live (Angle/diamond get the
+          // full conic/radial treatment only in flattened export, via the Canvas API's own
+          // createConicGradient/createRadialGradient — Konva has no declarative conic-gradient prop
+          // to drive live) — Reflected still gets its real symmetric from/to/from stop pattern.
+          const rad = (go.angle * Math.PI) / 180;
+          const len = Math.max(image.width, image.height) * (go.scale / 100);
+          return (
+            <Rect
+              x={0} y={0} width={image.width} height={image.height}
+              opacity={go.opacity / 100}
+              globalCompositeOperation="source-atop"
+              listening={false}
+              fillPriority="linear-gradient"
+              fillLinearGradientStartPointX={cx - Math.cos(rad) * len / 2} fillLinearGradientStartPointY={cy + Math.sin(rad) * len / 2}
+              fillLinearGradientEndPointX={cx + Math.cos(rad) * len / 2} fillLinearGradientEndPointY={cy - Math.sin(rad) * len / 2}
+              fillLinearGradientColorStops={
+                go.style === 'reflected'
+                  ? [0, go.gradient.to, 0.5, go.gradient.from, 1, go.gradient.to]
+                  : [0, go.gradient.from, 1, go.gradient.to]
+              }
+            />
+          );
+        })()}
       </Group>
     );
   }
@@ -2481,6 +2571,63 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 />
               </>
             )}
+            {/* Live gradient-drag preview (Section 6) — a color ramp along the actual drag line, a
+                guide arrow with markers at both ends, and a live angle readout, all pointer-events
+                none so none of it can ever interfere with the drag itself. Nothing here is
+                committed pixels — usePaintLayer.applyGradient runs once, on pointerUp, exactly as
+                before; this overlay clears the instant gradientPreview goes back to null. */}
+            {gradientPreview && (() => {
+              const { start, current } = gradientPreview;
+              const dx = current.x - start.x;
+              const dy = current.y - start.y;
+              const length = Math.hypot(dx, dy);
+              if (length < 2) return null;
+              const angleDeg = Math.atan2(dy, dx) * (180 / Math.PI);
+              const thickness = 8 / scale;
+              return (
+                <>
+                  <Rect
+                    x={start.x} y={start.y}
+                    width={length} height={thickness}
+                    offsetY={thickness / 2}
+                    rotation={angleDeg}
+                    // Konva's fillPriority defaults to 'color' — without it explicitly set to
+                    // 'linear-gradient', the gradient stops below are computed but never actually
+                    // drawn (Context.js only reads them when fillPriority matches), and since this
+                    // Rect has no plain `fill` either, it would render completely invisible. Same
+                    // footgun this codebase's own text-gradient code already documents.
+                    fillPriority="linear-gradient"
+                    fillLinearGradientStartPointX={0}
+                    fillLinearGradientStartPointY={thickness / 2}
+                    fillLinearGradientEndPointX={length}
+                    fillLinearGradientEndPointY={thickness / 2}
+                    fillLinearGradientColorStops={[0, paintSettings.color, 1, paintSettings.bgColor]}
+                    stroke="rgba(0,0,0,0.35)"
+                    strokeWidth={1 / scale}
+                    listening={false}
+                  />
+                  <Arrow
+                    points={[start.x, start.y, current.x, current.y]}
+                    stroke="#ffffff"
+                    fill="#ffffff"
+                    strokeWidth={1.5 / scale}
+                    pointerLength={8 / scale}
+                    pointerWidth={7 / scale}
+                    pointerAtBeginning
+                    pointerAtEnding
+                    listening={false}
+                  />
+                  <KonvaText
+                    text={`${Math.round(angleDeg)}°`}
+                    x={current.x + 10 / scale}
+                    y={current.y + 10 / scale}
+                    fontSize={12 / scale}
+                    fill="#ffffff"
+                    listening={false}
+                  />
+                </>
+              );
+            })()}
             {penDraft.length > 0 && (
               <>
                 {/* Live curved preview — real bezier via traceAnchors, the same function the
@@ -2735,8 +2882,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // rather than a permanently-disabled dead click, matching this codebase's real-vs-grayed
           // menu convention (grayed is reserved for "no backing subsystem", not "wrong shape now").
           ...(closed ? [{ id: 'make-selection', label: 'Make Selection', action: onMakeSelectionFromPath }] : []),
-          { id: 'fill-path', label: 'Fill Path', disabled: !canBakePath, action: onFillActivePath },
-          { id: 'stroke-path', label: 'Stroke Path', disabled: !canBakePath, action: onStrokeActivePath },
+          { id: 'fill-path', label: 'Fill Path…', disabled: !canBakePath, action: onFillActivePath },
+          { id: 'stroke-path', label: 'Stroke Path…', disabled: !canBakePath, action: onStrokeActivePath },
           { id: 'sep', label: '', separator: true },
           { id: 'delete-path', label: 'Delete Path', action: onDeleteActivePath },
         ];

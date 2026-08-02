@@ -1,10 +1,15 @@
-import { BLEND_TO_COMPOSITE, type TextLayerData, type PathLayerData } from '../components/studio/studioTypes';
+import {
+  compositeOperationFor, CUSTOM_BLEND_MODES, hasAnyEnabledStyle,
+  type TextLayerData, type PathLayerData, type LayerEffects, type GradientOverlayStyleData,
+} from '../components/studio/studioTypes';
 import { traceAnchors } from '../components/studio/pathGeometry';
 import { gradientVector } from '../components/studio/textGradient';
 import { layoutText, applyLetterSpacing } from '../components/studio/textLayout';
 import { runFontString } from '../components/studio/textRuns';
 import { partitionAdjustments, groupClipRuns, type RenderNode, type ClipRun } from '../components/studio/layerTree';
 import { filterForAdjustment, withStrength } from './adjustments';
+import { applyCustomBlend } from './customBlendModes';
+import { extractAlpha, outerHalo, innerShadowHalo, innerGlowHalo, strokeRing, bevelMasks, satinMask, paintHalo } from './layerEffects';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
 
@@ -114,9 +119,13 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
  * that function for why child count is not a factor. Generic over `{opacity, blendMode}` so
  * `sampleComposite.ts`'s live-canvas sampler (a third renderer, over `StudioLayer` rather than
  * `SerializedStudioLayer`) reuses this exact rule instead of risking a three-way drift.
+ *
+ * A group with any enabled Layer Style also isolates — an effect changes what the group's own
+ * result *is* before it composites against anything below, exactly like non-1 opacity or a non-
+ * normal blend already do.
  */
-export const isolatesGroup = (layer: { opacity: number; blendMode: SerializedStudioLayer['blendMode'] }) =>
-  layer.opacity < 1 || layer.blendMode !== 'normal';
+export const isolatesGroup = (layer: { opacity: number; blendMode: SerializedStudioLayer['blendMode']; effects?: LayerEffects }) =>
+  layer.opacity < 1 || layer.blendMode !== 'normal' || (layer.effects != null && hasAnyEnabledStyle(layer.effects));
 
 /**
  * Composites `layers` (bottom-to-top) onto `ctx`: adjustments become wrappers around what's below
@@ -208,7 +217,7 @@ async function compositeClipRun(
 
   ctx.save();
   ctx.globalAlpha = base.opacity;
-  ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[base.blendMode];
+  ctx.globalCompositeOperation = compositeOperationFor(base.blendMode);
   ctx.drawImage(scratch, 0, 0);
   ctx.restore();
 }
@@ -253,6 +262,101 @@ export function drawPathLayer(ctx: CanvasRenderingContext2D, path: PathLayerData
   if (path.stroke.enabled) { ctx.strokeStyle = path.stroke.color; ctx.lineWidth = path.stroke.width; ctx.stroke(); }
 }
 
+/**
+ * Applies every enabled Layer Style onto a leaf's own rendered content, real pixel effects (see
+ * `lib/layerEffects.ts`) rather than a live-canvas-only preview. Drop Shadow/Outer Glow paint onto
+ * the *backdrop* `ctx` (they render behind the layer, so the layer's own opaque pixels naturally
+ * cover them where they overlap once the scratch composites on top) — everything else paints onto
+ * the leaf's own `scratch`/`sctx` so it gets clipped/blended with the content before the final
+ * opacity+blend composite step. Pattern Overlay is a real no-op (no pattern-asset infra anywhere in
+ * this app, see `PatternOverlayStyleData`'s own doc comment) — not called from here at all.
+ */
+function applyLeafEffects(
+  ctx: CanvasRenderingContext2D,
+  sctx: CanvasRenderingContext2D,
+  effects: LayerEffects,
+  width: number,
+  height: number,
+): void {
+  const alpha = extractAlpha(sctx.getImageData(0, 0, width, height));
+
+  if (effects.dropShadow.enabled) {
+    const halo = outerHalo(alpha, width, height, effects.dropShadow.distance, effects.dropShadow.angle, effects.dropShadow.spread, effects.dropShadow.size);
+    paintHalo(ctx, halo, width, height, effects.dropShadow.color, effects.dropShadow.opacity, compositeOperationFor(effects.dropShadow.blendMode));
+  }
+  if (effects.outerGlow.enabled) {
+    const halo = outerHalo(alpha, width, height, 0, 0, effects.outerGlow.spread, effects.outerGlow.size);
+    paintHalo(ctx, halo, width, height, effects.outerGlow.color, effects.outerGlow.opacity, compositeOperationFor(effects.outerGlow.blendMode));
+  }
+  if (effects.innerShadow.enabled) {
+    const halo = innerShadowHalo(alpha, width, height, effects.innerShadow.distance, effects.innerShadow.angle, effects.innerShadow.size);
+    paintHalo(sctx, halo, width, height, effects.innerShadow.color, effects.innerShadow.opacity, compositeOperationFor(effects.innerShadow.blendMode));
+  }
+  if (effects.innerGlow.enabled) {
+    const halo = innerGlowHalo(alpha, width, height, effects.innerGlow.size, effects.innerGlow.source ?? 'edge');
+    paintHalo(sctx, halo, width, height, effects.innerGlow.color, effects.innerGlow.opacity, compositeOperationFor(effects.innerGlow.blendMode));
+  }
+  if (effects.bevelEmboss.enabled) {
+    const { highlight, shadow } = bevelMasks(alpha, width, height, effects.bevelEmboss);
+    paintHalo(sctx, highlight, width, height, effects.bevelEmboss.highlightColor, effects.bevelEmboss.highlightOpacity, compositeOperationFor(effects.bevelEmboss.highlightMode));
+    paintHalo(sctx, shadow, width, height, effects.bevelEmboss.shadowColor, effects.bevelEmboss.shadowOpacity, compositeOperationFor(effects.bevelEmboss.shadowMode));
+  }
+  if (effects.satin.enabled) {
+    const halo = satinMask(alpha, width, height, effects.satin);
+    paintHalo(sctx, halo, width, height, effects.satin.color, effects.satin.opacity, compositeOperationFor(effects.satin.blendMode));
+  }
+  if (effects.colorOverlay.enabled) {
+    sctx.save();
+    sctx.globalCompositeOperation = 'source-atop';
+    sctx.globalAlpha = effects.colorOverlay.opacity / 100;
+    sctx.fillStyle = effects.colorOverlay.color;
+    sctx.fillRect(0, 0, width, height);
+    sctx.restore();
+  }
+  if (effects.gradientOverlay.enabled) {
+    sctx.save();
+    sctx.globalCompositeOperation = 'source-atop';
+    sctx.globalAlpha = effects.gradientOverlay.opacity / 100;
+    sctx.fillStyle = buildOverlayGradient(sctx, effects.gradientOverlay, width, height);
+    sctx.fillRect(0, 0, width, height);
+    sctx.restore();
+  }
+  if (effects.stroke.enabled) {
+    const ring = strokeRing(alpha, width, height, effects.stroke.size, effects.stroke.position);
+    // Gradient/Pattern stroke fill types are simplified to the gradient's own `from` color — a
+    // real, if reduced, result rather than the full gradient-along-the-ring Photoshop draws.
+    const color = effects.stroke.fillType === 'gradient' ? effects.stroke.gradient.from : effects.stroke.color;
+    paintHalo(sctx, ring, width, height, color, effects.stroke.opacity, compositeOperationFor(effects.stroke.blendMode));
+  }
+}
+
+/** Linear/Radial/Angle/Reflected/Diamond — 5 real, visually distinct gradients built from the
+ *  Canvas API's own primitives (`createConicGradient` for Angle, `createRadialGradient` for
+ *  Radial/Diamond, `createLinearGradient` otherwise), not one shape reused with a label change. */
+function buildOverlayGradient(ctx: CanvasRenderingContext2D, data: GradientOverlayStyleData, width: number, height: number): CanvasGradient {
+  const { from, to } = data.gradient;
+  const cx = width / 2, cy = height / 2;
+  if (data.style === 'radial' || data.style === 'diamond') {
+    const r = Math.max(1, (Math.max(width, height) / 2) * (data.scale / 100));
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, from); g.addColorStop(1, to);
+    return g;
+  }
+  if (data.style === 'angle' && typeof ctx.createConicGradient === 'function') {
+    const g = ctx.createConicGradient((data.angle * Math.PI) / 180, cx, cy);
+    g.addColorStop(0, from); g.addColorStop(0.5, to); g.addColorStop(1, from);
+    return g;
+  }
+  const rad = (data.angle * Math.PI) / 180;
+  const len = Math.max(width, height) * (data.scale / 100);
+  const x0 = cx - Math.cos(rad) * len / 2, y0 = cy + Math.sin(rad) * len / 2;
+  const x1 = cx + Math.cos(rad) * len / 2, y1 = cy - Math.sin(rad) * len / 2;
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  if (data.style === 'reflected') { g.addColorStop(0, to); g.addColorStop(0.5, from); g.addColorStop(1, to); }
+  else { g.addColorStop(0, from); g.addColorStop(1, to); }
+  return g;
+}
+
 async function compositeLeaf(
   ctx: CanvasRenderingContext2D,
   layer: SerializedStudioLayer,
@@ -263,31 +367,50 @@ async function compositeLeaf(
   if (!layer.visible) return;
   // A disabled mask has no effect at all, matching PSD's own `disabled` flag and the live canvas.
   const activeMaskRaster = layer.mask?.enabled ? layer.maskRaster : undefined;
+  const hasEffects = layer.effects != null && hasAnyEnabledStyle(layer.effects);
+  const isCustomBlend = CUSTOM_BLEND_MODES.has(layer.blendMode);
 
   if (layer.type === 'group' && !isolatesGroup(layer) && !activeMaskRaster) {
     await compositeLayers(ctx, layer.children ?? [], width, height, background);
     return;
   }
 
+  if (!activeMaskRaster && !hasEffects && !isCustomBlend) {
+    // The common, fast path — no scratch canvas needed at all.
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.globalCompositeOperation = compositeOperationFor(layer.blendMode);
+    await drawLeafContent(ctx, layer, width, height, background);
+    ctx.restore();
+    return;
+  }
+
+  // Draw the leaf's own content into a scratch canvas — needed whenever a mask, a Layer Style, or a
+  // custom (non-native) blend mode means the final composite can't just be "draw straight onto ctx
+  // with globalCompositeOperation set". Same reasoning `compositeClipRun` already documents for
+  // masks: a `destination-in` (or, here, a custom per-pixel blend read) against the shared canvas
+  // would touch everything already painted below it, not just this layer.
+  const scratch = document.createElement('canvas');
+  scratch.width = width;
+  scratch.height = height;
+  const sctx = scratch.getContext('2d');
+  if (!sctx) return;
+  await drawLeafContent(sctx, layer, width, height, background);
   if (activeMaskRaster) {
-    // Draw the leaf's own content into a scratch canvas, trim it to the mask's alpha, then blit
-    // the trimmed result through this layer's own opacity/blend — same reasoning as
-    // `compositeClipRun`: `destination-in` against the shared canvas would erase everything
-    // already painted below it, not just this layer. Any layer type may carry a mask, so this
-    // check sits above the type-specific branches rather than inside one of them.
-    const scratch = document.createElement('canvas');
-    scratch.width = width;
-    scratch.height = height;
-    const sctx = scratch.getContext('2d');
-    if (!sctx) return;
-    await drawLeafContent(sctx, layer, width, height, background);
     const maskImg = await loadImage(activeMaskRaster);
     sctx.globalCompositeOperation = 'destination-in';
     sctx.drawImage(maskImg, 0, 0, width, height);
+  }
+  if (hasEffects) applyLeafEffects(ctx, sctx, layer.effects!, width, height);
 
+  if (isCustomBlend) {
+    const backdrop = ctx.getImageData(0, 0, width, height);
+    const source = sctx.getImageData(0, 0, width, height);
+    applyCustomBlend(layer.blendMode, backdrop, source);
+    sctx.putImageData(source, 0, 0);
     ctx.save();
     ctx.globalAlpha = layer.opacity;
-    ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[layer.blendMode];
+    ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(scratch, 0, 0);
     ctx.restore();
     return;
@@ -295,8 +418,8 @@ async function compositeLeaf(
 
   ctx.save();
   ctx.globalAlpha = layer.opacity;
-  ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[layer.blendMode];
-  await drawLeafContent(ctx, layer, width, height, background);
+  ctx.globalCompositeOperation = compositeOperationFor(layer.blendMode);
+  ctx.drawImage(scratch, 0, 0);
   ctx.restore();
 }
 

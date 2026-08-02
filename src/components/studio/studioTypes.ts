@@ -1,28 +1,96 @@
 import type { LucideIcon } from 'lucide-react';
-import { Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder, PenTool } from 'lucide-react';
+import {
+  Image as ImageIcon, Type, Eraser, SlidersHorizontal, Folder, PenTool,
+  Contrast, Palette, Spline, Sun, Droplets, Scale, Grid2x2, CircleDot, Blend,
+  Aperture, Camera, Shuffle, Table2, FlipHorizontal2, Paintbrush2, CloudSun, Sparkles,
+} from 'lucide-react';
 import type { Point } from './paint/selection';
 
 export type BlendMode =
-  | 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten';
+  | 'normal' | 'dissolve'
+  | 'darken' | 'multiply' | 'color-burn' | 'linear-burn' | 'darker-color'
+  | 'lighten' | 'screen' | 'color-dodge' | 'linear-dodge' | 'lighter-color'
+  | 'overlay' | 'soft-light' | 'hard-light' | 'vivid-light' | 'linear-light' | 'pin-light' | 'hard-mix'
+  | 'difference' | 'exclusion' | 'subtract' | 'divide'
+  | 'hue' | 'saturation' | 'color' | 'luminosity';
 
+/** Photoshop's real ~27-mode grouping/order, kept for the Blending Options dialog's dropdown. */
 export const BLEND_MODES: { id: BlendMode; label: string }[] = [
   { id: 'normal', label: 'Normal' },
-  { id: 'multiply', label: 'Multiply' },
-  { id: 'screen', label: 'Screen' },
-  { id: 'overlay', label: 'Overlay' },
+  { id: 'dissolve', label: 'Dissolve' },
   { id: 'darken', label: 'Darken' },
+  { id: 'multiply', label: 'Multiply' },
+  { id: 'color-burn', label: 'Color Burn' },
+  { id: 'linear-burn', label: 'Linear Burn' },
+  { id: 'darker-color', label: 'Darker Color' },
   { id: 'lighten', label: 'Lighten' },
+  { id: 'screen', label: 'Screen' },
+  { id: 'color-dodge', label: 'Color Dodge' },
+  { id: 'linear-dodge', label: 'Linear Dodge (Add)' },
+  { id: 'lighter-color', label: 'Lighter Color' },
+  { id: 'overlay', label: 'Overlay' },
+  { id: 'soft-light', label: 'Soft Light' },
+  { id: 'hard-light', label: 'Hard Light' },
+  { id: 'vivid-light', label: 'Vivid Light' },
+  { id: 'linear-light', label: 'Linear Light' },
+  { id: 'pin-light', label: 'Pin Light' },
+  { id: 'hard-mix', label: 'Hard Mix' },
+  { id: 'difference', label: 'Difference' },
+  { id: 'exclusion', label: 'Exclusion' },
+  { id: 'subtract', label: 'Subtract' },
+  { id: 'divide', label: 'Divide' },
+  { id: 'hue', label: 'Hue' },
+  { id: 'saturation', label: 'Saturation' },
+  { id: 'color', label: 'Color' },
+  { id: 'luminosity', label: 'Luminosity' },
 ];
 
-/** Maps our blend mode ids to Konva's globalCompositeOperation values. */
-export const BLEND_TO_COMPOSITE: Record<BlendMode, GlobalCompositeOperation> = {
+/** Maps our blend mode ids to Konva's (the browser canvas's) native `globalCompositeOperation`
+ *  values — 17 of Photoshop's ~27 modes have a real native equivalent. The other 10 (see
+ *  `CUSTOM_BLEND_MODES`) have no native composite-operation string and need real per-pixel math
+ *  instead (`lib/customBlendModes.ts`), applied as a filter rather than this map. */
+export const BLEND_TO_COMPOSITE: Partial<Record<BlendMode, GlobalCompositeOperation>> = {
   normal: 'source-over',
-  multiply: 'multiply',
-  screen: 'screen',
-  overlay: 'overlay',
   darken: 'darken',
+  multiply: 'multiply',
+  'color-burn': 'color-burn',
   lighten: 'lighten',
+  screen: 'screen',
+  'color-dodge': 'color-dodge',
+  'linear-dodge': 'lighter',
+  overlay: 'overlay',
+  'soft-light': 'soft-light',
+  'hard-light': 'hard-light',
+  difference: 'difference',
+  exclusion: 'exclusion',
+  hue: 'hue',
+  saturation: 'saturation',
+  color: 'color',
+  luminosity: 'luminosity',
 };
+
+/** The 10 modes with no native `globalCompositeOperation` equivalent — real per-pixel formulas
+ *  live in `lib/customBlendModes.ts`, dispatched by `StudioCanvas.tsx`'s render path instead of
+ *  `BLEND_TO_COMPOSITE`. */
+export const CUSTOM_BLEND_MODES = new Set<BlendMode>([
+  'dissolve', 'linear-burn', 'darker-color', 'lighter-color',
+  'vivid-light', 'linear-light', 'pin-light', 'hard-mix', 'subtract', 'divide',
+]);
+
+/**
+ * The native composite operation for `mode`, or `'source-over'` for a custom mode that has none.
+ * This is the *live-canvas* story only: Konva's per-node model only ever composites a node against
+ * its own cached pixels, never the backdrop, so a genuine custom-mode blend (which by definition
+ * needs the backdrop) can't run as a per-node filter without much deeper surgery than this session
+ * scopes. A custom-mode layer therefore previews as Normal on screen — a known, honest limitation,
+ * not a silent one (the Blending Options dialog says so). `lib/exportImage.ts`'s flatten path is
+ * where custom modes get their real per-pixel treatment instead (`lib/customBlendModes.ts`), since
+ * flatten export already composites everything sequentially onto one real 2D context with the
+ * backdrop naturally available at every step.
+ */
+export function compositeOperationFor(mode: BlendMode): GlobalCompositeOperation {
+  return BLEND_TO_COMPOSITE[mode] ?? 'source-over';
+}
 
 export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group' | 'path';
 
@@ -178,7 +246,9 @@ export const DEFAULT_TEXT_GRADIENT: TextGradient = {
 
 export type AdjustmentKind =
   | 'brightness-contrast' | 'hue-saturation' | 'levels'
-  | 'curves' | 'exposure' | 'vibrance' | 'color-balance' | 'posterize' | 'threshold' | 'gradient-map';
+  | 'curves' | 'exposure' | 'vibrance' | 'color-balance' | 'posterize' | 'threshold' | 'gradient-map'
+  | 'black-white' | 'photo-filter' | 'channel-mixer' | 'color-lookup' | 'invert' | 'selective-color'
+  | 'shadows-highlights' | 'hdr-toning';
 
 export const ADJUSTMENT_KIND_LABEL: Record<AdjustmentKind, string> = {
   'brightness-contrast': 'Brightness/Contrast',
@@ -191,6 +261,37 @@ export const ADJUSTMENT_KIND_LABEL: Record<AdjustmentKind, string> = {
   posterize: 'Posterize',
   threshold: 'Threshold',
   'gradient-map': 'Gradient Map',
+  'black-white': 'Black & White',
+  'photo-filter': 'Photo Filter',
+  'channel-mixer': 'Channel Mixer',
+  'color-lookup': 'Color Lookup',
+  invert: 'Invert',
+  'selective-color': 'Selective Color',
+  'shadows-highlights': 'Shadows/Highlights',
+  'hdr-toning': 'HDR Toning',
+};
+
+/** Icon-grid picker (`AdjustmentPickerPopover.tsx`) — one entry per kind, matching Photoshop's own
+ *  Adjustments panel icon grid. */
+export const ADJUSTMENT_KIND_ICON: Record<AdjustmentKind, LucideIcon> = {
+  'brightness-contrast': Contrast,
+  'hue-saturation': Palette,
+  levels: SlidersHorizontal,
+  curves: Spline,
+  exposure: Sun,
+  vibrance: Droplets,
+  'color-balance': Scale,
+  posterize: Grid2x2,
+  threshold: CircleDot,
+  'gradient-map': Blend,
+  'black-white': Aperture,
+  'photo-filter': Camera,
+  'channel-mixer': Shuffle,
+  'color-lookup': Table2,
+  invert: FlipHorizontal2,
+  'selective-color': Paintbrush2,
+  'shadows-highlights': CloudSun,
+  'hdr-toning': Sparkles,
 };
 
 /** One curve control point — `input`/`output` are both 0-255. */
@@ -198,6 +299,144 @@ export interface CurvePoint { input: number; output: number; }
 
 /** Cyan-Red / Magenta-Green / Yellow-Blue sliders, each -100..100 — one per Color Balance tonal range. */
 export interface ColorBalanceRange { cyanRed: number; magentaGreen: number; yellowBlue: number; }
+
+/** Input/output levels for one channel — same shape whether it's the RGB composite or a single
+ *  R/G/B channel, so `levelsFilter`'s per-channel pass and its RGB composite pass share one type. */
+export interface LevelsData {
+  inBlack: number; // 0-255
+  inWhite: number; // 0-255
+  gamma: number; // 0.1-9.99
+  outBlack: number; // 0-255
+  outWhite: number; // 0-255
+}
+
+function defaultLevels(): LevelsData {
+  return { inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 };
+}
+
+/** Photoshop's Hue/Saturation targets one of 6 overlapping hue bands, or "Master" (all pixels
+ *  uniformly — the pre-existing `hue`/`saturation`/`lightness` top-level fields). */
+export type HueBand = 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas';
+export interface HueSatBandValues { hue: number; saturation: number; lightness: number; }
+/** Exported so `adjustments.ts`'s shared hue-bucket-membership helper and the panel's channel
+ *  selector dropdown both iterate the same 6 bands in the same order, rather than each hardcoding
+ *  their own copy. */
+export const HUE_BAND_LIST: HueBand[] = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas'];
+export const HUE_BAND_LABEL: Record<HueBand, string> = {
+  reds: 'Reds', yellows: 'Yellows', greens: 'Greens', cyans: 'Cyans', blues: 'Blues', magentas: 'Magentas',
+};
+function defaultHueSatByChannel(): Record<HueBand, HueSatBandValues> {
+  const out = {} as Record<HueBand, HueSatBandValues>;
+  for (const band of HUE_BAND_LIST) out[band] = { hue: 0, saturation: 0, lightness: 0 };
+  return out;
+}
+
+/** Black & White's 6 color-family sliders, Photoshop's own -200..300 range. */
+export interface BlackWhiteData {
+  reds: number; yellows: number; greens: number; cyans: number; blues: number; magentas: number;
+  tint: boolean;
+  tintColor: string;
+}
+
+export type PhotoFilterPreset =
+  | 'warming-85' | 'warming-lba' | 'warming-81' | 'cooling-80' | 'cooling-82'
+  | 'red' | 'orange' | 'yellow' | 'green' | 'cyan' | 'blue' | 'violet' | 'magenta' | 'sepia' | 'custom';
+
+/** Named starting colors for Photo Filter's preset dropdown — approximate real-world color-
+ *  temperature-filter hues (Adobe's own exact swatch values aren't published), used only to seed
+ *  `PhotoFilterData.color` when a preset (not Custom) is picked. */
+export const PHOTO_FILTER_PRESET_COLOR: Record<Exclude<PhotoFilterPreset, 'custom'>, string> = {
+  'warming-85': '#F0A030',
+  'warming-lba': '#F5CC55',
+  'warming-81': '#E9B36E',
+  'cooling-80': '#0059B3',
+  'cooling-82': '#3FA9D6',
+  red: '#FF0000',
+  orange: '#FF8000',
+  yellow: '#FFFF00',
+  green: '#00B300',
+  cyan: '#00CCCC',
+  blue: '#0000FF',
+  violet: '#7F00FF',
+  magenta: '#FF00FF',
+  sepia: '#6E4B2A',
+};
+
+export const PHOTO_FILTER_PRESET_LABEL: Record<PhotoFilterPreset, string> = {
+  'warming-85': 'Warming Filter (85)',
+  'warming-lba': 'Warming Filter (LBA)',
+  'warming-81': 'Warming Filter (81)',
+  'cooling-80': 'Cooling Filter (80)',
+  'cooling-82': 'Cooling Filter (82)',
+  red: 'Red', orange: 'Orange', yellow: 'Yellow', green: 'Green', cyan: 'Cyan',
+  blue: 'Blue', violet: 'Violet', magenta: 'Magenta', sepia: 'Sepia',
+  custom: 'Custom',
+};
+
+export interface PhotoFilterData {
+  preset: PhotoFilterPreset;
+  color: string;
+  density: number; // 1-100
+  preserveLuminosity: boolean;
+}
+
+/** One output channel's mix of the *original* R/G/B (Photoshop's Channel Mixer never chains output
+ *  channels off each other's already-mixed values) plus a constant offset. */
+export interface ChannelMix { red: number; green: number; blue: number; constant: number; }
+
+export interface ChannelMixerData {
+  monochrome: boolean;
+  red: ChannelMix;
+  green: ChannelMix;
+  blue: ChannelMix;
+}
+
+/** No `.cube`/3D-LUT file infrastructure exists anywhere in this app (no parser, no asset pipeline)
+ *  — `lutId` selects one of a small set of real, hardcoded color-grade transforms baked directly
+ *  into `colorLookupFilter` instead (see `lib/adjustments.ts`), which is a genuine, working, if
+ *  deliberately small-scoped feature rather than a no-op stub. The original spec's own "3DLUT File
+ *  dropdown (if any LUT files are available)" phrasing already anticipates an environment with no
+ *  importable LUT files. */
+export type BuiltInLut = 'warm' | 'cool' | 'cross-process' | 'bw-high-contrast';
+export const BUILT_IN_LUT_LABEL: Record<BuiltInLut, string> = {
+  warm: 'Warm', cool: 'Cool', 'cross-process': 'Cross Process', 'bw-high-contrast': 'B&W High Contrast',
+};
+export interface ColorLookupData { lutId: BuiltInLut | null; }
+
+export type SelectiveColorFamily = 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas' | 'whites' | 'neutrals' | 'blacks';
+export interface CmykInk { cyan: number; magenta: number; yellow: number; black: number; }
+export const SELECTIVE_COLOR_FAMILY_LIST: SelectiveColorFamily[] = ['reds', 'yellows', 'greens', 'cyans', 'blues', 'magentas', 'whites', 'neutrals', 'blacks'];
+export const SELECTIVE_COLOR_FAMILY_LABEL: Record<SelectiveColorFamily, string> = {
+  reds: 'Reds', yellows: 'Yellows', greens: 'Greens', cyans: 'Cyans', blues: 'Blues', magentas: 'Magentas',
+  whites: 'Whites', neutrals: 'Neutrals', blacks: 'Blacks',
+};
+function defaultSelectiveColors(): Record<SelectiveColorFamily, CmykInk> {
+  const out = {} as Record<SelectiveColorFamily, CmykInk>;
+  for (const family of SELECTIVE_COLOR_FAMILY_LIST) out[family] = { cyan: 0, magenta: 0, yellow: 0, black: 0 };
+  return out;
+}
+export interface SelectiveColorData {
+  method: 'relative' | 'absolute';
+  colors: Record<SelectiveColorFamily, CmykInk>;
+}
+
+export interface ShadowsHighlightsData {
+  shadowsAmount: number; // 0-100
+  shadowsTone: number; // 0-100
+  shadowsRadius: number; // 1-2500
+  highlightsAmount: number; // 0-100
+  highlightsTone: number; // 0-100
+  highlightsRadius: number; // 1-2500
+  colorCorrection: number; // -100..100
+  midtoneContrast: number; // -100..100
+}
+
+export interface HdrToningData {
+  edgeGlowRadius: number; // 1-500
+  edgeGlowStrength: number; // 0-100
+  gamma: number; // 0.1-10
+  exposure: number; // -10..10
+}
 
 /**
  * Non-destructive adjustment applied to **everything below it in its parent** — its position in the
@@ -209,30 +448,44 @@ export interface ColorBalanceRange { cyanRed: number; magentaGreen: number; yell
  * **not** honoured and `LayersPanel` hides the control: Photoshop blends an adjustment's result
  * against its unadjusted backdrop, and the wrapper contains the very stack that backdrop would come
  * from.
+ *
+ * One flat interface carries every kind's fields simultaneously (not a discriminated union) —
+ * deliberate, matching how the original three kinds were already shaped; a new kind is "add fields +
+ * a default + a kind value", never a reshape.
  */
 export interface AdjustmentLayerData {
   kind: AdjustmentKind;
-  /** -100..100 */
+  /** -150..150 */
   brightness: number;
-  /** -100..100 */
+  /** -50..100 */
   contrast: number;
-  /** -180..180 degrees */
+  /** Brightness/Contrast only. Legacy is the original flat linear op this app already had; the
+   *  non-legacy path is a genuinely different, non-linear algorithm (screen/multiply-style
+   *  brightness scale + an S-curve contrast pivot) — a real qualitative match for what
+   *  distinguishes Photoshop's Legacy checkbox from its modern default, not a re-labeled copy of
+   *  the same math. See `legacyBrightnessContrastFilter`/`modernBrightnessContrastFilter`. */
+  useLegacy: boolean;
+  /** -180..180 degrees. Hue/Saturation's Master band. */
   hue: number;
-  /** -100..100 */
   saturation: number;
-  /** -100..100 */
   lightness: number;
-  levels: {
-    inBlack: number; // 0-255
-    inWhite: number; // 0-255
-    gamma: number; // 0.1-9.99
-    outBlack: number; // 0-255
-    outWhite: number; // 0-255
-  };
+  hueSaturationChannel: 'master' | HueBand;
+  hueSaturationByChannel: Record<HueBand, HueSatBandValues>;
+  /** Converts to monochrome, then tints with `colorizeHue`/`colorizeSaturation` at flat
+   *  `colorizeLightness` — Photoshop's Hue/Saturation "Colorize" checkbox. */
+  colorize: boolean;
+  colorizeHue: number; // 0-360
+  colorizeSaturation: number; // 0-100
+  colorizeLightness: number; // -100..100
+  levels: LevelsData;
+  levelsChannel: 'rgb' | 'r' | 'g' | 'b';
+  levelsByChannel: { r: LevelsData; g: LevelsData; b: LevelsData };
   /** Control points, sorted by `input`, identity (no-op) by default. Edited by CurvesEditor.tsx;
    *  `adjustments.ts`'s `curveLut` is the single source of truth for what they render to, shared by
    *  the live filter and the editor's own on-screen preview so the two can't drift. */
-  curves: { rgb: CurvePoint[] };
+  curves: { rgb: CurvePoint[]; r: CurvePoint[]; g: CurvePoint[]; b: CurvePoint[]; luminosity: CurvePoint[] };
+  curveChannel: 'rgb' | 'r' | 'g' | 'b' | 'luminosity';
+  curvePreset: 'default' | 'linear' | 'strong-contrast' | 'darker' | 'lighter';
   /** ag-psd's ExposureAdjustment field names, reused verbatim so exportPsd needs no renaming. */
   exposure: number; // -20..20 stops
   exposureOffset: number; // -0.5..0.5
@@ -251,7 +504,14 @@ export interface AdjustmentLayerData {
   threshold: number;
   /** Deliberately 2-stop only, matching this app's one Gradient tool (also foreground->background
    *  only) — there's no multi-stop gradient editor anywhere in this codebase yet. */
-  gradientMap: { from: string; to: string };
+  gradientMap: { from: string; to: string; dither: boolean; reverse: boolean };
+  blackWhite: BlackWhiteData;
+  photoFilter: PhotoFilterData;
+  channelMixer: ChannelMixerData;
+  colorLookup: ColorLookupData;
+  selectiveColor: SelectiveColorData;
+  shadowsHighlights: ShadowsHighlightsData;
+  hdrToning: HdrToningData;
 }
 
 export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-contrast'): AdjustmentLayerData {
@@ -259,11 +519,28 @@ export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-c
     kind,
     brightness: 0,
     contrast: 0,
+    useLegacy: true,
     hue: 0,
     saturation: 0,
     lightness: 0,
-    levels: { inBlack: 0, inWhite: 255, gamma: 1, outBlack: 0, outWhite: 255 },
-    curves: { rgb: [{ input: 0, output: 0 }, { input: 255, output: 255 }] },
+    hueSaturationChannel: 'master',
+    hueSaturationByChannel: defaultHueSatByChannel(),
+    colorize: false,
+    colorizeHue: 0,
+    colorizeSaturation: 25,
+    colorizeLightness: 0,
+    levels: defaultLevels(),
+    levelsChannel: 'rgb',
+    levelsByChannel: { r: defaultLevels(), g: defaultLevels(), b: defaultLevels() },
+    curves: {
+      rgb: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      r: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      g: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      b: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+      luminosity: [{ input: 0, output: 0 }, { input: 255, output: 255 }],
+    },
+    curveChannel: 'rgb',
+    curvePreset: 'default',
     exposure: 0,
     exposureOffset: 0,
     exposureGamma: 1,
@@ -276,7 +553,19 @@ export function createDefaultAdjustmentData(kind: AdjustmentKind = 'brightness-c
     },
     posterizeLevels: 4,
     threshold: 128,
-    gradientMap: { from: '#000000', to: '#ffffff' },
+    gradientMap: { from: '#000000', to: '#ffffff', dither: false, reverse: false },
+    blackWhite: { reds: 40, yellows: 60, greens: 40, cyans: 60, blues: 20, magentas: 80, tint: false, tintColor: '#7a5230' },
+    photoFilter: { preset: 'warming-85', color: PHOTO_FILTER_PRESET_COLOR['warming-85'], density: 25, preserveLuminosity: true },
+    channelMixer: {
+      monochrome: false,
+      red: { red: 100, green: 0, blue: 0, constant: 0 },
+      green: { red: 0, green: 100, blue: 0, constant: 0 },
+      blue: { red: 0, green: 0, blue: 100, constant: 0 },
+    },
+    colorLookup: { lutId: null },
+    selectiveColor: { method: 'relative', colors: defaultSelectiveColors() },
+    shadowsHighlights: { shadowsAmount: 35, shadowsTone: 50, shadowsRadius: 30, highlightsAmount: 0, highlightsTone: 50, highlightsRadius: 30, colorCorrection: 20, midtoneContrast: 0 },
+    hdrToning: { edgeGlowRadius: 30, edgeGlowStrength: 50, gamma: 1, exposure: 0 },
   };
 }
 
@@ -325,9 +614,212 @@ export type PathFillRule = 'nonzero' | 'evenodd';
 export interface PathLayerData {
   anchors: PathAnchor[];
   closed: boolean;
-  fill: { enabled: boolean; color: string };
+  /** `blendMode`/`opacity`/`preserveTransparency` are read by `fillPathOntoCanvas` at bake time —
+   *  set by the Fill Path dialog, not exposed anywhere else (a live path's own on-canvas fill, when
+   *  `enabled`, is always fully opaque/normal-blend; only the one-shot bake honours them). */
+  fill: { enabled: boolean; color: string; blendMode?: BlendMode; opacity?: number; preserveTransparency?: boolean };
   stroke: { enabled: boolean; color: string; width: number };
   fillRule: PathFillRule;
+}
+
+/** Shadow/Glow's own blend mode + opacity + color, shared shape for all 4 (Drop Shadow, Inner
+ *  Shadow, Outer Glow, Inner Glow) since they're all "a blurred/offset copy of this layer's own
+ *  silhouette, drawn behind or clipped inside it". */
+export interface ShadowStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  angle: number; // 0-360, degrees
+  useGlobalLight: boolean;
+  distance: number; // 0-999
+  spread: number; // 0-100
+  size: number; // 0-999
+  noise: number; // 0-100
+  /** Drop Shadow only ("Layer Knocks Out Drop Shadow") — Inner Shadow has no equivalent field. */
+  layerKnocksOut?: boolean;
+}
+export interface GlowStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  noise: number; // 0-100
+  technique: 'softer' | 'precise';
+  spread: number; // 0-100
+  size: number; // 1-999
+  range: number; // 1-100
+  jitter: number; // 0-100
+  /** Inner Glow only. */
+  source?: 'center' | 'edge';
+}
+export interface BevelEmbossData {
+  enabled: boolean;
+  style: 'outer-bevel' | 'inner-bevel' | 'emboss' | 'pillow-emboss' | 'stroke-emboss';
+  technique: 'smooth' | 'chisel-hard' | 'chisel-soft';
+  depth: number; // 1-1000
+  direction: 'up' | 'down';
+  size: number; // 0-999
+  soften: number; // 0-16
+  angle: number; // 0-360
+  altitude: number; // 0-90
+  highlightMode: BlendMode;
+  highlightColor: string;
+  highlightOpacity: number; // 0-100
+  shadowMode: BlendMode;
+  shadowColor: string;
+  shadowOpacity: number; // 0-100
+  /** Left-nav sub-items under Bevel & Emboss. Real toggles (see BlendingOptionsDialog), not yet
+   *  wired to their own contour-curve/texture-pattern controls beyond the toggle itself — Contour
+   *  defaults to the same linear ramp Gradient Map already uses when this app has no dedicated
+   *  contour-curve editor; Texture has no pattern-asset infra, same honest-gap status as Pattern
+   *  Overlay below. */
+  contourEnabled: boolean;
+  textureEnabled: boolean;
+}
+export interface SatinStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+  angle: number; // 0-360
+  distance: number; // 0-999
+  size: number; // 0-999
+  invert: boolean;
+}
+/** Color Overlay's real shape — ag-psd calls this "solid fill". */
+export interface SolidFillStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  color: string;
+  opacity: number; // 0-100
+}
+export interface GradientOverlayStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  /** Deliberately 2-stop only, matching every other gradient in this app (Gradient tool, Gradient
+   *  Map) — there's no multi-stop gradient editor anywhere in this codebase. */
+  gradient: { from: string; to: string };
+  style: 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond';
+  alignWithLayer: boolean;
+  angle: number; // 0-360
+  scale: number; // 10-150
+}
+export interface PatternOverlayStyleData {
+  enabled: boolean;
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  /** No pattern-asset library exists anywhere in this app — always null, the picker shows an
+   *  honest "No patterns available" state (matches Color Lookup's own scope decision). */
+  patternId: string | null;
+  scale: number; // 1-1000
+  linkWithLayer: boolean;
+}
+export interface StrokeStyleData {
+  enabled: boolean;
+  size: number; // 1-999
+  position: 'outside' | 'inside' | 'center';
+  blendMode: BlendMode;
+  opacity: number; // 0-100
+  fillType: 'color' | 'gradient' | 'pattern';
+  color: string;
+  gradient: { from: string; to: string };
+}
+
+/**
+ * A layer's full Layer Style / Blending Options — `StudioLayer.effects` itself is optional (absent
+ * = no dialog ever opened for this layer, matching the existing optional-field convention for
+ * `mask`/`clipped`/`collapsed`), but once present every sub-style always exists with its own
+ * `enabled` flag, rather than each sub-style itself being optional. This is a deliberate departure
+ * from this file's usual "optional nested field" shape: Photoshop's own Layer Style dialog always
+ * has settings for every effect type ready to go the instant you check its box, and modeling that
+ * the same way here means the dialog never needs "construct defaults on first open" logic — opening
+ * any style pane just reads what's already there.
+ */
+export interface LayerEffects {
+  advancedBlending: {
+    fillOpacity: number; // 0-100
+    channels: { r: boolean; g: boolean; b: boolean };
+    knockout: 'none' | 'shallow' | 'deep';
+    blendInteriorEffectsAsGroup: boolean;
+    blendClippedLayersAsGroup: boolean;
+    transparencyShapesLayer: boolean;
+    layerMaskHidesEffects: boolean;
+    vectorMaskHidesEffects: boolean;
+  };
+  /**
+   * Blend If's two split-point ranges, This Layer and Underlying Layer, each black/white 0-255.
+   * "This Layer" gates purely on this layer's own rendered luminance/alpha — real everywhere,
+   * including the live Konva canvas (a per-node filter has everything it needs). "Underlying Layer"
+   * needs the composited backdrop, which a Konva per-node filter fundamentally cannot see without
+   * much deeper rendering-pipeline surgery than this feature warrants — real in flattened export
+   * (`exportImage.ts`, which already composites sequentially with the backdrop naturally at hand)
+   * but not live-previewed on screen; the Blending Options dialog says so next to the control.
+   */
+  blendIf: {
+    thisLayer: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
+    underlying: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
+  };
+  dropShadow: ShadowStyleData;
+  innerShadow: ShadowStyleData;
+  outerGlow: GlowStyleData;
+  innerGlow: GlowStyleData;
+  bevelEmboss: BevelEmbossData;
+  satin: SatinStyleData;
+  colorOverlay: SolidFillStyleData;
+  gradientOverlay: GradientOverlayStyleData;
+  patternOverlay: PatternOverlayStyleData;
+  stroke: StrokeStyleData;
+}
+
+export function createDefaultLayerEffects(): LayerEffects {
+  return {
+    advancedBlending: {
+      fillOpacity: 100,
+      channels: { r: true, g: true, b: true },
+      knockout: 'none',
+      blendInteriorEffectsAsGroup: false,
+      blendClippedLayersAsGroup: true,
+      transparencyShapesLayer: true,
+      layerMaskHidesEffects: false,
+      vectorMaskHidesEffects: false,
+    },
+    blendIf: {
+      thisLayer: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
+      underlying: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
+    },
+    dropShadow: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 75, angle: 120, useGlobalLight: true, distance: 5, spread: 0, size: 5, noise: 0, layerKnocksOut: false },
+    innerShadow: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 75, angle: 120, useGlobalLight: true, distance: 5, spread: 0, size: 5, noise: 0 },
+    outerGlow: { enabled: false, blendMode: 'screen', color: '#ffff99', opacity: 75, noise: 0, technique: 'softer', spread: 0, size: 5, range: 50, jitter: 0 },
+    innerGlow: { enabled: false, blendMode: 'screen', color: '#ffff99', opacity: 75, noise: 0, technique: 'softer', spread: 0, size: 5, range: 50, jitter: 0, source: 'edge' },
+    bevelEmboss: { enabled: false, style: 'inner-bevel', technique: 'smooth', depth: 100, direction: 'up', size: 5, soften: 0, angle: 120, altitude: 30, highlightMode: 'screen', highlightColor: '#ffffff', highlightOpacity: 75, shadowMode: 'multiply', shadowColor: '#000000', shadowOpacity: 75, contourEnabled: false, textureEnabled: false },
+    satin: { enabled: false, blendMode: 'multiply', color: '#000000', opacity: 50, angle: 19, distance: 11, size: 14, invert: true },
+    colorOverlay: { enabled: false, blendMode: 'normal', color: '#ff0000', opacity: 100 },
+    gradientOverlay: { enabled: false, blendMode: 'normal', opacity: 100, gradient: { from: '#000000', to: '#ffffff' }, style: 'linear', alignWithLayer: true, angle: 90, scale: 100 },
+    patternOverlay: { enabled: false, blendMode: 'normal', opacity: 100, patternId: null, scale: 100, linkWithLayer: true },
+    stroke: { enabled: false, size: 3, position: 'outside', blendMode: 'normal', opacity: 100, fillType: 'color', color: '#ff0000', gradient: { from: '#000000', to: '#ffffff' } },
+  };
+}
+
+/** The 10 real (non-`advancedBlending`/`blendIf`) style keys, with display labels — shared by the
+ *  Blending Options dialog's left nav and the Layers panel's expandable fx sub-rows, so the two
+ *  never drift to different names for the same style. */
+export type LayerStyleKey = 'dropShadow' | 'innerShadow' | 'outerGlow' | 'innerGlow' | 'bevelEmboss' | 'satin' | 'colorOverlay' | 'gradientOverlay' | 'patternOverlay' | 'stroke';
+export const LAYER_STYLE_KEYS: LayerStyleKey[] = ['dropShadow', 'innerShadow', 'outerGlow', 'innerGlow', 'bevelEmboss', 'satin', 'colorOverlay', 'gradientOverlay', 'patternOverlay', 'stroke'];
+export const LAYER_STYLE_LABEL: Record<LayerStyleKey, string> = {
+  dropShadow: 'Drop Shadow', innerShadow: 'Inner Shadow', outerGlow: 'Outer Glow', innerGlow: 'Inner Glow',
+  bevelEmboss: 'Bevel & Emboss', satin: 'Satin', colorOverlay: 'Color Overlay', gradientOverlay: 'Gradient Overlay',
+  patternOverlay: 'Pattern Overlay', stroke: 'Stroke',
+};
+
+/** True if any style is actually switched on — gates the Layers panel's fx badge, which should only
+ *  appear once something would actually render, not just because the dialog was opened once. */
+export function hasAnyEnabledStyle(effects: LayerEffects): boolean {
+  return effects.dropShadow.enabled || effects.innerShadow.enabled || effects.outerGlow.enabled
+    || effects.innerGlow.enabled || effects.bevelEmboss.enabled || effects.satin.enabled
+    || effects.colorOverlay.enabled || effects.gradientOverlay.enabled || effects.patternOverlay.enabled
+    || effects.stroke.enabled;
 }
 
 export interface StudioLayer {
@@ -340,6 +832,10 @@ export interface StudioLayer {
   blendMode: BlendMode;
   /** Background layers can't be deleted, reordered below, or have opacity/blend changed. */
   isBackground?: boolean;
+  /** Layer Style / Blending Options — absent means the dialog was never used for this layer. Any
+   *  layer type may carry one (path layers included — unlike masks, nothing here needs a raster
+   *  target to make sense). */
+  effects?: LayerEffects;
   /**
    * Present iff type === 'group'. Bottom-to-top, same convention as the root array — `layerTree.ts`
    * owns that invariant, and nothing outside it may walk or edit this directly.
@@ -429,7 +925,11 @@ export function createPathLayer(anchors: PathAnchor[], closed: boolean, style: {
       anchors,
       closed,
       fill: { enabled: false, color: '#000000' },
-      stroke: { enabled: true, color: style.strokeColor, width: style.strokeWidth },
+      // Disabled by default — a new path is a working guide, not committed color. `color`/`width`
+      // are just the starting values Stroke Path's dialog seeds itself from; nothing renders until
+      // the user explicitly enables fill or runs Stroke Path/Fill Path. Was `enabled: true`, which
+      // baked a visible stroke onto every path the instant it was drawn — a real, user-facing bug.
+      stroke: { enabled: false, color: style.strokeColor, width: style.strokeWidth },
       fillRule: 'nonzero',
     },
   };

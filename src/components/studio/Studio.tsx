@@ -55,7 +55,10 @@ import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
+import { BlendingOptionsDialog } from './BlendingOptionsDialog';
 import { FilterDialog } from './filters/FilterDialog';
+import { FillPathDialog, type FillPathResult } from './FillPathDialog';
+import { StrokePathDialog, type StrokePathResult } from './StrokePathDialog';
 import { FILTER_DIALOG_CONFIGS, type FilterConfig } from './filters/filterDialogConfigs';
 import { MagicErasePanel } from './MagicErasePanel';
 import { MagicEraseLoadingOverlay } from './MagicEraseLoadingOverlay';
@@ -493,6 +496,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeFilterDialog, setActiveFilterDialog] = useState<{
     config: FilterConfig; canvas: HTMLCanvasElement; before: ImageData; layerId: string;
   } | null>(null);
+  const [fillPathDialogOpen, setFillPathDialogOpen] = useState(false);
+  const [strokePathDialogOpen, setStrokePathDialogOpen] = useState(false);
 
   useEffect(() => {
     function onFullscreenChange() { setIsFullscreen(document.fullscreenElement === studioRootRef.current); }
@@ -1250,17 +1255,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     }
   }
 
-  /**
-   * `LayersPanel`'s own "Add adjustment layer" button passes this straight to `onClick`
-   * (`onClick={onAddAdjustment}`), so React hands it the click event as a real runtime argument —
-   * a default parameter here would never apply (defaults only kick in for `undefined`, not "some
-   * other value was passed"). Keeping this a true zero-arg function and giving the
-   * Image-menu-with-a-kind path its own separate wrapper avoids that exact footgun.
-   */
-  function handleAddAdjustmentLayer() {
-    handleAddAdjustmentLayerOfKind('brightness-contrast');
-  }
-
+  /** `LayersPanel`'s "Add adjustment layer" button opens `AdjustmentPickerPopover` (an icon-grid
+   *  picker) rather than defaulting straight to Brightness/Contrast — this is the one place that
+   *  actually creates the layer, called with whichever kind the user picked (or from the Image menu
+   *  the same way, `Studio.tsx`'s menu actions call this directly with a fixed kind). */
   function handleAddAdjustmentLayerOfKind(kind: AdjustmentKind) {
     const layer = createAdjustmentLayer(kind);
     updateLayers(current => [...current, layer], 'Add Adjustment Layer');
@@ -1682,6 +1680,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, blendMode })), 'Change Blend Mode');
   }
 
+  const [blendingOptionsLayerId, setBlendingOptionsLayerId] = useState<string | null>(null);
+  const [blendingOptionsSection, setBlendingOptionsSection] = useState<Parameters<typeof BlendingOptionsDialog>[0]['initialSection']>(undefined);
+
+  function openBlendingOptions(id: string, section?: typeof blendingOptionsSection) {
+    setBlendingOptionsLayerId(id);
+    setBlendingOptionsSection(section);
+  }
+
+  /** Live preview (commit=false, no history entry, fired on every field change while the dialog's
+   *  own Preview checkbox is on) vs the real committed change (commit=true, OK button only). */
+  function handleUpdateLayerStyle(id: string, patch: { blendMode?: StudioLayer['blendMode']; opacity?: number; effects: NonNullable<StudioLayer['effects']> }, commit: boolean) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, ...patch })), commit ? 'Change Blending Options' : undefined);
+  }
+
   /** The style bits StudioCanvas's drag-box preview needs — same resolved entry (override precedence
    *  already applied by parseTyperScript) that handleAddTextLayer below reads at actual placement
    *  time, so the preview can never show something different from what committing will produce. */
@@ -1921,9 +1933,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handlePaintStrokeEnd(target.id, before);
   }
 
-  const handleStrokeActivePath = () => bakeActivePath(strokePathOntoCanvas);
-  const handleFillActivePath = () => bakeActivePath(fillPathOntoCanvas);
   const canBakePath = activeLayer?.type === 'path' && !!topmostRasterLayer();
+  // Both used to bake immediately with whatever the current tool color/settings happened to be —
+  // these now just open a dialog asking first, matching Photoshop's own Stroke/Fill Path prompts.
+  // The actual bake (confirmFillPath/confirmStrokePath, below) only runs once the dialog's own OK
+  // is clicked; Cancel/close leaves the canvas untouched.
+  const handleStrokeActivePath = () => { if (canBakePath) setStrokePathDialogOpen(true); };
+  const handleFillActivePath = () => { if (canBakePath) setFillPathDialogOpen(true); };
+
+  function confirmFillPath(result: FillPathResult) {
+    bakeActivePath((ctx, path, selection) => {
+      // The dialog's resolved fill settings ride along on a throwaway copy of the path's `fill`
+      // data that fillPathOntoCanvas reads — deliberately not persisted onto the layer itself via
+      // handleUpdatePathLayer, since these are one-shot bake parameters, not path styling that
+      // should stick around for the next time this path is filled or shown in Direct Selection.
+      fillPathOntoCanvas(ctx, { ...path, fill: { ...path.fill, enabled: true, ...result } }, selection);
+    });
+  }
+
+  function confirmStrokePath(result: StrokePathResult) {
+    bakeActivePath((ctx, path, selection) => {
+      strokePathOntoCanvas(ctx, path, selection, paintSettings, result.tool, result.simulatePressure);
+    });
+  }
 
   /** Image > Apply Filter's bake target: the active layer if it's already raster, otherwise the
    *  same "topmost existing raster layer" fallback Stroke/Fill Path and the paint-tool
@@ -2144,7 +2176,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
       onAddBlank={handleAddBlankLayer}
-      onAddAdjustment={handleAddAdjustmentLayer}
+      onAddAdjustmentOfKind={handleAddAdjustmentLayerOfKind}
       onDuplicate={handleDuplicateLayer}
       onDelete={handleDeleteLayer}
       onDeleteMany={handleDeleteLayers}
@@ -2163,6 +2195,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       expandedLayerId={expandedLayerId}
       onToggleExpanded={(id) => setExpandedLayerId(current => (current === id ? null : id))}
       onConvertTextMode={handleConvertTextMode}
+      onOpenBlendingOptions={(id, section) => openBlendingOptions(id, section as typeof blendingOptionsSection)}
+      onToggleLayerStyle={(id, styleKey, enabled) => {
+        const target = findLayer(layers, id);
+        const currentEffects = target?.effects;
+        if (!currentEffects) return;
+        const key = styleKey as keyof typeof currentEffects;
+        handleUpdateLayerStyle(id, { effects: { ...currentEffects, [key]: { ...currentEffects[key], enabled } } }, true);
+      }}
       hideTitle
     />
   );
@@ -2180,7 +2220,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   ) : null;
 
   const adjustmentPanel = activeLayer?.type === 'adjustment' ? (
-    <AdjustmentPanel layer={activeLayer} onUpdate={handleUpdateAdjustmentLayer} hideTitle />
+    <AdjustmentPanel
+      layer={activeLayer}
+      onUpdate={handleUpdateAdjustmentLayer}
+      getHistogramSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null}
+      onToggleVisible={() => handleToggleVisible(activeLayer.id)}
+      hideTitle
+    />
   ) : null;
 
   const brushesPanel = (
@@ -2881,6 +2927,31 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onApply={handleFilterDialogApply}
         />
       )}
+      <FillPathDialog
+        open={fillPathDialogOpen}
+        onClose={() => setFillPathDialogOpen(false)}
+        onConfirm={confirmFillPath}
+        foregroundColor={paintSettings.color}
+        backgroundColor={paintSettings.bgColor}
+      />
+      <StrokePathDialog
+        open={strokePathDialogOpen}
+        onClose={() => setStrokePathDialogOpen(false)}
+        onConfirm={confirmStrokePath}
+      />
+      {blendingOptionsLayerId && (() => {
+        const target = findLayer(layers, blendingOptionsLayerId);
+        if (!target) return null;
+        return (
+          <BlendingOptionsDialog
+            open
+            layer={target}
+            initialSection={blendingOptionsSection}
+            onClose={() => setBlendingOptionsLayerId(null)}
+            onUpdate={(patch, commit) => handleUpdateLayerStyle(target.id, patch, commit)}
+          />
+        );
+      })()}
     </div>
   );
 }

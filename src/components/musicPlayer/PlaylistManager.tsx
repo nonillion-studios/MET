@@ -37,7 +37,10 @@ export function PlaylistManager({
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   function handleExport(playlistId: string) {
-    const tracks = tracksByPlaylist[playlistId] ?? [];
+    // Spotify tracks have no local file to back up/restore this way (a Spotify link is trivially
+    // re-added by pasting it again) — export local tracks only, matching this backup's existing
+    // metadata-only scope.
+    const tracks = (tracksByPlaylist[playlistId] ?? []).filter((t): t is Track & { fileName: string } => t.kind === 'local' && !!t.fileName);
     const payload: ExportedTrack[] = tracks.map((t) => ({ title: t.title, artist: t.artist, fileName: t.fileName }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -151,7 +154,7 @@ export function PlaylistManager({
                       key={t.id}
                       draggable
                       onDragStart={(e) => e.dataTransfer.setData('text/plain', `${t.id}::${pl.id}`)}
-                      className={`px-1.5 py-1 rounded text-micro truncate cursor-grab ${t.objectUrl ? 'text-ink' : 'italic text-ink-faint'}`}
+                      className={`px-1.5 py-1 rounded text-micro truncate cursor-grab ${t.kind === 'spotify' || t.objectUrl ? 'text-ink' : 'italic text-ink-faint'}`}
                       title={t.title}
                     >
                       {t.title}

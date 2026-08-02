@@ -1,7 +1,7 @@
 import { clipToSelection, magicWandMask, type Selection } from './selection';
 import { getBrushTip, type BrushShape } from './brushTip';
-import { traceAnchors } from '../pathGeometry';
-import type { PathLayerData } from '../studioTypes';
+import { traceAnchors, flattenPathToPolygon } from '../pathGeometry';
+import { compositeOperationFor, type PathLayerData } from '../studioTypes';
 import type { ContentAwareMode } from './contentAwareAlgorithms';
 import type { SampleMode } from '../../../lib/sampleComposite';
 
@@ -559,20 +559,51 @@ export function strokePenPath(
  * style's `enabled` flag — the menu action itself is the intent to stroke/fill, matching how
  * Photoshop's Stroke Path dialog bakes a stroke even for a path with no live stroke appearance.
  */
-export function strokePathOntoCanvas(ctx: CanvasRenderingContext2D, path: PathLayerData, selection: Selection) {
-  clipToSelection(ctx, selection);
-  ctx.beginPath();
-  traceAnchors(ctx, path.anchors, path.closed);
-  ctx.strokeStyle = path.stroke.color;
-  ctx.lineWidth = path.stroke.width;
-  ctx.stroke();
-  ctx.restore();
+/**
+ * Stroke Path bakes real brush dynamics along the path's actual bezier curve — sampling it via the
+ * same `flattenPathToPolygon` Make-Selection-from-Path already uses, then replaying each sampled
+ * segment through `strokeSegment`, the exact per-segment stamp function live Brush/Pencil/Eraser
+ * strokes already call — not a flat 2D-context `ctx.stroke()` outline. `simulatePressure` (the
+ * dialog's own checkbox) ramps a synthetic 0->1->0 pressure across the stroke's length, tapering
+ * both ends — the one honest way to "simulate pressure" on a static path that has no real per-point
+ * pressure data of its own, and it genuinely drives `strokeSegment`'s existing pressure-size/
+ * pressure-opacity behavior rather than being decorative.
+ */
+export function strokePathOntoCanvas(
+  ctx: CanvasRenderingContext2D,
+  path: PathLayerData,
+  selection: Selection,
+  settings: PaintSettings,
+  tool: 'brush' | 'pencil' | 'eraser',
+  simulatePressure = false,
+) {
+  const points = flattenPathToPolygon(path, 24);
+  if (points.length === 0) return;
+  if (path.closed) points.push(points[0]);
+  const rampCount = Math.max(1, Math.floor(points.length / 6));
+  for (let i = 1; i < points.length; i++) {
+    const pressure = simulatePressure
+      ? Math.max(0.05, Math.min(1, i / rampCount, (points.length - i) / rampCount))
+      : 1;
+    strokeSegment(ctx, points[i - 1].x, points[i - 1].y, points[i].x, points[i].y, settings, tool, selection, pressure);
+  }
 }
 
+/** Fill Path's dialog resolves a fill type + blend mode + opacity + Preserve Transparency into
+ *  concrete values written onto `path.fill` before this runs (see Studio.tsx's `confirmFillPath`) —
+ *  this function just applies whatever's there, same "the caller already resolved intent" contract
+ *  `strokePathOntoCanvas`'s own doc comment above describes. */
 export function fillPathOntoCanvas(ctx: CanvasRenderingContext2D, path: PathLayerData, selection: Selection) {
   clipToSelection(ctx, selection);
   ctx.beginPath();
   traceAnchors(ctx, path.anchors, path.closed);
+  ctx.globalAlpha = path.fill.opacity ?? 1;
+  // Preserve Transparency locks the fill to pixels the canvas already has color on — expressed as
+  // 'source-atop' instead of the chosen blend mode, since "only paint where there's already paint"
+  // and "blend against the backdrop" are two different, mutually exclusive intents.
+  ctx.globalCompositeOperation = path.fill.preserveTransparency
+    ? 'source-atop'
+    : compositeOperationFor(path.fill.blendMode ?? 'normal');
   ctx.fillStyle = path.fill.color;
   ctx.fill(path.fillRule === 'evenodd' ? 'evenodd' : 'nonzero');
   ctx.restore();

@@ -1,4 +1,4 @@
-import { BLEND_TO_COMPOSITE, type StudioLayer } from '../components/studio/studioTypes';
+import { compositeOperationFor, type StudioLayer } from '../components/studio/studioTypes';
 import {
   partitionAdjustments, groupClipRuns, flattenTree, findLayer,
   type RenderNode, type ClipRun,
@@ -79,7 +79,7 @@ function compositeLeafSync(ctx: CanvasRenderingContext2D, layer: StudioLayer, sr
 
     ctx.save();
     ctx.globalAlpha = layer.opacity;
-    ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[layer.blendMode];
+    ctx.globalCompositeOperation = compositeOperationFor(layer.blendMode);
     ctx.drawImage(scratch, 0, 0);
     ctx.restore();
     return;
@@ -87,7 +87,7 @@ function compositeLeafSync(ctx: CanvasRenderingContext2D, layer: StudioLayer, sr
 
   ctx.save();
   ctx.globalAlpha = layer.opacity;
-  ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[layer.blendMode];
+  ctx.globalCompositeOperation = compositeOperationFor(layer.blendMode);
   drawLeafContentSync(ctx, layer, src);
   ctx.restore();
 }
@@ -109,7 +109,7 @@ function compositeClipRunSync(ctx: CanvasRenderingContext2D, run: ClipRun<Studio
 
   ctx.save();
   ctx.globalAlpha = base.opacity;
-  ctx.globalCompositeOperation = BLEND_TO_COMPOSITE[base.blendMode];
+  ctx.globalCompositeOperation = compositeOperationFor(base.blendMode);
   ctx.drawImage(scratch, 0, 0);
   ctx.restore();
 }

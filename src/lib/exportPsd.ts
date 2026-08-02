@@ -1,5 +1,5 @@
-import type { Psd, Layer as PsdLayer, LayerEffectGradientOverlay, TextStyleRun } from 'ag-psd';
-import type { AdjustmentLayerData, TextGradient, TextLayerData } from '../components/studio/studioTypes';
+import type { Psd, Layer as PsdLayer, LayerEffectGradientOverlay, LayerEffectsInfo, TextStyleRun } from 'ag-psd';
+import { hasAnyEnabledStyle, type AdjustmentLayerData, type BlendMode, type LayerEffects, type TextGradient, type TextLayerData } from '../components/studio/studioTypes';
 import { normalizeRuns, resolveRunStyle } from '../components/studio/textRuns';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
@@ -165,12 +165,173 @@ function psdAdjustment(data: AdjustmentLayerData): PsdLayer['adjustment'] {
       return {
         type: 'gradient map',
         gradientType: 'solid',
+        dither: data.gradientMap.dither,
+        reverse: data.gradientMap.reverse,
         colorStops: [
           { color: hexToRgb(data.gradientMap.from), location: 0, midpoint: 0.5 },
           { color: hexToRgb(data.gradientMap.to), location: 1, midpoint: 0.5 },
         ],
       };
+    case 'black-white':
+      return {
+        type: 'black & white',
+        reds: data.blackWhite.reds, yellows: data.blackWhite.yellows, greens: data.blackWhite.greens,
+        cyans: data.blackWhite.cyans, blues: data.blackWhite.blues, magentas: data.blackWhite.magentas,
+        useTint: data.blackWhite.tint, tintColor: hexToRgb(data.blackWhite.tintColor),
+      };
+    case 'photo-filter':
+      return {
+        type: 'photo filter',
+        color: hexToRgb(data.photoFilter.color),
+        density: data.photoFilter.density,
+        preserveLuminosity: data.photoFilter.preserveLuminosity,
+      };
+    case 'channel-mixer':
+      return {
+        type: 'channel mixer',
+        monochrome: data.channelMixer.monochrome,
+        red: data.channelMixer.red, green: data.channelMixer.green, blue: data.channelMixer.blue,
+      };
+    case 'color-lookup':
+      // No .cube file infra exists in this app (see ColorLookupData's own doc comment) — the built-
+      // in grade is baked into pixels by the live filter already; the PSD-native adjustment just
+      // records which one was selected as a named 3dlut entry, editable-in-name only (Photoshop has
+      // no matching built-in LUT to actually apply from this).
+      return data.colorLookup.lutId
+        ? { type: 'color lookup', lookupType: '3dlut', name: data.colorLookup.lutId }
+        : { type: 'color lookup', lookupType: '3dlut', name: 'none' };
+    case 'invert':
+      return { type: 'invert' };
+    case 'selective-color':
+      return {
+        type: 'selective color',
+        mode: data.selectiveColor.method,
+        reds: cmyk(data.selectiveColor.colors.reds), yellows: cmyk(data.selectiveColor.colors.yellows),
+        greens: cmyk(data.selectiveColor.colors.greens), cyans: cmyk(data.selectiveColor.colors.cyans),
+        blues: cmyk(data.selectiveColor.colors.blues), magentas: cmyk(data.selectiveColor.colors.magentas),
+        whites: cmyk(data.selectiveColor.colors.whites), neutrals: cmyk(data.selectiveColor.colors.neutrals),
+        blacks: cmyk(data.selectiveColor.colors.blacks),
+      };
+    // Shadows/Highlights and HDR Toning have no ag-psd adjustment-layer type — verified against the
+    // installed type defs (AdjustmentLayer's own union has no matching member). Their *visual
+    // result* still exports correctly everywhere else (PNG/JPG/WEBP, the live Konva canvas); only
+    // the PSD-native, re-editable-in-Photoshop adjustment layer is unavailable for these two. Return
+    // undefined rather than fabricate a mapping to the nearest unrelated type.
+    case 'shadows-highlights':
+    case 'hdr-toning':
+      return undefined;
   }
+}
+
+/** `AdjustmentLayerData`'s CmykInk fields are 0-100 already, the same range ag-psd's own CMYK type
+ *  (`{c,m,y,k}`) expects. */
+function cmyk(ink: { cyan: number; magenta: number; yellow: number; black: number }) {
+  return { c: ink.cyan, m: ink.magenta, y: ink.yellow, k: ink.black };
+}
+
+/** Our `BlendMode` ids are kebab-case ('color-burn'); ag-psd's own `BlendMode` union is the same 27
+ *  names space-separated ('color burn') — every one of our ids maps 1:1 by that substitution alone,
+ *  confirmed against the installed `ag-psd/dist/psd.d.ts` union verbatim. */
+function toPsdBlendMode(mode: BlendMode): PsdLayer['blendMode'] {
+  return mode.replace(/-/g, ' ') as PsdLayer['blendMode'];
+}
+
+/**
+ * Maps `StudioLayer.effects` onto ag-psd's real `LayerEffectsInfo` — confirmed present for every
+ * style the Blending Options dialog offers (checked against the installed type defs), following the
+ * exact per-field mapper pattern `buildGradientOverlay` below already proved out for text gradients.
+ * A style whose own `enabled` is false is omitted entirely rather than written-but-disabled, so a
+ * PSD opened in Photoshop shows only the effects actually in use.
+ */
+function psdEffects(effects: LayerEffects): LayerEffectsInfo {
+  const info: LayerEffectsInfo = {};
+  const px = (value: number) => ({ units: 'Pixels' as const, value });
+  // Every effect's opacity/scale field follows the same 0-1 convention `buildGradientOverlay`
+  // already established for text gradients (confirmed working there) — not our own UI's 0-100/
+  // 10-150 ranges.
+  const pct = (value: number) => value / 100;
+
+  if (effects.dropShadow.enabled) {
+    const s = effects.dropShadow;
+    info.dropShadow = [{
+      enabled: true, blendMode: toPsdBlendMode(s.blendMode), color: hexToRgb(s.color), opacity: pct(s.opacity),
+      angle: s.angle, useGlobalLight: s.useGlobalLight, distance: px(s.distance), choke: px(s.spread), size: px(s.size),
+      layerConceals: s.layerKnocksOut,
+    }];
+  }
+  if (effects.innerShadow.enabled) {
+    const s = effects.innerShadow;
+    info.innerShadow = [{
+      enabled: true, blendMode: toPsdBlendMode(s.blendMode), color: hexToRgb(s.color), opacity: pct(s.opacity),
+      angle: s.angle, useGlobalLight: s.useGlobalLight, distance: px(s.distance), choke: px(s.spread), size: px(s.size),
+    }];
+  }
+  if (effects.outerGlow.enabled) {
+    const g = effects.outerGlow;
+    info.outerGlow = {
+      enabled: true, blendMode: toPsdBlendMode(g.blendMode), color: hexToRgb(g.color), opacity: pct(g.opacity),
+      noise: pct(g.noise), range: pct(g.range), jitter: pct(g.jitter), choke: px(g.spread), size: px(g.size),
+    };
+  }
+  if (effects.innerGlow.enabled) {
+    const g = effects.innerGlow;
+    info.innerGlow = {
+      enabled: true, blendMode: toPsdBlendMode(g.blendMode), color: hexToRgb(g.color), opacity: pct(g.opacity),
+      noise: pct(g.noise), range: pct(g.range), jitter: pct(g.jitter), technique: g.technique, source: g.source,
+      choke: px(g.spread), size: px(g.size),
+    };
+  }
+  if (effects.bevelEmboss.enabled) {
+    const b = effects.bevelEmboss;
+    info.bevel = {
+      enabled: true,
+      style: b.style.replace(/-/g, ' ') as import('ag-psd').BevelStyle,
+      technique: b.technique.replace(/-/g, ' ') as import('ag-psd').BevelTechnique,
+      direction: b.direction,
+      size: px(b.size), soften: px(b.soften), strength: pct(b.depth), angle: b.angle, altitude: b.altitude,
+      highlightBlendMode: toPsdBlendMode(b.highlightMode), highlightColor: hexToRgb(b.highlightColor), highlightOpacity: pct(b.highlightOpacity),
+      shadowBlendMode: toPsdBlendMode(b.shadowMode), shadowColor: hexToRgb(b.shadowColor), shadowOpacity: pct(b.shadowOpacity),
+    };
+  }
+  if (effects.satin.enabled) {
+    const s = effects.satin;
+    info.satin = {
+      enabled: true, blendMode: toPsdBlendMode(s.blendMode), color: hexToRgb(s.color), opacity: pct(s.opacity),
+      distance: px(s.distance), size: px(s.size), angle: s.angle, invert: s.invert,
+    };
+  }
+  if (effects.colorOverlay.enabled) {
+    const c = effects.colorOverlay;
+    info.solidFill = [{ enabled: true, blendMode: toPsdBlendMode(c.blendMode), color: hexToRgb(c.color), opacity: pct(c.opacity) }];
+  }
+  if (effects.gradientOverlay.enabled) {
+    const g = effects.gradientOverlay;
+    info.gradientOverlay = [{
+      enabled: true, blendMode: toPsdBlendMode(g.blendMode), opacity: pct(g.opacity), align: g.alignWithLayer,
+      scale: pct(g.scale), angle: g.angle,
+      type: g.style,
+      gradient: {
+        name: 'Blending Options Gradient',
+        type: 'solid',
+        colorStops: [
+          { color: hexToRgb(g.gradient.from), location: 0, midpoint: 0.5 },
+          { color: hexToRgb(g.gradient.to), location: 1, midpoint: 0.5 },
+        ],
+        opacityStops: [{ opacity: 1, location: 0, midpoint: 0.5 }, { opacity: 1, location: 1, midpoint: 0.5 }],
+      },
+    }];
+  }
+  // Pattern Overlay: no pattern-asset infra anywhere in this app (see `PatternOverlayStyleData`'s
+  // own doc comment) — never written, matching the "real vs honestly absent" rule everywhere else
+  // in this codebase rather than emitting a pattern reference ag-psd can't actually resolve.
+  if (effects.stroke.enabled) {
+    const s = effects.stroke;
+    info.stroke = [{
+      enabled: true, position: s.position, fillType: s.fillType, blendMode: toPsdBlendMode(s.blendMode),
+      opacity: pct(s.opacity), size: px(s.size), color: hexToRgb(s.color),
+    }];
+  }
+  return info;
 }
 
 async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height: number): Promise<PsdLayer> {
@@ -178,7 +339,7 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
     name: layer.name,
     opacity: layer.opacity,
     hidden: !layer.visible,
-    blendMode: layer.blendMode,
+    blendMode: toPsdBlendMode(layer.blendMode),
     // PSD's own clipping flag — the layer stays clipped to the one below it when reopened, rather
     // than being flattened into it here.
     clipping: layer.clipped === true,
@@ -274,6 +435,12 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
         content: { type: 'color', color: hexToRgb(p.stroke.color) },
       };
     }
+  }
+
+  // Blending Options — merged with (not overwriting) a text layer's own gradient-overlay-for-
+  // gradient-text effect above, since a text layer can carry both at once.
+  if (layer.effects && hasAnyEnabledStyle(layer.effects)) {
+    base.effects = { ...base.effects, ...psdEffects(layer.effects) };
   }
 
   return base;

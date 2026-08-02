@@ -11,7 +11,7 @@ interface ModalProps {
   title?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   /** When false, hides the close button and ignores backdrop clicks — for modals that must run to completion. */
   dismissible?: boolean;
@@ -21,6 +21,9 @@ const SIZE_CLASSES: Record<NonNullable<ModalProps['size']>, string> = {
   sm: 'max-w-sm',
   md: 'max-w-lg',
   lg: 'max-w-2xl',
+  // Blending Options is the one dialog in this app with a real two-pane (left-nav + right-panel)
+  // layout — every other Modal usage fits comfortably in `lg`.
+  xl: 'max-w-4xl',
 };
 
 export function Modal({ open, onClose, title, children, footer, size = 'md', className, dismissible = true }: ModalProps) {

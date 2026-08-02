@@ -2,8 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Music2, X, ChevronUp, ChevronDown, Play, Pause, SkipBack, SkipForward,
-  Shuffle, Repeat, Repeat1, Volume2, VolumeX, Upload, ListMusic, Trash2,
+  Shuffle, Repeat, Repeat1, Volume2, VolumeX, Upload, ListMusic, Trash2, Link,
 } from 'lucide-react';
+
+/** Lucide has no Spotify brand glyph — a minimal inline approximation of the recognizable three-arc
+ *  mark, just enough to visually distinguish a Spotify row from a local/other one at a glance. */
+function SpotifyGlyph({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+      <circle cx="12" cy="12" r="11" fill="#1DB954" />
+      <path d="M6.5 9.5c3.2-1 7.3-.7 10 .9" stroke="#0a0a0a" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M7 13c2.6-.8 5.9-.6 8.2.8" stroke="#0a0a0a" strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M7.5 16.2c2-.6 4.5-.4 6.3.7" stroke="#0a0a0a" strokeWidth="1" strokeLinecap="round" />
+    </svg>
+  );
+}
 import { useMusicPlayerVisibility } from './MusicPlayerContext';
 import {
   loadMusicPlayerState, saveMusicPlayerState, DEFAULT_PLAYLIST_ID,
@@ -11,21 +24,40 @@ import {
 } from './musicPlayerStore';
 import { PlaylistManager } from './PlaylistManager';
 
-/** A track's real audio data lives only as a `URL.createObjectURL()` reference — session memory
- *  only, never persisted (see musicPlayerStore.ts's doc comment). `objectUrl: null` marks a track
- *  restored from an imported JSON playlist backup whose underlying file isn't available on this
- *  device — shown, but not playable, rather than silently dropped. */
+/** A local track's real audio data lives only as a `URL.createObjectURL()` reference — session
+ *  memory only, never persisted (see musicPlayerStore.ts's doc comment). `objectUrl: null` marks a
+ *  track restored from an imported JSON playlist backup whose underlying file isn't available on
+ *  this device — shown, but not playable, rather than silently dropped.
+ *
+ *  A Spotify track carries no audio data at all — Spotify's embed iframe owns its own playback
+ *  entirely, this app never touches its audio stream (Spotify doesn't allow direct extraction).
+ *  `kind` already existed as a real discriminant before Spotify was added (reserved for a future
+ *  YouTube variant too), so widening it here is additive, not a reshape. */
 export interface Track {
   id: string;
-  kind: 'local';
+  kind: 'local' | 'spotify';
   title: string;
   artist?: string;
   duration?: number;
-  fileName: string;
-  objectUrl: string | null;
+  // local-only
+  fileName?: string;
+  objectUrl?: string | null;
+  // spotify-only
+  spotifyId?: string;
+  spotifyType?: 'track' | 'playlist' | 'album';
 }
 
 const ACCEPTED_TYPES = '.mp3,.mp4,.wav,.ogg,.flac,.m4a,.aac,audio/*';
+
+/** Parses a standard open.spotify.com URL (optionally with query params/a locale path segment
+ *  Spotify sometimes includes, e.g. /intl-en/) into its embeddable type + id. Returns null for
+ *  anything else so the caller can show a clear "not a Spotify link" response instead of silently
+ *  adding a broken track. */
+export function parseSpotifyUrl(url: string): { type: 'track' | 'playlist' | 'album'; id: string } | null {
+  const match = url.match(/open\.spotify\.com\/(?:intl-[a-z]{2}\/)?(track|playlist|album)\/([A-Za-z0-9]+)/);
+  if (!match) return null;
+  return { type: match[1] as 'track' | 'playlist' | 'album', id: match[2] };
+}
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
@@ -60,6 +92,8 @@ export function MusicPlayer() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number } | null>(null);
   const [reorderIndex, setReorderIndex] = useState<number | null>(null);
+  const [spotifyUrlInput, setSpotifyUrlInput] = useState('');
+  const [spotifyUrlError, setSpotifyUrlError] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -204,6 +238,22 @@ export function MusicPlayer() {
     }));
     addTracksToPlaylist(activePlaylistId, newTracks);
     if (!currentTrackId && newTracks.length > 0) setCurrentTrackId(newTracks[0].id);
+  }
+
+  function handleAddSpotifyUrl() {
+    const parsed = parseSpotifyUrl(spotifyUrlInput.trim());
+    if (!parsed) { setSpotifyUrlError(true); return; }
+    const track: Track = {
+      id: `spotify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      kind: 'spotify',
+      title: `Spotify ${parsed.type}`,
+      spotifyId: parsed.id,
+      spotifyType: parsed.type,
+    };
+    addTracksToPlaylist(activePlaylistId, [track]);
+    if (!currentTrackId) playTrack(track.id);
+    setSpotifyUrlInput('');
+    setSpotifyUrlError(false);
   }
 
   function playTrack(id: string) {
@@ -378,72 +428,104 @@ export function MusicPlayer() {
 
       {!persisted.minimized && (
         <div className="p-3 flex flex-col gap-3">
-          <div>
-            <div className="text-ui font-medium text-ink truncate">{title}</div>
-            {currentTrack?.artist && <div className="text-micro text-ink-faint truncate">{currentTrack.artist}</div>}
-            {currentTrack && !currentTrack.objectUrl && (
-              <div className="text-micro text-red-400">File unavailable — re-upload to play</div>
+          <div className="flex gap-3">
+            {/* Cover art: local files get a generic placeholder (real embedded-artwork extraction
+                is out of scope this pass); Spotify tracks show their own art via the embed below,
+                so no placeholder is drawn here for them. */}
+            {currentTrack?.kind !== 'spotify' && (
+              <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 flex items-center justify-center text-ink-faint">
+                <Music2 size={28} />
+              </div>
             )}
-          </div>
-
-          <canvas ref={canvasRef} width={296} height={48} className="w-full h-12 rounded-md bg-ink/5" />
-
-          <div className="flex flex-col gap-1">
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.001}
-              value={duration > 0 ? currentTime / duration : 0}
-              onChange={(e) => seekTo(Number(e.target.value))}
-              className="w-full accent-[var(--color-accent)]"
-            />
-            <div className="flex justify-between text-micro text-ink-faint tabular-nums">
-              <span>{formatTime(currentTime)}</span>
-              <span>{formatTime(duration)}</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-ui font-medium text-ink truncate">{title}</div>
+              {currentTrack?.artist && <div className="text-micro text-ink-faint truncate">{currentTrack.artist}</div>}
+              {currentTrack?.kind === 'local' && !currentTrack.objectUrl && (
+                <div className="text-micro text-red-400">File unavailable — re-upload to play</div>
+              )}
+              {currentTrack?.kind === 'spotify' && (
+                <div className="text-micro text-ink-faint">Spotify tracks advance manually</div>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center justify-center gap-3">
-            <button type="button" aria-label="Shuffle" onClick={() => patchPersisted({ shuffle: !persisted.shuffle })}
-              className={`studio-interactive studio-focusable ${persisted.shuffle ? 'text-accent' : 'text-ink-faint'}`}>
-              <Shuffle size={15} />
-            </button>
-            <button type="button" aria-label="Previous" onClick={handlePrev} className="studio-interactive studio-focusable text-ink">
-              <SkipBack size={17} />
-            </button>
-            <button
-              type="button"
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-              onClick={handlePlayPause}
-              className="studio-interactive studio-focusable w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center"
-            >
-              {isPlaying ? <Pause size={15} /> : <Play size={15} className="ml-0.5" />}
-            </button>
-            <button type="button" aria-label="Next" onClick={handleNext} className="studio-interactive studio-focusable text-ink">
-              <SkipForward size={17} />
-            </button>
-            <button type="button" aria-label={`Repeat: ${persisted.repeat}`} onClick={cycleRepeat}
-              className={`studio-interactive studio-focusable ${persisted.repeat !== 'off' ? 'text-accent' : 'text-ink-faint'}`}>
-              {persisted.repeat === 'one' ? <Repeat1 size={15} /> : <Repeat size={15} />}
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              aria-label={persisted.muted ? 'Unmute' : 'Mute'}
-              onClick={() => patchPersisted({ muted: !persisted.muted })}
-              className="studio-interactive studio-focusable text-ink-faint shrink-0"
-            >
-              {persisted.muted || persisted.volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
-            </button>
-            <input
-              type="range" min={0} max={1} step={0.01} value={persisted.volume}
-              onChange={(e) => patchPersisted({ volume: Number(e.target.value), muted: false })}
-              className="flex-1 accent-[var(--color-accent)]"
+          {currentTrack?.kind === 'spotify' && currentTrack.spotifyId && currentTrack.spotifyType ? (
+            // The embed owns its own transport/volume/artwork entirely — this app's own seek bar,
+            // play/pause, and volume slider only ever drive the <audio> element, which has nothing
+            // loaded while a Spotify track is current (see the objectUrl-gated effects above), so
+            // none of that chrome would do anything meaningful here.
+            <iframe
+              key={currentTrack.id}
+              src={`https://open.spotify.com/embed/${currentTrack.spotifyType}/${currentTrack.spotifyId}`}
+              width="100%"
+              height="152"
+              style={{ border: 0, borderRadius: 12 }}
+              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+              loading="lazy"
+              title={`Spotify ${currentTrack.spotifyType} embed`}
             />
-          </div>
+          ) : (
+            <>
+              <canvas ref={canvasRef} width={296} height={48} className="w-full h-12 rounded-md bg-ink/5" />
+
+              <div className="flex flex-col gap-1">
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.001}
+                  value={duration > 0 ? currentTime / duration : 0}
+                  onChange={(e) => seekTo(Number(e.target.value))}
+                  className="w-full accent-[var(--color-accent)]"
+                />
+                <div className="flex justify-between text-micro text-ink-faint tabular-nums">
+                  <span>{formatTime(currentTime)}</span>
+                  <span>{formatTime(duration)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-center gap-3">
+                <button type="button" aria-label="Shuffle" onClick={() => patchPersisted({ shuffle: !persisted.shuffle })}
+                  className={`studio-interactive studio-focusable ${persisted.shuffle ? 'text-accent' : 'text-ink-faint'}`}>
+                  <Shuffle size={15} />
+                </button>
+                <button type="button" aria-label="Previous" onClick={handlePrev} className="studio-interactive studio-focusable text-ink">
+                  <SkipBack size={17} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  onClick={handlePlayPause}
+                  className="studio-interactive studio-focusable w-8 h-8 rounded-full bg-accent text-white flex items-center justify-center"
+                >
+                  {isPlaying ? <Pause size={15} /> : <Play size={15} className="ml-0.5" />}
+                </button>
+                <button type="button" aria-label="Next" onClick={handleNext} className="studio-interactive studio-focusable text-ink">
+                  <SkipForward size={17} />
+                </button>
+                <button type="button" aria-label={`Repeat: ${persisted.repeat}`} onClick={cycleRepeat}
+                  className={`studio-interactive studio-focusable ${persisted.repeat !== 'off' ? 'text-accent' : 'text-ink-faint'}`}>
+                  {persisted.repeat === 'one' ? <Repeat1 size={15} /> : <Repeat size={15} />}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={persisted.muted ? 'Unmute' : 'Mute'}
+                  onClick={() => patchPersisted({ muted: !persisted.muted })}
+                  className="studio-interactive studio-focusable text-ink-faint shrink-0"
+                >
+                  {persisted.muted || persisted.volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                </button>
+                <input
+                  type="range" min={0} max={1} step={0.01} value={persisted.volume}
+                  onChange={(e) => patchPersisted({ volume: Number(e.target.value), muted: false })}
+                  className="flex-1 accent-[var(--color-accent)]"
+                />
+              </div>
+            </>
+          )}
 
           <div className="border-t border-hairline pt-2">
             <div className="flex items-center justify-between mb-1">
@@ -476,7 +558,12 @@ export function MusicPlayer() {
                   className={`flex items-center gap-2 px-1.5 py-1 rounded-md cursor-pointer text-micro ${t.id === currentTrackId ? 'bg-accent/15 text-accent' : 'text-ink hover:bg-ink/5'}`}
                 >
                   <span className="w-4 text-right tabular-nums text-ink-faint">{i + 1}</span>
-                  <span className={`flex-1 min-w-0 truncate ${!t.objectUrl ? 'italic opacity-60' : ''}`}>{t.title}</span>
+                  {t.kind === 'spotify' && (
+                    <span title="Spotify" className="shrink-0">
+                      <SpotifyGlyph size={11} />
+                    </span>
+                  )}
+                  <span className={`flex-1 min-w-0 truncate ${t.kind === 'local' && !t.objectUrl ? 'italic opacity-60' : ''}`}>{t.title}</span>
                   <span className="tabular-nums text-ink-faint">{t.duration ? formatTime(t.duration) : ''}</span>
                   <button
                     type="button"
@@ -489,6 +576,27 @@ export function MusicPlayer() {
                 </div>
               ))}
             </div>
+            <div className="flex items-center gap-1.5 mt-2">
+              <input
+                value={spotifyUrlInput}
+                onChange={(e) => { setSpotifyUrlInput(e.target.value); setSpotifyUrlError(false); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddSpotifyUrl(); }}
+                placeholder="Paste a Spotify track/playlist/album link…"
+                aria-label="Spotify URL"
+                className={`flex-1 min-w-0 bg-ink/5 border rounded-control px-2 py-1.5 text-micro text-ink ${spotifyUrlError ? 'border-red-400' : 'border-hairline'}`}
+              />
+              <button
+                type="button"
+                aria-label="Add Spotify link"
+                title="Add Spotify link"
+                onClick={handleAddSpotifyUrl}
+                disabled={!spotifyUrlInput.trim()}
+                className="studio-interactive studio-focusable shrink-0 w-8 h-8 flex items-center justify-center rounded-md border border-hairline text-ink disabled:opacity-40 disabled:pointer-events-none"
+              >
+                <Link size={13} />
+              </button>
+            </div>
+            {spotifyUrlError && <div className="text-micro text-red-400 mt-1">Not a valid Spotify track/playlist/album link.</div>}
             <div className="flex items-center gap-2 mt-2">
               <button
                 type="button"

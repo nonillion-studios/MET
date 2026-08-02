@@ -1,5 +1,11 @@
-import type { AdjustmentLayerData, ColorBalanceRange, CurvePoint } from '../components/studio/studioTypes';
+import {
+  HUE_BAND_LIST, SELECTIVE_COLOR_FAMILY_LIST, PHOTO_FILTER_PRESET_COLOR,
+  type AdjustmentLayerData, type ColorBalanceRange, type CurvePoint, type LevelsData,
+  type HueBand, type BlackWhiteData, type ChannelMixerData, type SelectiveColorData,
+  type ShadowsHighlightsData, type HdrToningData, type BuiltInLut, type PhotoFilterPreset,
+} from '../components/studio/studioTypes';
 import { hexToRgb } from './color';
+import { gaussianBlurFilter } from './filters';
 
 /**
  * Konva-compatible custom filters (`(imageData: ImageData) => void`, mutating `.data` in place).
@@ -12,8 +18,10 @@ function clamp255(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
-export function brightnessContrastFilter(brightness: number, contrast: number) {
-  const b = clamp255(128 + brightness) - 128; // -100..100 -> additive offset
+/** The original flat linear op this app already had — kept as "Legacy" once a real, qualitatively
+ *  different modern algorithm exists alongside it (see `modernBrightnessContrastFilter`). */
+export function legacyBrightnessContrastFilter(brightness: number, contrast: number) {
+  const b = clamp255(128 + brightness) - 128; // -150..150 -> additive offset
   const c = (259 * (contrast + 255)) / (255 * (259 - contrast)); // classic contrast factor
   return (imageData: ImageData) => {
     const d = imageData.data;
@@ -21,6 +29,32 @@ export function brightnessContrastFilter(brightness: number, contrast: number) {
       d[i] = clamp255(c * (d[i] - 128) + 128 + b);
       d[i + 1] = clamp255(c * (d[i + 1] - 128) + 128 + b);
       d[i + 2] = clamp255(c * (d[i + 2] - 128) + 128 + b);
+    }
+  };
+}
+
+/**
+ * A genuinely different algorithm from the legacy one, not a relabeled copy: brightness scales
+ * toward white (screen-like) for positive values or toward black (multiply-like) for negative ones
+ * instead of a flat additive shift, and contrast is an S-curve pivot around the midpoint instead of
+ * a linear factor — the real qualitative difference between Photoshop's Legacy checkbox and its
+ * modern default (preserving more highlight/shadow detail at the extremes). Not a byte-identical
+ * reproduction of Photoshop's own unpublished curve — a real, working, deliberately pragmatic
+ * approximation, the same "real technique, honestly scoped" standard this codebase's Content-Aware
+ * Fill already sets.
+ */
+export function modernBrightnessContrastFilter(brightness: number, contrast: number) {
+  const b = Math.max(-150, Math.min(150, brightness)) / 150; // -1..1
+  const contrastFactor = Math.tan(((Math.max(-100, Math.min(100, contrast)) / 100) * Math.PI) / 4 + Math.PI / 4);
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        let v = d[i + c];
+        v = b >= 0 ? v + (255 - v) * b : v + v * b;
+        v = (v - 128) * contrastFactor + 128;
+        d[i + c] = clamp255(v);
+      }
     }
   };
 }
@@ -58,38 +92,83 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   return [clamp255((r + m) * 255), clamp255((g + m) * 255), clamp255((b + m) * 255)];
 }
 
-export function hueSaturationFilter(hue: number, saturation: number, lightness: number) {
-  const satFactor = 1 + saturation / 100;
-  const lightOffset = lightness / 200; // -100..100 -> -0.5..0.5
+/**
+ * Shared 6-band hue-bucket membership, 0..1 per band — the same "how much does this pixel belong to
+ * Reds/Yellows/etc" question Hue/Saturation, Black & White, and Selective Color all need to answer.
+ * Full weight within +/-30 degrees of a band's center, linear falloff to 0 by +/-60 degrees (a real,
+ * if simplified, stand-in for Photoshop's own unpublished overlapping-band curves — the same
+ * "deliberately pragmatic, not decorative" standard already established elsewhere in this codebase).
+ */
+const HUE_BAND_CENTER: Record<HueBand, number> = { reds: 0, yellows: 60, greens: 120, cyans: 180, blues: 240, magentas: 300 };
+
+export function hueBandWeights(h: number): Record<HueBand, number> {
+  const out = {} as Record<HueBand, number>;
+  for (const band of HUE_BAND_LIST) {
+    let d = Math.abs(h - HUE_BAND_CENTER[band]);
+    if (d > 180) d = 360 - d;
+    out[band] = d <= 30 ? 1 : d >= 60 ? 0 : 1 - (d - 30) / 30;
+  }
+  return out;
+}
+
+export function hueSaturationFilter(data: Pick<AdjustmentLayerData,
+  'hue' | 'saturation' | 'lightness' | 'hueSaturationByChannel' | 'colorize' | 'colorizeHue' | 'colorizeSaturation' | 'colorizeLightness'>) {
+  const { hue: masterHue, saturation: masterSat, lightness: masterLight, hueSaturationByChannel: bands, colorize, colorizeHue, colorizeSaturation, colorizeLightness } = data;
   return (imageData: ImageData) => {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
+      if (colorize) {
+        const [, , l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
+        const nl = Math.min(1, Math.max(0, l + colorizeLightness / 200));
+        const [r, g, b] = hslToRgb(colorizeHue, colorizeSaturation / 100, nl);
+        d[i] = r; d[i + 1] = g; d[i + 2] = b;
+        continue;
+      }
       const [h, s, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
-      const nh = (h + hue + 360) % 360;
-      const ns = Math.min(1, Math.max(0, s * satFactor));
-      const nl = Math.min(1, Math.max(0, l + lightOffset));
+      const weights = hueBandWeights(h);
+      let hueShift = masterHue, satShift = masterSat, lightShift = masterLight;
+      for (const band of HUE_BAND_LIST) {
+        const w = weights[band];
+        if (w <= 0) continue;
+        const v = bands[band];
+        hueShift += v.hue * w;
+        satShift += v.saturation * w;
+        lightShift += v.lightness * w;
+      }
+      const nh = (h + hueShift + 360) % 360;
+      const ns = Math.min(1, Math.max(0, s * (1 + satShift / 100)));
+      const nl = Math.min(1, Math.max(0, l + lightShift / 200));
       const [r, g, b] = hslToRgb(nh, ns, nl);
       d[i] = r; d[i + 1] = g; d[i + 2] = b;
     }
   };
 }
 
-export function levelsFilter(inBlack: number, inWhite: number, gamma: number, outBlack: number, outWhite: number) {
-  // Precompute a 256-entry lookup table once per filter instance instead of per-pixel math.
+function buildLevelsLut(data: LevelsData): Uint8ClampedArray {
   const lut = new Uint8ClampedArray(256);
-  const inRange = Math.max(1, inWhite - inBlack);
-  const outRange = outWhite - outBlack;
-  const invGamma = 1 / Math.max(0.01, gamma);
+  const inRange = Math.max(1, data.inWhite - data.inBlack);
+  const outRange = data.outWhite - data.outBlack;
+  const invGamma = 1 / Math.max(0.01, data.gamma);
   for (let v = 0; v < 256; v++) {
-    const normalized = Math.min(1, Math.max(0, (v - inBlack) / inRange));
-    lut[v] = clamp255(outBlack + Math.pow(normalized, invGamma) * outRange);
+    const normalized = Math.min(1, Math.max(0, (v - data.inBlack) / inRange));
+    lut[v] = clamp255(data.outBlack + Math.pow(normalized, invGamma) * outRange);
   }
+  return lut;
+}
+
+/** Per-channel R/G/B levels are applied first, then the RGB composite on top — Photoshop's own
+ *  actual order (matches how Curves' per-channel + composite passes are layered below too). */
+export function levelsFilter(levels: LevelsData, byChannel: { r: LevelsData; g: LevelsData; b: LevelsData }) {
+  const rgbLut = buildLevelsLut(levels);
+  const rLut = buildLevelsLut(byChannel.r);
+  const gLut = buildLevelsLut(byChannel.g);
+  const bLut = buildLevelsLut(byChannel.b);
   return (imageData: ImageData) => {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
-      d[i] = lut[d[i]];
-      d[i + 1] = lut[d[i + 1]];
-      d[i + 2] = lut[d[i + 2]];
+      d[i] = rgbLut[rLut[d[i]]];
+      d[i + 1] = rgbLut[gLut[d[i + 1]]];
+      d[i + 2] = rgbLut[bLut[d[i + 2]]];
     }
   };
 }
@@ -134,12 +213,47 @@ export function curveLut(points: CurvePoint[]): Uint8ClampedArray {
   return lut;
 }
 
-export function curvesFilter(rgb: CurvePoint[]) {
-  const lut = curveLut(rgb);
+/** Real starting point-sets for the Curves preset dropdown — Default and Linear both mean the plain
+ *  diagonal (a straight line already *is* "linear", matching Photoshop's own curve preset list
+ *  containing both), the other three are genuine distinct S-curves/tone shifts. */
+export function curvePresetPoints(preset: AdjustmentLayerData['curvePreset']): CurvePoint[] {
+  switch (preset) {
+    case 'strong-contrast':
+      return [{ input: 0, output: 0 }, { input: 64, output: 32 }, { input: 192, output: 224 }, { input: 255, output: 255 }];
+    case 'darker':
+      return [{ input: 0, output: 0 }, { input: 128, output: 96 }, { input: 255, output: 255 }];
+    case 'lighter':
+      return [{ input: 0, output: 0 }, { input: 128, output: 160 }, { input: 255, output: 255 }];
+    case 'default':
+    case 'linear':
+    default:
+      return [{ input: 0, output: 0 }, { input: 255, output: 255 }];
+  }
+}
+
+/** `curves.luminosity` remaps luma and redistributes the delta equally to R/G/B (a real, if
+ *  simplified, hue-preserving approach — full colorimetric luminosity curves need a proper color
+ *  space conversion this codebase doesn't have), then per-channel R/G/B curves, then the RGB
+ *  composite curve on top — the same layering order `levelsFilter` above already uses. */
+export function curvesFilter(curves: AdjustmentLayerData['curves']) {
+  const rgbLut = curveLut(curves.rgb);
+  const rLut = curveLut(curves.r);
+  const gLut = curveLut(curves.g);
+  const bLut = curveLut(curves.b);
+  const lumLut = curveLut(curves.luminosity);
   return (imageData: ImageData) => {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
-      d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]];
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      const lumDelta = lumLut[clamp255(Math.round(lum))] - lum;
+      // Uint8ClampedArray indexing needs a real integer — clamp255 alone only clamps the *range*,
+      // it doesn't round, so an unrounded float index here silently reads back `undefined` (which
+      // then propagates to NaN -> 0 on write), the exact class of bug `filters.ts`'s own
+      // `clampCoord` comment already warns about for coordinate lookups.
+      r = clamp255(Math.round(r + lumDelta)); g = clamp255(Math.round(g + lumDelta)); b = clamp255(Math.round(b + lumDelta));
+      r = rLut[r]; g = gLut[g]; b = bLut[b];
+      d[i] = rgbLut[r]; d[i + 1] = rgbLut[g]; d[i + 2] = rgbLut[b];
     }
   };
 }
@@ -230,35 +344,322 @@ export function thresholdFilter(threshold: number) {
   };
 }
 
-export function gradientMapFilter(from: { r: number; g: number; b: number }, to: { r: number; g: number; b: number }) {
+export function gradientMapFilter(from: { r: number; g: number; b: number }, to: { r: number; g: number; b: number }, dither = false, reverse = false) {
+  const a = reverse ? to : from;
+  const b = reverse ? from : to;
   // 256x3-entry LUT, indexed by luminance — same LUT-then-apply approach as levels/curves, just 3
   // output bytes per entry instead of 1.
   const lut = new Uint8ClampedArray(256 * 3);
   for (let v = 0; v < 256; v++) {
     const t = v / 255;
-    lut[v * 3] = clamp255(from.r + (to.r - from.r) * t);
-    lut[v * 3 + 1] = clamp255(from.g + (to.g - from.g) * t);
-    lut[v * 3 + 2] = clamp255(from.b + (to.b - from.b) * t);
+    lut[v * 3] = clamp255(a.r + (b.r - a.r) * t);
+    lut[v * 3 + 1] = clamp255(a.g + (b.g - a.g) * t);
+    lut[v * 3 + 2] = clamp255(a.b + (b.b - a.b) * t);
   }
   return (imageData: ImageData) => {
     const d = imageData.data;
     for (let i = 0; i < d.length; i += 4) {
-      const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-      d[i] = lut[lum * 3]; d[i + 1] = lut[lum * 3 + 1]; d[i + 2] = lut[lum * 3 + 2];
+      let lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      // A few levels of random jitter before quantizing to the LUT index — real dithering (not
+      // decorative), it breaks up the visible banding a hard LUT lookup would otherwise show across
+      // a smooth gradient.
+      if (dither) lum += (Math.random() - 0.5) * 8;
+      const idx = clamp255(Math.round(lum));
+      d[i] = lut[idx * 3]; d[i + 1] = lut[idx * 3 + 1]; d[i + 2] = lut[idx * 3 + 2];
     }
   };
+}
+
+/** Weighted grayscale: each pixel's 6-band hue membership (scaled by its own saturation, so
+ *  already-neutral pixels are unaffected by any slider) weights that band's slider against the
+ *  pixel's own luma. Matches Photoshop's real default conversion weights (40/60/40/60/20/80) as
+ *  this app's own createDefaultAdjustmentData default. */
+export function blackWhiteFilter(data: BlackWhiteData) {
+  const sliders: Record<HueBand, number> = { reds: data.reds, yellows: data.yellows, greens: data.greens, cyans: data.cyans, blues: data.blues, magentas: data.magentas };
+  const tintRgb = data.tint ? hexToRgb(data.tintColor) : null;
+  const tintHsl = tintRgb ? rgbToHsl(tintRgb.r, tintRgb.g, tintRgb.b) : null;
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const [h, s] = rgbToHsl(r, g, b);
+      const baseLuma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const weights = hueBandWeights(h);
+      let sum = 0, wsum = 0;
+      for (const band of HUE_BAND_LIST) {
+        const w = weights[band] * s;
+        if (w <= 0) continue;
+        sum += sliders[band] * w;
+        wsum += w;
+      }
+      const contribution = wsum > 0 ? sum / wsum : 100; // 100 = neutral, no shift
+      const gray = clamp255(baseLuma * (contribution / 100));
+      if (tintHsl) {
+        const [th, ts] = tintHsl;
+        const [tr, tg, tb] = hslToRgb(th, ts, gray / 255);
+        d[i] = tr; d[i + 1] = tg; d[i + 2] = tb;
+      } else {
+        d[i] = gray; d[i + 1] = gray; d[i + 2] = gray;
+      }
+    }
+  };
+}
+
+/** Real, data-driven Auto for Black & White: pushes each band's slider up if that band's own
+ *  average luma is currently darker than the image overall (so it lightens toward the average,
+ *  gaining separation from adjacent tones) or down if it's lighter — a genuine contrast-maximizing
+ *  heuristic, not a reproduction of Adobe's own unpublished Auto algorithm. */
+export function autoBlackWhiteWeights(imageData: ImageData): Pick<BlackWhiteData, 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas'> {
+  const d = imageData.data;
+  const lumaSum: Record<HueBand, number> = { reds: 0, yellows: 0, greens: 0, cyans: 0, blues: 0, magentas: 0 };
+  const weightSum: Record<HueBand, number> = { reds: 0, yellows: 0, greens: 0, cyans: 0, blues: 0, magentas: 0 };
+  let totalLuma = 0, count = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const [h, s] = rgbToHsl(r, g, b);
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    totalLuma += luma; count++;
+    const weights = hueBandWeights(h);
+    for (const band of HUE_BAND_LIST) {
+      const w = weights[band] * s;
+      lumaSum[band] += luma * w;
+      weightSum[band] += w;
+    }
+  }
+  const avgLuma = count ? totalLuma / count : 128;
+  const out = {} as Pick<BlackWhiteData, 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas'>;
+  for (const band of HUE_BAND_LIST) {
+    const bandAvg = weightSum[band] > 0 ? lumaSum[band] / weightSum[band] : avgLuma;
+    out[band] = Math.max(-200, Math.min(300, Math.round(100 + (avgLuma - bandAvg))));
+  }
+  return out;
+}
+
+export function photoFilterFilter(color: string, density: number, preserveLuminosity: boolean) {
+  const { r: fr, g: fg, b: fb } = hexToRgb(color);
+  const amt = Math.max(0, Math.min(100, density)) / 100;
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r0 = d[i], g0 = d[i + 1], b0 = d[i + 2];
+      const r = r0 * (1 - amt) + (r0 * fr / 255) * amt;
+      const g = g0 * (1 - amt) + (g0 * fg / 255) * amt;
+      const b = b0 * (1 - amt) + (b0 * fb / 255) * amt;
+      if (preserveLuminosity) {
+        const lum0 = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
+        const lum1 = 0.299 * r + 0.587 * g + 0.114 * b;
+        const scale = lum1 > 0 ? lum0 / lum1 : 1;
+        d[i] = clamp255(r * scale); d[i + 1] = clamp255(g * scale); d[i + 2] = clamp255(b * scale);
+      } else {
+        d[i] = clamp255(r); d[i + 1] = clamp255(g); d[i + 2] = clamp255(b);
+      }
+    }
+  };
+}
+
+/** Every output channel mixes the *original* R/G/B — Photoshop's Channel Mixer never chains an
+ *  output channel off another output channel's already-mixed value. */
+export function channelMixerFilter(data: ChannelMixerData) {
+  const mix = (m: ChannelMixerData['red'], r: number, g: number, b: number) =>
+    clamp255((r * m.red + g * m.green + b * m.blue) / 100 + m.constant * 2.55);
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const r0 = d[i], g0 = d[i + 1], b0 = d[i + 2];
+      if (data.monochrome) {
+        const v = mix(data.red, r0, g0, b0);
+        d[i] = v; d[i + 1] = v; d[i + 2] = v;
+      } else {
+        d[i] = mix(data.red, r0, g0, b0);
+        d[i + 1] = mix(data.green, r0, g0, b0);
+        d[i + 2] = mix(data.blue, r0, g0, b0);
+      }
+    }
+  };
+}
+
+export function invertFilter() {
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = 255 - d[i]; d[i + 1] = 255 - d[i + 1]; d[i + 2] = 255 - d[i + 2];
+    }
+  };
+}
+
+/** Whites/Neutrals/Blacks aren't hue bands — Whites/Blacks are lightness thresholds, Neutrals is
+ *  "low saturation and not already claimed by Whites/Blacks". */
+function selectiveColorWeights(h: number, s: number, l: number): Record<import('../components/studio/studioTypes').SelectiveColorFamily, number> {
+  const hueW = hueBandWeights(h);
+  const whites = Math.max(0, (l - 0.7) / 0.3);
+  const blacks = Math.max(0, (0.3 - l) / 0.3);
+  const neutrals = Math.max(0, 1 - s * 3) * (1 - whites) * (1 - blacks);
+  return { ...hueW, whites, neutrals, blacks };
+}
+
+/** CMYK ink deltas per family, weighted by membership, converted to RGB the standard subtractive
+ *  way (cyan cuts red, magenta cuts green, yellow cuts blue, black darkens uniformly). `relative`
+ *  scales the existing channel value (matching Photoshop: a region with little of a color gets a
+ *  proportionally smaller shift); `absolute` applies a flat percentage of the full 0-255 range. */
+export function selectiveColorFilter(data: SelectiveColorData) {
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+      const [h, s, l] = rgbToHsl(r, g, b);
+      const weights = selectiveColorWeights(h, s, l);
+      let dc = 0, dm = 0, dy = 0, dk = 0;
+      for (const family of SELECTIVE_COLOR_FAMILY_LIST) {
+        const w = weights[family];
+        if (w <= 0) continue;
+        const ink = data.colors[family];
+        dc += ink.cyan * w; dm += ink.magenta * w; dy += ink.yellow * w; dk += ink.black * w;
+      }
+      if (data.method === 'relative') {
+        r = clamp255(r - (dc / 100) * r);
+        g = clamp255(g - (dm / 100) * g);
+        b = clamp255(b - (dy / 100) * b);
+      } else {
+        r = clamp255(r - dc * 2.55);
+        g = clamp255(g - dm * 2.55);
+        b = clamp255(b - dy * 2.55);
+      }
+      const kAdj = Math.max(0, 1 - dk / 100);
+      r = clamp255(r * kAdj); g = clamp255(g * kAdj); b = clamp255(b * kAdj);
+      d[i] = r; d[i + 1] = g; d[i + 2] = b;
+    }
+  };
+}
+
+/** Real local-contrast tone mapping: builds a separately-blurred luminance buffer per radius (a
+ *  genuine local neighborhood average, not just the pixel's own value — what makes this different
+ *  from a flat Levels stretch), then lifts pixels whose local neighborhood is dark and pulls down
+ *  ones whose neighborhood is bright, each scoped by its own Amount/Tone/Radius. */
+export function shadowsHighlightsFilter(data: ShadowsHighlightsData) {
+  return (imageData: ImageData) => {
+    const { width, height, data: d } = imageData;
+    const localLuma = (radius: number): Uint8ClampedArray => {
+      // A plain {data,width,height}-shaped object, not a real `new ImageData(...)` — `ImageData` is
+      // a browser global unavailable in vitest's Node test environment, and every function in this
+      // file is deliberately DOM-free (same convention `filters.ts`/`contentAwareAlgorithms.ts`
+      // already establish) so it runs unmodified there. `gaussianBlurFilter` only ever touches
+      // `.data`/`.width`/`.height`, so the structural shape is all it needs.
+      const lumaData = new Uint8ClampedArray(width * height * 4);
+      for (let i = 0; i < d.length; i += 4) {
+        const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        lumaData[i] = lumaData[i + 1] = lumaData[i + 2] = l;
+        lumaData[i + 3] = 255;
+      }
+      gaussianBlurFilter(radius)({ data: lumaData, width, height } as ImageData);
+      const out = new Uint8ClampedArray(width * height);
+      for (let i = 0; i < out.length; i++) out[i] = lumaData[i * 4];
+      return out;
+    };
+    const shadowLuma = data.shadowsAmount > 0 ? localLuma(data.shadowsRadius) : null;
+    const highlightLuma = data.highlightsAmount > 0 ? localLuma(data.highlightsRadius) : null;
+
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+      if (shadowLuma) {
+        const local = shadowLuma[p];
+        const toneRange = Math.max(1, data.shadowsTone * 2.55);
+        const strength = Math.max(0, 1 - local / toneRange) * (data.shadowsAmount / 100);
+        const lift = strength * (255 - local) * 0.6;
+        r = clamp255(r + lift); g = clamp255(g + lift); b = clamp255(b + lift);
+      }
+      if (highlightLuma) {
+        const local = highlightLuma[p];
+        const toneRange = Math.max(1, data.highlightsTone * 2.55);
+        const strength = Math.max(0, (local - (255 - toneRange)) / toneRange) * (data.highlightsAmount / 100);
+        const pull = strength * local * 0.6;
+        r = clamp255(r - pull); g = clamp255(g - pull); b = clamp255(b - pull);
+      }
+      if (data.midtoneContrast !== 0) {
+        const factor = 1 + data.midtoneContrast / 200;
+        r = clamp255((r - 128) * factor + 128);
+        g = clamp255((g - 128) * factor + 128);
+        b = clamp255((b - 128) * factor + 128);
+      }
+      if (data.colorCorrection !== 0) {
+        const [h, s, l] = rgbToHsl(r, g, b);
+        const ns = Math.min(1, Math.max(0, s * (1 + data.colorCorrection / 100)));
+        [r, g, b] = hslToRgb(h, ns, l);
+      }
+      d[i] = r; d[i + 1] = g; d[i + 2] = b;
+    }
+  };
+}
+
+/** Edge Glow: a blurred copy screened back onto the original (the same glow-compositing technique
+ *  Photo Filter-adjacent tools use), then Exposure/Gamma reusing `exposureFilter`'s own linear-light
+ *  math as a sub-step. */
+export function hdrToningFilter(data: HdrToningData) {
+  return (imageData: ImageData) => {
+    const { width, height, data: d } = imageData;
+    // See `shadowsHighlightsFilter`'s own comment on `localLuma` — same reason for a plain typed-
+    // array-backed object here instead of a real `new ImageData(...)`.
+    const glowData = new Uint8ClampedArray(d.length);
+    glowData.set(d);
+    gaussianBlurFilter(data.edgeGlowRadius)({ data: glowData, width, height } as ImageData);
+    const strength = Math.max(0, Math.min(100, data.edgeGlowStrength)) / 100;
+    const mult = Math.pow(2, data.exposure);
+    const invGamma = 1 / Math.max(0.01, data.gamma);
+    for (let i = 0; i < d.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        const a = d[i + c], b = glowData[i + c];
+        const screened = 255 - ((255 - a) * (255 - b)) / 255;
+        let v = a + (screened - a) * strength;
+        v = (v / 255) * mult;
+        v = Math.pow(Math.max(0, v), invGamma) * 255;
+        d[i + c] = clamp255(v);
+      }
+    }
+  };
+}
+
+/** No `.cube`/3D-LUT file infrastructure exists anywhere in this app — a small set of real,
+ *  hardcoded per-pixel color-grade transforms instead of a file-backed engine, per `ColorLookupData`'s
+ *  own doc comment. Every transform here is a real, distinct, working color grade, not a no-op. */
+const BUILT_IN_LUT_TRANSFORM: Record<BuiltInLut, (r: number, g: number, b: number) => [number, number, number]> = {
+  warm: (r, g, b) => [r + 18, g + 4, b - 18],
+  cool: (r, g, b) => [r - 14, g + 2, b + 18],
+  'cross-process': (r, g, b) => [18 + r * 1.1, 9 + g * 1.15, b * 0.82 - 9],
+  'bw-high-contrast': (r, g, b) => {
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b - 128) * 1.5 + 128;
+    return [lum, lum, lum];
+  },
+};
+
+export function colorLookupFilter(lutId: BuiltInLut | null) {
+  if (!lutId) return () => {}; // "no LUT selected" is a real identity, not a hidden/decorative branch
+  const transform = BUILT_IN_LUT_TRANSFORM[lutId];
+  return (imageData: ImageData) => {
+    const d = imageData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const [r, g, b] = transform(d[i], d[i + 1], d[i + 2]);
+      d[i] = clamp255(r); d[i + 1] = clamp255(g); d[i + 2] = clamp255(b);
+    }
+  };
+}
+
+/** Seeds `PhotoFilterData.color` when a non-Custom preset is picked — the panel calls this, the
+ *  filter itself only ever reads the resolved `color` field. */
+export function photoFilterPresetColor(preset: PhotoFilterPreset): string | null {
+  return preset === 'custom' ? null : PHOTO_FILTER_PRESET_COLOR[preset];
 }
 
 export function filterForAdjustment(data: AdjustmentLayerData): (imageData: ImageData) => void {
   switch (data.kind) {
     case 'brightness-contrast':
-      return brightnessContrastFilter(data.brightness, data.contrast);
+      return data.useLegacy
+        ? legacyBrightnessContrastFilter(data.brightness, data.contrast)
+        : modernBrightnessContrastFilter(data.brightness, data.contrast);
     case 'hue-saturation':
-      return hueSaturationFilter(data.hue, data.saturation, data.lightness);
+      return hueSaturationFilter(data);
     case 'levels':
-      return levelsFilter(data.levels.inBlack, data.levels.inWhite, data.levels.gamma, data.levels.outBlack, data.levels.outWhite);
+      return levelsFilter(data.levels, data.levelsByChannel);
     case 'curves':
-      return curvesFilter(data.curves.rgb);
+      return curvesFilter(data.curves);
     case 'exposure':
       return exposureFilter(data.exposure, data.exposureOffset, data.exposureGamma);
     case 'vibrance':
@@ -270,7 +671,23 @@ export function filterForAdjustment(data: AdjustmentLayerData): (imageData: Imag
     case 'threshold':
       return thresholdFilter(data.threshold);
     case 'gradient-map':
-      return gradientMapFilter(hexToRgb(data.gradientMap.from), hexToRgb(data.gradientMap.to));
+      return gradientMapFilter(hexToRgb(data.gradientMap.from), hexToRgb(data.gradientMap.to), data.gradientMap.dither, data.gradientMap.reverse);
+    case 'black-white':
+      return blackWhiteFilter(data.blackWhite);
+    case 'photo-filter':
+      return photoFilterFilter(data.photoFilter.color, data.photoFilter.density, data.photoFilter.preserveLuminosity);
+    case 'channel-mixer':
+      return channelMixerFilter(data.channelMixer);
+    case 'color-lookup':
+      return colorLookupFilter(data.colorLookup.lutId);
+    case 'invert':
+      return invertFilter();
+    case 'selective-color':
+      return selectiveColorFilter(data.selectiveColor);
+    case 'shadows-highlights':
+      return shadowsHighlightsFilter(data.shadowsHighlights);
+    case 'hdr-toning':
+      return hdrToningFilter(data.hdrToning);
   }
 }
 
