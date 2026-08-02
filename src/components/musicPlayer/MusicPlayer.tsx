@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Music2, X, ChevronUp, ChevronDown, Play, Pause, SkipBack, SkipForward,
-  Shuffle, Repeat, Repeat1, Volume2, VolumeX, Upload, ListMusic, Trash2, Link,
+  Shuffle, Repeat, Repeat1, Volume2, VolumeX, Upload, ListMusic, Trash2, Link, Youtube,
 } from 'lucide-react';
 
 /** Lucide has no Spotify brand glyph — a minimal inline approximation of the recognizable three-arc
@@ -18,6 +18,8 @@ function SpotifyGlyph({ size = 12 }: { size?: number }) {
   );
 }
 import { useMusicPlayerVisibility } from './MusicPlayerContext';
+import { swalToast } from '../../lib/swalTheme';
+import { useFullscreenPortalTarget } from '../../lib/useFullscreenPortalTarget';
 import {
   loadMusicPlayerState, saveMusicPlayerState, DEFAULT_PLAYLIST_ID,
   type MusicPlayerPersistedState, type RepeatMode, type PersistedPlaylistMeta,
@@ -31,11 +33,16 @@ import { PlaylistManager } from './PlaylistManager';
  *
  *  A Spotify track carries no audio data at all — Spotify's embed iframe owns its own playback
  *  entirely, this app never touches its audio stream (Spotify doesn't allow direct extraction).
- *  `kind` already existed as a real discriminant before Spotify was added (reserved for a future
- *  YouTube variant too), so widening it here is additive, not a reshape. */
+ *  A YouTube track similarly carries no audio data of its own — playback goes through the IFrame
+ *  Player API instead (see `loadYouTubeIframeApi` below), single-video only: pasting a playlist
+ *  URL is rejected with a clear message rather than expanded into a track list, since real
+ *  playlist expansion needs the YouTube Data API and a configured API key, which this
+ *  deliberately offline-first app doesn't carry (matching the Fonts panel's own no-Google-Fonts
+ *  rationale). `kind` already existed as a real discriminant before Spotify/YouTube were added, so
+ *  widening it here is additive, not a reshape. */
 export interface Track {
   id: string;
-  kind: 'local' | 'spotify';
+  kind: 'local' | 'spotify' | 'youtube';
   title: string;
   artist?: string;
   duration?: number;
@@ -45,6 +52,8 @@ export interface Track {
   // spotify-only
   spotifyId?: string;
   spotifyType?: 'track' | 'playlist' | 'album';
+  // youtube-only
+  youtubeId?: string;
 }
 
 const ACCEPTED_TYPES = '.mp3,.mp4,.wav,.ogg,.flac,.m4a,.aac,audio/*';
@@ -59,6 +68,89 @@ export function parseSpotifyUrl(url: string): { type: 'track' | 'playlist' | 'al
   return { type: match[1] as 'track' | 'playlist' | 'album', id: match[2] };
 }
 
+const YOUTUBE_ID_PATTERNS: RegExp[] = [
+  /youtube\.com\/watch\?v=([A-Za-z0-9_-]{11})/,
+  /youtu\.be\/([A-Za-z0-9_-]{11})/,
+  /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/,
+  /youtube\.com\/v\/([A-Za-z0-9_-]{11})/,
+  /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/,
+];
+
+/** Extracts an 11-char video id from any of the standard YouTube URL shapes (watch/short-link/
+ *  embed/legacy-v/shorts). A `watch?v=...&list=...` link still resolves the video id here — the
+ *  video plays, the list is simply ignored, matching the single-video-only scope. */
+export function extractYouTubeId(url: string): string | null {
+  for (const pattern of YOUTUBE_ID_PATTERNS) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/** A bare `/playlist?list=...` link (no `v=` video id) has no single video to embed — distinguished
+ *  from a `watch?v=...&list=...` link (which does resolve above) so the caller can show a real
+ *  "playlists aren't supported" message instead of the generic "not a valid link" one. */
+export function isYouTubePlaylistOnlyUrl(url: string): boolean {
+  return /youtube\.com\/playlist\?/.test(url) && !extractYouTubeId(url);
+}
+
+export function getYouTubeThumbnail(videoId: string): string {
+  return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+}
+
+/** Minimal ambient typing for the parts of the YouTube IFrame Player API this app actually calls —
+ *  no `@types/youtube` package is installed, and the full surface is much larger than what's used
+ *  here. */
+interface YouTubePlayer {
+  playVideo(): void;
+  pauseVideo(): void;
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
+  getCurrentTime(): number;
+  getDuration(): number;
+  loadVideoById(videoId: string): void;
+  destroy(): void;
+}
+interface YouTubePlayerEvent {
+  data: number;
+}
+interface YouTubePlayerOptions {
+  videoId: string;
+  events?: {
+    onReady?: () => void;
+    onStateChange?: (event: YouTubePlayerEvent) => void;
+  };
+}
+interface YouTubeIframeApi {
+  Player: new (element: HTMLElement, options: YouTubePlayerOptions) => YouTubePlayer;
+  PlayerState: { ENDED: number };
+}
+declare global {
+  interface Window {
+    YT?: YouTubeIframeApi;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+let youtubeApiPromise: Promise<YouTubeIframeApi> | null = null;
+/** Lazily loads the YouTube IFrame Player API script the first time it's actually needed —
+ *  matching this app's existing lazy-load-on-first-use convention (e.g. spellcheck dictionaries)
+ *  rather than paying for it on every session regardless of whether YouTube is ever used. */
+function loadYouTubeIframeApi(): Promise<YouTubeIframeApi> {
+  if (window.YT) return Promise.resolve(window.YT);
+  if (youtubeApiPromise) return youtubeApiPromise;
+  youtubeApiPromise = new Promise((resolve) => {
+    const previous = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      previous?.();
+      if (window.YT) resolve(window.YT);
+    };
+    const script = document.createElement('script');
+    script.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(script);
+  });
+  return youtubeApiPromise;
+}
+
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
   const m = Math.floor(seconds / 60);
@@ -70,6 +162,57 @@ function fileNameToTitle(name: string): string {
   return name.replace(/\.[^/.]+$/, '');
 }
 
+/** Spotify's embed iframe is fully sandboxed — it exposes no playback-position events to this app
+ *  (confirmed: no `postMessage` API, no oEmbed duration field), so a real progress bar driven by
+ *  actual playback position isn't possible. This simulates one from elapsed wall-clock time
+ *  instead, scaled against a rough assumed track length purely so the bar has *some* visual
+ *  motion — labeled "estimated" throughout so it never reads as authoritative. Resets whenever
+ *  the current track changes. */
+const SPOTIFY_ASSUMED_TRACK_SECONDS = 180;
+
+function SpotifyProgressBar({ isPlaying, trackId }: { isPlaying: boolean; trackId: string }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(performance.now());
+
+  useEffect(() => {
+    setElapsed(0);
+    startRef.current = performance.now();
+  }, [trackId]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    startRef.current = performance.now() - elapsed * 1000;
+    const interval = window.setInterval(() => {
+      setElapsed((performance.now() - startRef.current) / 1000);
+    }, 500);
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+
+  function handleSeekAttempt() {
+    swalToast({ icon: 'info', title: 'Seeking is not supported for Spotify tracks' });
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        onPointerDown={handleSeekAttempt}
+        title="Seeking is not supported for Spotify tracks"
+        className="w-full h-1.5 rounded-full bg-ink/10 overflow-hidden cursor-not-allowed"
+      >
+        <div
+          className="h-full bg-accent/70 transition-[width] duration-500 ease-linear"
+          style={{ width: `${Math.min(100, (elapsed / SPOTIFY_ASSUMED_TRACK_SECONDS) * 100)}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-micro text-ink-faint tabular-nums">
+        <span>~{formatTime(elapsed)}</span>
+        <span>(estimated)</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Floating, draggable music player — local file playback (Web Audio frequency-bar visualization),
  * multi-playlist management, shuffle/repeat, all state persisted (settings + playlist names only,
@@ -77,13 +220,16 @@ function fileNameToTitle(name: string): string {
  * it floats above Studio *and* the Text Editor equally, mounted once at the app root
  * (`App.tsx`) and toggled via `MusicPlayerContext` from either surface's own toolbar button.
  *
- * YouTube playback is a deferred follow-up (see CLAUDE.md) — the `Track` shape already reserves
- * `kind` for it so adding it later is additive, not a reshape, but no YouTube UI exists yet; this
- * session ships local-file playback only, per an explicit scope decision (a full YouTube iframe
- * integration is a separate large feature, and this app is otherwise deliberately offline-first).
+ * YouTube playback is real (single-video only, no playlist expansion — see the `Track` doc
+ * comment above for why) via the IFrame Player API, alongside local files and the Spotify embed.
  */
 export function MusicPlayer() {
   const { hidden, toggle } = useMusicPlayerVisibility();
+  // Mounted once at the app root, outside any fullscreen-root subtree — without this, the player
+  // portal-renders to `document.body` and disappears the instant Studio (or anything else) enters
+  // the Fullscreen API, since `document.body` is no longer part of the active fullscreen element's
+  // rendered subtree.
+  const portalTarget = useFullscreenPortalTarget();
   const [persisted, setPersisted] = useState<MusicPlayerPersistedState>(() => loadMusicPlayerState());
   const [tracksByPlaylist, setTracksByPlaylist] = useState<Record<string, Track[]>>({ [DEFAULT_PLAYLIST_ID]: [] });
   const [currentTrackId, setCurrentTrackId] = useState<string | null>(null);
@@ -92,8 +238,9 @@ export function MusicPlayer() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number } | null>(null);
   const [reorderIndex, setReorderIndex] = useState<number | null>(null);
-  const [spotifyUrlInput, setSpotifyUrlInput] = useState('');
-  const [spotifyUrlError, setSpotifyUrlError] = useState(false);
+  const [mediaUrlInput, setMediaUrlInput] = useState('');
+  const [mediaUrlError, setMediaUrlError] = useState<string | null>(null);
+  const [ytDuration, setYtDuration] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -104,6 +251,8 @@ export function MusicPlayer() {
   const dragStateRef = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const warnedAboutMissingRef = useRef(false);
+  const ytContainerRef = useRef<HTMLDivElement | null>(null);
+  const ytPlayerRef = useRef<YouTubePlayer | null>(null);
 
   const activePlaylistId = persisted.activePlaylistId ?? persisted.playlists[0]?.id ?? DEFAULT_PLAYLIST_ID;
   const tracks = tracksByPlaylist[activePlaylistId] ?? [];
@@ -174,6 +323,61 @@ export function MusicPlayer() {
     else audio.pause();
   }, [isPlaying, currentTrack?.objectUrl]);
 
+  // --- YouTube player wiring ---------------------------------------------------
+  // The player is created lazily against `ytContainerRef` the first time a youtube track is
+  // actually selected (mirrors the local-audio effects' own track-id-keyed load shape above), not
+  // eagerly on mount — no reason to load the IFrame API script for a session that never adds a
+  // YouTube link.
+  useEffect(() => {
+    if (currentTrack?.kind !== 'youtube' || !currentTrack.youtubeId) return;
+    let cancelled = false;
+    const videoId = currentTrack.youtubeId;
+    loadYouTubeIframeApi().then((YT) => {
+      if (cancelled) return;
+      const container = ytContainerRef.current;
+      if (!container) return;
+      if (!ytPlayerRef.current) {
+        ytPlayerRef.current = new YT.Player(container, {
+          videoId,
+          events: {
+            onReady: () => { if (isPlaying) ytPlayerRef.current?.playVideo(); },
+            onStateChange: (event) => { if (event.data === YT.PlayerState.ENDED) handleTrackEnded(); },
+          },
+        });
+      } else {
+        ytPlayerRef.current.loadVideoById(videoId);
+      }
+      setCurrentTime(0);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTrack?.id, currentTrack?.kind, currentTrack?.youtubeId]);
+
+  useEffect(() => {
+    if (currentTrack?.kind !== 'youtube') return;
+    const player = ytPlayerRef.current;
+    if (!player) return;
+    if (isPlaying) player.playVideo();
+    else player.pauseVideo();
+  }, [isPlaying, currentTrack?.kind]);
+
+  // Polls current time/duration while a YouTube video plays — the IFrame API has no timeupdate-
+  // style event, unlike the local `<audio>` element's own listener above.
+  useEffect(() => {
+    if (currentTrack?.kind !== 'youtube' || !isPlaying) return;
+    const interval = window.setInterval(() => {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      setCurrentTime(player.getCurrentTime());
+      setYtDuration(player.getDuration());
+    }, 500);
+    return () => window.clearInterval(interval);
+  }, [currentTrack?.kind, currentTrack?.id, isPlaying]);
+
+  useEffect(() => {
+    return () => { ytPlayerRef.current?.destroy(); ytPlayerRef.current = null; };
+  }, []);
+
   function ensureAnalyser(): AnalyserNode | null {
     const audio = audioRef.current;
     if (!audio) return null;
@@ -240,20 +444,43 @@ export function MusicPlayer() {
     if (!currentTrackId && newTracks.length > 0) setCurrentTrackId(newTracks[0].id);
   }
 
-  function handleAddSpotifyUrl() {
-    const parsed = parseSpotifyUrl(spotifyUrlInput.trim());
-    if (!parsed) { setSpotifyUrlError(true); return; }
-    const track: Track = {
-      id: `spotify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      kind: 'spotify',
-      title: `Spotify ${parsed.type}`,
-      spotifyId: parsed.id,
-      spotifyType: parsed.type,
-    };
-    addTracksToPlaylist(activePlaylistId, [track]);
-    if (!currentTrackId) playTrack(track.id);
-    setSpotifyUrlInput('');
-    setSpotifyUrlError(false);
+  function handleAddMediaUrl() {
+    const url = mediaUrlInput.trim();
+    const spotify = parseSpotifyUrl(url);
+    if (spotify) {
+      const track: Track = {
+        id: `spotify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        kind: 'spotify',
+        title: `Spotify ${spotify.type}`,
+        spotifyId: spotify.id,
+        spotifyType: spotify.type,
+      };
+      addTracksToPlaylist(activePlaylistId, [track]);
+      if (!currentTrackId) playTrack(track.id);
+      setMediaUrlInput('');
+      setMediaUrlError(null);
+      return;
+    }
+    if (isYouTubePlaylistOnlyUrl(url)) {
+      setMediaUrlError("Playlist links aren't supported — paste a single video link.");
+      return;
+    }
+    const youtubeId = extractYouTubeId(url);
+    if (youtubeId) {
+      loadYouTubeIframeApi();
+      const track: Track = {
+        id: `youtube-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        kind: 'youtube',
+        title: `YouTube video ${youtubeId}`,
+        youtubeId,
+      };
+      addTracksToPlaylist(activePlaylistId, [track]);
+      if (!currentTrackId) playTrack(track.id);
+      setMediaUrlInput('');
+      setMediaUrlError(null);
+      return;
+    }
+    setMediaUrlError('Not a valid Spotify or YouTube link.');
   }
 
   function playTrack(id: string) {
@@ -291,14 +518,24 @@ export function MusicPlayer() {
   }
 
   function handlePrev() {
-    const audio = audioRef.current;
-    if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
+    if (currentTrack?.kind === 'youtube') {
+      const player = ytPlayerRef.current;
+      if (player && player.getCurrentTime() > 3) { player.seekTo(0, true); setCurrentTime(0); return; }
+    } else {
+      const audio = audioRef.current;
+      if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
+    }
     const prev = pickNextIndex(-1);
     if (prev != null) playTrack(tracks[prev].id);
   }
 
   function handleTrackEnded() {
     if (persisted.repeat === 'one') {
+      if (currentTrack?.kind === 'youtube') {
+        const player = ytPlayerRef.current;
+        if (player) { player.seekTo(0, true); player.playVideo(); }
+        return;
+      }
       const audio = audioRef.current;
       if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
       return;
@@ -382,14 +619,20 @@ export function MusicPlayer() {
   }, [hidden, currentTrack, tracks, persisted.shuffle, persisted.repeat, persisted.muted, isPlaying]);
 
   const playlists: PersistedPlaylistMeta[] = persisted.playlists;
-  const duration = currentTrack?.duration ?? audioRef.current?.duration ?? 0;
+  const duration = currentTrack?.kind === 'youtube' ? ytDuration : (currentTrack?.duration ?? audioRef.current?.duration ?? 0);
 
   const seekTo = useCallback((fraction: number) => {
+    if (currentTrack?.kind === 'youtube') {
+      const player = ytPlayerRef.current;
+      const dur = player?.getDuration() ?? 0;
+      if (player && dur > 0) { player.seekTo(fraction * dur, true); setCurrentTime(fraction * dur); }
+      return;
+    }
     const audio = audioRef.current;
     if (!audio || !Number.isFinite(audio.duration)) return;
     audio.currentTime = fraction * audio.duration;
     setCurrentTime(audio.currentTime);
-  }, []);
+  }, [currentTrack?.kind]);
 
   const displayPos = dragOffset
     ? { x: persisted.position.x + dragOffset.dx, y: persisted.position.y + dragOffset.dy }
@@ -426,13 +669,56 @@ export function MusicPlayer() {
         </button>
       </div>
 
+      {/* Always-mounted media embeds: an unmounted iframe stops its embedded playback outright,
+          regardless of whether anything ever calls `.pause()` on it — so the Spotify iframe and
+          the YouTube player's container must stay in the DOM across a minimize toggle. Only
+          visually hidden (`hidden` = display:none, not removed) while minimized; the rest of the
+          chrome below (which holds no playback state of its own) is still fine to unmount. */}
+      <div className={persisted.minimized ? 'hidden' : ''}>
+        {currentTrack?.kind === 'spotify' && currentTrack.spotifyId && currentTrack.spotifyType && (
+          <div className="px-3 pt-3">
+            <iframe
+              key={currentTrack.id}
+              src={`https://open.spotify.com/embed/${currentTrack.spotifyType}/${currentTrack.spotifyId}`}
+              width="100%"
+              height="152"
+              style={{ border: 0, borderRadius: 12 }}
+              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+              loading="lazy"
+              title={`Spotify ${currentTrack.spotifyType} embed`}
+            />
+          </div>
+        )}
+        <div
+          ref={ytContainerRef}
+          className={currentTrack?.kind === 'youtube' ? 'aspect-video w-full' : 'hidden'}
+        />
+      </div>
+
       {!persisted.minimized && (
         <div className="p-3 flex flex-col gap-3">
           <div className="flex gap-3">
             {/* Cover art: local files get a generic placeholder (real embedded-artwork extraction
-                is out of scope this pass); Spotify tracks show their own art via the embed below,
-                so no placeholder is drawn here for them. */}
-            {currentTrack?.kind !== 'spotify' && (
+                is out of scope this pass) — YouTube tracks get their real video thumbnail, falling
+                back to the same placeholder if it fails to load; Spotify tracks show their own art
+                via the embed above, so no placeholder is drawn here for them. */}
+            {currentTrack?.kind === 'youtube' && currentTrack.youtubeId ? (
+              <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 relative overflow-hidden">
+                <img
+                  src={getYouTubeThumbnail(currentTrack.youtubeId)}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    const fallback = e.currentTarget.nextElementSibling as HTMLElement | null;
+                    if (fallback) fallback.style.display = 'flex';
+                  }}
+                />
+                <div className="hidden absolute inset-0 items-center justify-center text-ink-faint">
+                  <Music2 size={28} />
+                </div>
+              </div>
+            ) : currentTrack?.kind !== 'spotify' && (
               <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 flex items-center justify-center text-ink-faint">
                 <Music2 size={28} />
               </div>
@@ -449,24 +735,19 @@ export function MusicPlayer() {
             </div>
           </div>
 
-          {currentTrack?.kind === 'spotify' && currentTrack.spotifyId && currentTrack.spotifyType ? (
+          {currentTrack?.kind === 'spotify' ? (
             // The embed owns its own transport/volume/artwork entirely — this app's own seek bar,
             // play/pause, and volume slider only ever drive the <audio> element, which has nothing
             // loaded while a Spotify track is current (see the objectUrl-gated effects above), so
             // none of that chrome would do anything meaningful here.
-            <iframe
-              key={currentTrack.id}
-              src={`https://open.spotify.com/embed/${currentTrack.spotifyType}/${currentTrack.spotifyId}`}
-              width="100%"
-              height="152"
-              style={{ border: 0, borderRadius: 12 }}
-              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-              loading="lazy"
-              title={`Spotify ${currentTrack.spotifyType} embed`}
-            />
+            <SpotifyProgressBar isPlaying={isPlaying} trackId={currentTrack.id} />
           ) : (
             <>
-              <canvas ref={canvasRef} width={296} height={48} className="w-full h-12 rounded-md bg-ink/5" />
+              {/* Frequency-bar visualizer stays local-only — there's no Web Audio access into a
+                  cross-origin YouTube iframe to analyze. */}
+              {currentTrack?.kind !== 'youtube' && (
+                <canvas ref={canvasRef} width={296} height={48} className="w-full h-12 rounded-md bg-ink/5" />
+              )}
 
               <div className="flex flex-col gap-1">
                 <input
@@ -563,6 +844,11 @@ export function MusicPlayer() {
                       <SpotifyGlyph size={11} />
                     </span>
                   )}
+                  {t.kind === 'youtube' && (
+                    <span title="YouTube" className="shrink-0 text-red-500">
+                      <Youtube size={12} />
+                    </span>
+                  )}
                   <span className={`flex-1 min-w-0 truncate ${t.kind === 'local' && !t.objectUrl ? 'italic opacity-60' : ''}`}>{t.title}</span>
                   <span className="tabular-nums text-ink-faint">{t.duration ? formatTime(t.duration) : ''}</span>
                   <button
@@ -578,25 +864,25 @@ export function MusicPlayer() {
             </div>
             <div className="flex items-center gap-1.5 mt-2">
               <input
-                value={spotifyUrlInput}
-                onChange={(e) => { setSpotifyUrlInput(e.target.value); setSpotifyUrlError(false); }}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAddSpotifyUrl(); }}
-                placeholder="Paste a Spotify track/playlist/album link…"
-                aria-label="Spotify URL"
-                className={`flex-1 min-w-0 bg-ink/5 border rounded-control px-2 py-1.5 text-micro text-ink ${spotifyUrlError ? 'border-red-400' : 'border-hairline'}`}
+                value={mediaUrlInput}
+                onChange={(e) => { setMediaUrlInput(e.target.value); setMediaUrlError(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddMediaUrl(); }}
+                placeholder="Paste a Spotify or YouTube link…"
+                aria-label="Spotify or YouTube URL"
+                className={`flex-1 min-w-0 bg-ink/5 border rounded-control px-2 py-1.5 text-micro text-ink ${mediaUrlError ? 'border-red-400' : 'border-hairline'}`}
               />
               <button
                 type="button"
-                aria-label="Add Spotify link"
-                title="Add Spotify link"
-                onClick={handleAddSpotifyUrl}
-                disabled={!spotifyUrlInput.trim()}
+                aria-label="Add link"
+                title="Add link"
+                onClick={handleAddMediaUrl}
+                disabled={!mediaUrlInput.trim()}
                 className="studio-interactive studio-focusable shrink-0 w-8 h-8 flex items-center justify-center rounded-md border border-hairline text-ink disabled:opacity-40 disabled:pointer-events-none"
               >
                 <Link size={13} />
               </button>
             </div>
-            {spotifyUrlError && <div className="text-micro text-red-400 mt-1">Not a valid Spotify track/playlist/album link.</div>}
+            {mediaUrlError && <div className="text-micro text-red-400 mt-1">{mediaUrlError}</div>}
             <div className="flex items-center gap-2 mt-2">
               <button
                 type="button"
@@ -666,7 +952,7 @@ export function MusicPlayer() {
     </div>
   );
 
-  return createPortal(body, document.body);
+  return createPortal(body, portalTarget);
 }
 
 /** Music-note icon button for a toolbar — shared by StudioToolbar and the Text Editor's own bar so

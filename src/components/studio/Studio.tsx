@@ -2696,7 +2696,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   return (
-    <div ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div id="studio-root" ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
       {/* No overflow-x here (there used to be one): per the CSS Overflow spec, 'overflow-x: auto'
           with 'overflow-y' unset forces the *computed* overflow-y to 'auto' too — and that
           coercion applies even if overflow-y is set to 'visible' explicitly, since 'visible' paired
