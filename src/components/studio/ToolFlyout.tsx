@@ -49,7 +49,7 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose, an
 
   // Fixed-viewport positioning computed from the anchor icon's own rect — not CSS-relative to any
   // ancestor, so no ancestor's overflow/transform/stacking context can clip or misplace this. First
-  // place it on the required side of the anchor (right of vertical, above horizontal — never
+  // place it on the required side of the anchor (left of vertical, above horizontal — never
   // flipped), then measure the *actual* rendered rect and nudge it back on-screen along the *other*
   // axis only.
   useLayoutEffect(() => {
@@ -60,7 +60,12 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose, an
     const anchorRect = anchor.getBoundingClientRect();
 
     if (isVertical) {
-      el.style.left = `${anchorRect.right + ANCHOR_GAP}px`;
+      // Width is content-driven (`w-max`, independent of `left`/`top`), so it's already
+      // accurate to measure here, before any inline position styles are set — needed because,
+      // unlike opening rightward, placing the flyout to the *left* of the anchor requires
+      // knowing its own width up front.
+      const naturalWidth = el.getBoundingClientRect().width;
+      el.style.left = `${anchorRect.left - naturalWidth - ANCHOR_GAP}px`;
       el.style.top = `${anchorRect.top}px`;
       el.style.bottom = '';
     } else {
@@ -77,14 +82,19 @@ export function ToolFlyout({ tools, activeTool, orientation, onPick, onClose, an
       if (top < VIEWPORT_MARGIN) top = VIEWPORT_MARGIN;
       el.style.top = `${top}px`;
 
-      // Required side (right of a vertical rail) is never flipped, so a rail sitting close to the
-      // right edge (a narrow/tablet layout) can leave less room than the full-text row wants.
-      const availableWidth = window.innerWidth - VIEWPORT_MARGIN - rect.left;
+      // Required side (left of a vertical rail) is never flipped, so a rail sitting close to the
+      // left edge of its container (a narrow/tablet layout) can leave less room than the
+      // full-text row wants.
+      const availableWidth = anchorRect.left - ANCHOR_GAP - VIEWPORT_MARGIN;
       if (!compact && rect.width > availableWidth && availableWidth < MIN_TEXT_WIDTH) {
         setCompact(true);
         return; // re-render as icon-only, then re-measure/re-clamp on the next effect pass
       }
+      const width = Math.min(rect.width, Math.max(0, availableWidth));
       if (rect.width > availableWidth) el.style.maxWidth = `${Math.max(0, availableWidth)}px`;
+      let left = anchorRect.left - width - ANCHOR_GAP;
+      if (left < VIEWPORT_MARGIN) left = VIEWPORT_MARGIN;
+      el.style.left = `${left}px`;
     } else {
       let left = rect.left;
       if (rect.right > window.innerWidth - VIEWPORT_MARGIN) left -= rect.right - (window.innerWidth - VIEWPORT_MARGIN);

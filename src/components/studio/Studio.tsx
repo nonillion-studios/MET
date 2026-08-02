@@ -2827,17 +2827,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
             slides over the canvas as a drawer at this breakpoint, anchored flush against the rail
             (`right-12` = the rail's own w-12) rather than the container's true right edge, so it
             doesn't overlap the rail either.
-            `pr-12` reserves one more rail-width of empty space past the rail's true edge: a
-            tool-group flyout (`ToolFlyout.tsx`) opens flush to the right of a vertical rail and,
-            by design, is only ever nudged back on-screen *vertically* — never flipped or shifted
-            horizontally, since "which side it opens on" is fixed. That's safe as long as the rail
-            always has room to its right, which it always did before (the rail shared the same
-            overlay as the panel drawer); docking it as its own column right at the container's
-            edge would silently strand every flyout past the viewport's right edge with nothing to
-            recover it. The reserved gap gives it exactly that room back without touching
-            ToolFlyout's own positioning logic. */}
+            No reserved gap needed past the rail's own edge here: a tool-group flyout
+            (`ToolFlyout.tsx`) now opens to the *left* of a vertical rail, into the canvas's own
+            space, which always has far more than enough room — unlike the old right-opening
+            behavior, which could strand a flyout past the viewport's right edge if the rail ever
+            sat flush against it. */}
         {!panelsHidden && layoutMode === 'tablet' && (
-          <div ref={rightRailRef} className="h-full shrink-0 relative z-30 pr-12">
+          <div ref={rightRailRef} className="h-full shrink-0 relative z-30">
             {toolRailVisible && <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />}
           </div>
         )}
