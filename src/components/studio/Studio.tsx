@@ -33,7 +33,7 @@ import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
-import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
+import { ToolOptionsBar, type PendingTextDefaults } from './toolOptions/ToolOptionsBar';
 import { StatusBar } from './StatusBar';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
@@ -786,6 +786,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
   // character styling to it.
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
+  /** What the *next* text layer will be created with, while the Text tool is armed but nothing is
+   *  placed/selected yet — the text options bar (ToolOptionsBar.tsx) reads/writes this instead of a
+   *  real layer in that state, and `handleAddTextLayer` seeds a freshly placed layer from it. */
+  const [pendingTextDefaults, setPendingTextDefaults] = useState<PendingTextDefaults>({
+    fontFamily: FONT_FAMILIES[0], fontSize: 28, color: '#000000', align: 'center', bold: false, italic: false,
+  });
   // A wrapped line clicked on a selected (not editing) text layer — independent of textSelection
   // above, which only exists while the editing textarea is open.
   const [textLineSelection, setTextLineSelection] = useState<TextLineSelection | null>(null);
@@ -1892,6 +1898,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     }
 
     const layer = createTextLayer(x, y, boxWidth, boxHeight);
+    // Seeds from whatever the text options bar had armed while no layer was selected yet — the
+    // TypeR branch below fully replaces `layer.text` anyway, so this is harmless when TypeR is
+    // driving placement instead of a plain click.
+    layer.text = {
+      ...layer.text!,
+      fontFamily: pendingTextDefaults.fontFamily,
+      fontSize: pendingTextDefaults.fontSize,
+      color: pendingTextDefaults.color,
+      align: pendingTextDefaults.align,
+      bold: pendingTextDefaults.bold,
+      italic: pendingTextDefaults.italic,
+    };
 
     if (typerArmed && typerLines[typerIndex]) {
       const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
@@ -1941,6 +1959,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   function handleOpenWarpDialog() {
     if (activeLayer?.type === 'text') setWarpDialogLayerId(activeLayer.id);
   }
+  /** The options bar's ✓/✗ commit/cancel buttons — both just exit editing (blurring the textarea
+   *  triggers its own onBlur -> setEditingLayerId(null) in StudioCanvas.tsx). Content is already
+   *  written live on every keystroke (same architecture the Text menu's Bold/Italic actions and
+   *  TextPanel's own controls already rely on), so there's no separate uncommitted draft for
+   *  Cancel to discard — a real, if simplified, limit rather than a decorative no-op distinction. */
+  function handleCommitTextEdit() { (document.activeElement as HTMLElement | null)?.blur(); }
+  function handleCancelTextEdit() { (document.activeElement as HTMLElement | null)?.blur(); }
   function handlePreviewWarp(warp: WarpTextSettings) {
     if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp });
   }
@@ -2971,6 +2996,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onExportSlices={handleExportSlices}
           hasSelection={hasSelection(selection)}
           onDeselect={() => setSelection(NO_SELECTION)}
+          activeText={activeLayer?.type === 'text' ? (activeLayer.text ?? null) : null}
+          activeTextLayerId={activeLayer?.type === 'text' ? activeLayer.id : null}
+          textSelection={textSelection}
+          onUpdateText={handleUpdateTextLayer}
+          pendingTextDefaults={pendingTextDefaults}
+          onUpdatePendingTextDefaults={(patch) => setPendingTextDefaults(prev => ({ ...prev, ...patch }))}
+          fontFamilies={allFontFamilies}
+          onOpenWarpText={handleOpenWarpDialog}
+          isEditingActiveText={textSelection != null && textSelection.layerId === activeLayerId}
+          onCommitTextEdit={handleCommitTextEdit}
+          onCancelTextEdit={handleCancelTextEdit}
         />
       )}
 

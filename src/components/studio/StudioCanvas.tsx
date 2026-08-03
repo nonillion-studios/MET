@@ -2973,7 +2973,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // editing starts, so the third click never reaches the Konva node — it has to be handled
           // here, not on the shape.
           onClick={(e) => { if (e.detail === 3) e.currentTarget.select(); reportSelection(e.currentTarget); }}
-          onBlur={() => { setEditingLayerId(null); onTextSelectionChange?.(null); }}
+          // Deliberately does NOT also clear the reported text selection: focusing a font/size/
+          // color/align control in the options bar or the Text panel blurs this textarea on the
+          // way there, and clearing the range on every such blur meant only the *first* toolbar
+          // edit after a selection ever applied to that range — every edit after it silently fell
+          // back to whole-layer, since `range` had already gone null by the time the second
+          // control's onChange ran. The range is scoped to `editingLayerId` by whoever reads it
+          // (`selection.layerId === activeLayer.id`), so it never misapplies to a different layer;
+          // it just naturally goes stale-but-harmless once the user moves on, and gets overwritten
+          // the next time they actually select/type in a textarea again.
+          onBlur={() => setEditingLayerId(null)}
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
           className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
           style={{
