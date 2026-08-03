@@ -24,7 +24,9 @@ import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
 } from './layerTree';
-import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, invertSelection, clipToSelection, type Selection } from './paint/selection';
+import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
+import { StrokeSelectionDialog, type StrokeSelectionResult } from './StrokeSelectionDialog';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
@@ -445,6 +447,84 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setSelection(sel => growSelection(sel, -amount, activePage.original.width, activePage.original.height));
   }
 
+  /** Marquee selection's own right-click context menu > Select Inverse — same effect as the Select
+   *  menu's item, just reachable from the selection itself. */
+  function handleSelectInverse() {
+    if (!activePage) return;
+    setSelection(sel => invertSelection(sel, activePage.original.width, activePage.original.height));
+  }
+
+  /** Whether Fill/Stroke Selection and Layer Via Copy/Cut have anywhere real to operate — the
+   *  *active* layer specifically (Photoshop's own target for all four), not the "topmost raster
+   *  layer" fallback Fill/Stroke Path use for baking a path that has no raster of its own. */
+  function canOperateOnSelection(): boolean {
+    return !!activeLayer && activeLayer.type === 'clean-patch' && !activeLayer.locked && hasSelection(selection);
+  }
+
+  function handleOpenFillSelectionDialog() { if (canOperateOnSelection()) setFillSelectionDialogOpen(true); }
+  function handleOpenStrokeSelectionDialog() { if (canOperateOnSelection()) setStrokeSelectionDialogOpen(true); }
+
+  function confirmFillSelection(result: FillPathResult) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch') return;
+    const canvas = canvasRef.current?.getPaintCanvas(target.id);
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    fillSelectionOntoCanvas(ctx, selection, result);
+    canvasRef.current?.redrawLayer(target.id);
+    handlePaintStrokeEnd(target.id, before);
+  }
+
+  function confirmStrokeSelection(result: StrokeSelectionResult) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch') return;
+    const canvas = canvasRef.current?.getPaintCanvas(target.id);
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    strokeSelectionOntoCanvas(ctx, selection, canvas.width, canvas.height, result);
+    canvasRef.current?.redrawLayer(target.id);
+    handlePaintStrokeEnd(target.id, before);
+  }
+
+  /** Ctrl+J / Ctrl+Shift+J (also the marquee context menu's own Layer Via Copy/Cut entries):
+   *  extracts the active layer's pixels within the current selection into a new layer directly
+   *  above it. Copy leaves the original untouched; Cut also clears the selected region from it. */
+  function extractSelectionToNewLayer(cut: boolean) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch' || target.locked || !hasSelection(selection)) return;
+    const sourceCanvas = canvasRef.current?.getPaintCanvas(target.id);
+    const sourceCtx = sourceCanvas?.getContext('2d');
+    if (!sourceCanvas || !sourceCtx) return;
+
+    const newLayer = createLayer('clean-patch', `${target.name} (${cut ? 'Cut' : 'Copy'})`);
+    updateLayers(current => insertAfter(current, target.id, newLayer), cut ? 'Layer Via Cut' : 'Layer Via Copy');
+    setActiveLayerId(newLayer.id);
+
+    const newCanvas = canvasRef.current?.getPaintCanvas(newLayer.id);
+    const newCtx = newCanvas?.getContext('2d');
+    if (newCanvas && newCtx) {
+      clipToSelection(newCtx, selection);
+      newCtx.drawImage(sourceCanvas, 0, 0);
+      newCtx.restore();
+      canvasRef.current?.redrawLayer(newLayer.id);
+    }
+
+    if (cut) {
+      const before = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      clipToSelection(sourceCtx, selection);
+      sourceCtx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+      sourceCtx.restore();
+      canvasRef.current?.redrawLayer(target.id);
+      handlePaintStrokeEnd(target.id, before);
+    }
+    setSelection(NO_SELECTION);
+  }
+
+  function handleLayerViaCopy() { extractSelectionToNewLayer(false); }
+  function handleLayerViaCut() { extractSelectionToNewLayer(true); }
+
   // Select > Transform Selection: StudioCanvas owns the interactive box and calls back here only
   // to flip the mode off again once the user commits (Enter) or cancels (Escape).
   const [transformingSelection, setTransformingSelection] = useState(false);
@@ -502,6 +582,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   } | null>(null);
   const [fillPathDialogOpen, setFillPathDialogOpen] = useState(false);
   const [strokePathDialogOpen, setStrokePathDialogOpen] = useState(false);
+  const [fillSelectionDialogOpen, setFillSelectionDialogOpen] = useState(false);
+  const [strokeSelectionDialogOpen, setStrokeSelectionDialogOpen] = useState(false);
 
   useEffect(() => {
     function onFullscreenChange() { setIsFullscreen(document.fullscreenElement === studioRootRef.current); }
@@ -557,6 +639,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onNewLayer: () => handleAddLayer(),
     onMergeVisible: () => handleMergeVisible(),
     onToggleMultiBubble: () => setMultiBubbleMode(!multiBubbleMode),
+    onLayerViaCopy: () => handleLayerViaCopy(),
+    onLayerViaCut: () => handleLayerViaCut(),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -2513,6 +2597,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleDock: () => setRightOpen(v => !v),
     addLayer: handleAddLayer,
     addBlankLayer: handleAddBlankLayer,
+    layerViaCopy: handleLayerViaCopy,
+    layerViaCut: handleLayerViaCut,
+    canOperateOnSelection: canOperateOnSelection(),
     duplicateLayer: () => activeLayerId && handleDuplicateLayer(activeLayerId),
     // Delete removes the whole selection, not just the primary layer.
     deleteLayer: () => handleDeleteLayers(selectedLayerIds),
@@ -2699,6 +2786,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onFillActivePath={handleFillActivePath}
       canBakePath={canBakePath}
       onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
+      onSelectInverse={handleSelectInverse}
+      onOpenFillSelectionDialog={handleOpenFillSelectionDialog}
+      onOpenStrokeSelectionDialog={handleOpenStrokeSelectionDialog}
+      onLayerViaCopy={handleLayerViaCopy}
+      onLayerViaCut={handleLayerViaCut}
+      onAddLayerFromContextMenu={handleAddLayer}
       typerArmed={typerArmed}
       typerPreviewLine={typerPreviewLine}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
@@ -3045,6 +3138,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         open={strokePathDialogOpen}
         onClose={() => setStrokePathDialogOpen(false)}
         onConfirm={confirmStrokePath}
+      />
+      <FillPathDialog
+        open={fillSelectionDialogOpen}
+        onClose={() => setFillSelectionDialogOpen(false)}
+        onConfirm={confirmFillSelection}
+        foregroundColor={paintSettings.color}
+        backgroundColor={paintSettings.bgColor}
+        title="Fill Selection"
+      />
+      <StrokeSelectionDialog
+        open={strokeSelectionDialogOpen}
+        onClose={() => setStrokeSelectionDialogOpen(false)}
+        onConfirm={confirmStrokeSelection}
+        foregroundColor={paintSettings.color}
       />
       {blendingOptionsLayerId && (() => {
         const target = findLayer(layers, blendingOptionsLayerId);

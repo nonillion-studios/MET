@@ -33,6 +33,8 @@ interface UseStudioShortcutsArgs {
   onNewLayer: () => void;
   onMergeVisible: () => void;
   onToggleMultiBubble: () => void;
+  onLayerViaCopy: () => void;
+  onLayerViaCut: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -54,7 +56,7 @@ export function useStudioShortcuts({
   onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
   onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
-  onMergeVisible, onToggleMultiBubble,
+  onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -84,6 +86,9 @@ export function useStudioShortcuts({
       if (mod && e.shiftKey && key === 'n') { e.preventDefault(); onNewLayer(); return; }
       if (mod && e.shiftKey && key === 'e') { e.preventDefault(); onMergeVisible(); return; }
       if (mod && e.shiftKey && key === 'm') { e.preventDefault(); onToggleMultiBubble(); return; }
+      // Checked ahead of the plain mod block too, or Ctrl+Shift+J would fall through into that
+      // block's unshifted 'j' case (Layer Via Copy) instead of Layer Via Cut.
+      if (mod && e.shiftKey && key === 'j') { e.preventDefault(); onLayerViaCut(); return; }
 
       if (mod) {
         if (key === 'g') { e.preventDefault(); onGroupLayers(); return; }
@@ -102,6 +107,7 @@ export function useStudioShortcuts({
         if (key === '.') { e.preventDefault(); onTextSizeStep(1); return; }
         if (key === ',') { e.preventDefault(); onTextSizeStep(-1); return; }
         if (key === 'd') { e.preventDefault(); onDeselect(); return; }
+        if (key === 'j') { e.preventDefault(); onLayerViaCopy(); return; }
         return; // other mod combos (undo/redo) are handled by useKeyboardUndo
       }
 
@@ -124,6 +130,6 @@ export function useStudioShortcuts({
     onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
     onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
-    onMergeVisible, onToggleMultiBubble,
+    onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut,
   ]);
 }

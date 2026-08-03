@@ -26,6 +26,10 @@ interface FillPathDialogProps {
   onConfirm: (result: FillPathResult) => void;
   foregroundColor: string;
   backgroundColor: string;
+  /** The marquee selection context menu's "Fill…" reuses this same dialog (identical fields —
+   *  color/blend mode/opacity/preserve transparency) with a title matching what it's actually
+   *  filling, rather than a second near-identical component. */
+  title?: string;
 }
 
 /**
@@ -35,7 +39,7 @@ interface FillPathDialogProps {
  * states beyond the linear undo stack) — shown disabled with a reason, this codebase's established
  * convention for a genuinely unavailable option, rather than a fake, non-functional entry.
  */
-export function FillPathDialog({ open, onClose, onConfirm, foregroundColor, backgroundColor }: FillPathDialogProps) {
+export function FillPathDialog({ open, onClose, onConfirm, foregroundColor, backgroundColor, title = 'Fill Path' }: FillPathDialogProps) {
   const [fillType, setFillType] = useState<FillType>('foreground');
   const [customColor, setCustomColor] = useState('#000000');
   const [blendMode, setBlendMode] = useState<BlendMode>('normal');
@@ -62,7 +66,7 @@ export function FillPathDialog({ open, onClose, onConfirm, foregroundColor, back
     <Modal
       open={open}
       onClose={onClose}
-      title="Fill Path"
+      title={title}
       size="sm"
       footer={
         <div className="flex justify-end gap-2">

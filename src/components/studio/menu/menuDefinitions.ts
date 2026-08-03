@@ -56,6 +56,13 @@ export interface MenuActions {
   toggleDock: () => void;
   addLayer: () => void;
   addBlankLayer: () => void;
+  /** Layer > Layer Via Copy/Cut (Ctrl+J / Ctrl+Shift+J) — extracts the active layer's pixels
+   *  within the current selection into a new layer above it; Cut also clears them from the
+   *  original. Gated on the same target this app's marquee context menu uses: the active layer
+   *  must be an unlocked raster layer with a real selection. */
+  layerViaCopy: () => void;
+  layerViaCut: () => void;
+  canOperateOnSelection: boolean;
   duplicateLayer: () => void;
   deleteLayer: () => void;
   moveLayerUp: () => void;
@@ -330,6 +337,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'add-layer', label: 'New Layer', shortcut: 'Ctrl+Shift+N', action: a.addLayer },
         { id: 'add-layer', label: 'New Layer', action: a.addLayer },
         { id: 'add-blank-layer', label: 'New Blank Layer', action: a.addBlankLayer },
+        { id: 'layer-via-copy', label: 'Layer Via Copy', shortcut: 'Ctrl+J', action: a.layerViaCopy, disabled: !a.canOperateOnSelection },
+        { id: 'layer-via-cut', label: 'Layer Via Cut', shortcut: 'Ctrl+Shift+J', action: a.layerViaCut, disabled: !a.canOperateOnSelection },
         { id: 'duplicate-layer', label: 'Duplicate Layer', action: a.duplicateLayer, disabled: !a.hasActiveLayer },
         { id: 'delete-layer', label: 'Delete Layer', action: a.deleteLayer, disabled: !a.hasActiveLayer },
         { id: 'sep1', label: '', separator: true },

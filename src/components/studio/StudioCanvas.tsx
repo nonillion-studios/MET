@@ -166,6 +166,19 @@ interface StudioCanvasProps {
   canBakePath?: boolean;
   /** Right-click "Delete Path" — removes the active path layer. */
   onDeleteActivePath?: () => void;
+  /** Right-click inside a marquee/lasso/wand selection — Select Inverse, same effect as the Select
+   *  menu's own item, just reachable from the selection itself. */
+  onSelectInverse?: () => void;
+  /** Right-click "Fill…"/"Stroke…" inside a selection — opens the Fill/Stroke Selection dialogs,
+   *  which bake onto the active layer the same way Fill/Stroke Path do. */
+  onOpenFillSelectionDialog?: () => void;
+  onOpenStrokeSelectionDialog?: () => void;
+  /** Right-click "Layer Via Copy"/"Layer Via Cut" (Ctrl+J / Ctrl+Shift+J) — extracts the selected
+   *  pixels from the active layer into a new layer above it; Cut also clears them from the original. */
+  onLayerViaCopy?: () => void;
+  onLayerViaCut?: () => void;
+  /** Right-click "New Layer" inside a selection — same as the Layers panel's own Add button. */
+  onAddLayerFromContextMenu?: () => void;
   /** TypeR armed placement: while dragging out a text box, the current script line previews inside
    *  it (semi-transparent, in its real font/color/size) — a pure rendering overlay, never touching
    *  the contentEditable-equivalent text-edit state or any paint canvas. Undefined/false when TypeR
@@ -308,6 +321,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
+  onSelectInverse, onOpenFillSelectionDialog, onOpenStrokeSelectionDialog, onLayerViaCopy, onLayerViaCut, onAddLayerFromContextMenu,
   typerArmed = false, typerPreviewLine = null,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -529,6 +543,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [pathContextMenu]);
+
+  /** Right-click inside a marquee/lasso/wand selection — Select Inverse/Fill/Stroke/Layer Via Copy/
+   *  Layer Via Cut/New Layer, positioned at the click's container coordinates (same HTML-overlay-
+   *  above-the-stage pattern as `pathContextMenu` above). Only ever set when the active tool is a
+   *  selection tool and the click landed inside the current selection's own shape — see the
+   *  `onContextMenu` handler on `<Stage>` below. */
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const selectionContextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectionContextMenu) return;
+    function onPointerDown(e: PointerEvent) {
+      if (selectionContextMenuRef.current && !selectionContextMenuRef.current.contains(e.target as Node)) setSelectionContextMenu(null);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSelectionContextMenu(null);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [selectionContextMenu]);
 
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
   const [spaceDown, setSpaceDown] = useState(false);
@@ -1467,6 +1505,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
     return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
+  };
+
+  /** Right-click handler for the whole Stage — only ever opens the selection context menu (never
+   *  the browser's native one) when a selection tool is active, a selection exists, and the click
+   *  landed inside its own shape; otherwise falls through to whatever the browser/other handlers
+   *  would normally do (e.g. a right-click with the brush tool active does nothing special here). */
+  const handleStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    const isSelectionTool = MARQUEE_TOOLS.has(activeTool) || LASSO_TOOLS.has(activeTool) || activeTool === 'wand';
+    if (!isSelectionTool || !hasSelection(selection)) return;
+    const p = imageSpacePointer();
+    if (!p || !selectionContainsPoint(selection, p.x, p.y)) return;
+    e.evt.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
   };
 
   const handlePaintPointerDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
@@ -2494,6 +2546,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onClick={handleStageClick}
           onTap={handleStageClick}
           onDblClick={handleStageDblClick}
+          onContextMenu={handleStageContextMenu}
           onPointerDown={handlePaintPointerDown}
           onPointerMove={handlePaintPointerMove}
           onPointerUp={handlePaintPointerUp}
@@ -2988,6 +3041,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         return (
           <div ref={pathContextMenuRef} className="absolute z-50" style={{ left: pathContextMenu.x, top: pathContextMenu.y }}>
             <Menu items={items} onItemClick={(action) => { action?.(); setPathContextMenu(null); }} />
+          </div>
+        );
+      })()}
+      {selectionContextMenu && (() => {
+        const canOperate = activeLayerId != null && findLayer(layers, activeLayerId)?.type === 'clean-patch' && !findLayer(layers, activeLayerId)?.locked;
+        const items: MenuItemDef[] = [
+          { id: 'select-inverse', label: 'Select Inverse', shortcut: 'Ctrl+Shift+I', action: onSelectInverse },
+          { id: 'sep1', label: '', separator: true },
+          { id: 'fill', label: 'Fill…', disabled: !canOperate, action: onOpenFillSelectionDialog },
+          { id: 'stroke', label: 'Stroke…', disabled: !canOperate, action: onOpenStrokeSelectionDialog },
+          { id: 'sep2', label: '', separator: true },
+          { id: 'layer-via-copy', label: 'Layer Via Copy', shortcut: 'Ctrl+J', disabled: !canOperate, action: onLayerViaCopy },
+          { id: 'layer-via-cut', label: 'Layer Via Cut', shortcut: 'Ctrl+Shift+J', disabled: !canOperate, action: onLayerViaCut },
+          { id: 'sep3', label: '', separator: true },
+          { id: 'new-layer', label: 'New Layer…', action: onAddLayerFromContextMenu },
+        ];
+        return (
+          <div ref={selectionContextMenuRef} className="absolute z-50" style={{ left: selectionContextMenu.x, top: selectionContextMenu.y }}>
+            <Menu items={items} onItemClick={(action) => { action?.(); setSelectionContextMenu(null); }} />
           </div>
         );
       })()}
