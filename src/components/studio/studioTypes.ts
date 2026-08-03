@@ -851,7 +851,20 @@ export interface StudioLayer {
   type: StudioLayerType;
   name: string;
   visible: boolean;
+  /** "Lock All" — the original single lock flag, unchanged in meaning (blocks paint, move, and
+   *  delete together). The three granular locks below are independent additions on top of it, not
+   *  a replacement — an old persisted layer with only `locked` set behaves exactly as it always
+   *  did, since the new fields are optional and simply absent (falsy) on it. */
   locked: boolean;
+  /** Painting only affects pixels that already have some opacity — new strokes get clipped to the
+   *  layer's current alpha shape instead of extending it. */
+  lockTransparentPixels?: boolean;
+  /** No painting at all, full stop — distinct from `lockTransparentPixels`, which still allows
+   *  painting over already-opaque pixels. */
+  lockImagePixels?: boolean;
+  /** The layer can't be dragged/transformed, but can still be painted on (unless one of the other
+   *  two locks above also applies). */
+  lockPosition?: boolean;
   opacity: number; // 0-1
   blendMode: BlendMode;
   /** Background layers can't be deleted, reordered below, or have opacity/blend changed. */

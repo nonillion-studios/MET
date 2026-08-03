@@ -68,6 +68,14 @@ export interface MenuActions {
   moveLayerUp: () => void;
   moveLayerDown: () => void;
   hasActiveLayer: boolean;
+  /** Layer > Lock Transparent/Image/Position Pixels — the active layer's own three granular lock
+   *  flags, each toggled independently. Previously permanently-disabled stubs. */
+  toggleLockTransparentPixels: () => void;
+  lockTransparentPixels: boolean;
+  toggleLockImagePixels: () => void;
+  lockImagePixels: boolean;
+  toggleLockPosition: () => void;
+  lockPosition: boolean;
   groupLayers: () => void;
   ungroupLayers: () => void;
   /** Gates Ungroup — it's only meaningful when the primary selection is a group. */
@@ -367,9 +375,9 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'layer-properties', label: 'Layer Properties…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'blending-options', label: 'Blending Options…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'sep4', label: '', separator: true },
-        { id: 'lock-transparent', label: 'Lock Transparent Pixels', disabled: true, checked: false },
-        { id: 'lock-image', label: 'Lock Image Pixels', disabled: true, checked: false },
-        { id: 'lock-position', label: 'Lock Position', disabled: true, checked: false },
+        { id: 'lock-transparent', label: 'Lock Transparent Pixels', action: a.toggleLockTransparentPixels, disabled: !a.hasActiveLayer, checked: a.lockTransparentPixels },
+        { id: 'lock-image', label: 'Lock Image Pixels', action: a.toggleLockImagePixels, disabled: !a.hasActiveLayer, checked: a.lockImagePixels },
+        { id: 'lock-position', label: 'Lock Position', action: a.toggleLockPosition, disabled: !a.hasActiveLayer, checked: a.lockPosition },
         { id: 'sep5', label: '', separator: true },
         { id: 'stroke-path', label: 'Stroke Path…', action: a.strokeActivePath, disabled: !a.canBakePath },
         { id: 'fill-path', label: 'Fill Path…', action: a.fillActivePath, disabled: !a.canBakePath },

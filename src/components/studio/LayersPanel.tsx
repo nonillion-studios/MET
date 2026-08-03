@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, SlidersHorizontal, ChevronUp, ChevronDown,
-  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2, Grid2x2, Paintbrush, Move,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -86,6 +86,10 @@ interface LayersPanelProps {
   /** Double-click (with confirmation) or right-click > "Layer from Background" — converts the
    *  locked, restriction-bearing background row into a regular, fully editable layer. */
   onConvertBackgroundToLayer?: () => void;
+  /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
+   *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
+   *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
+  onToggleLayerLockFlag?: (id: string, key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked') => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -109,7 +113,7 @@ export function LayersPanel({
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
-  onConvertBackgroundToLayer, onOpenWarpText,
+  onConvertBackgroundToLayer, onOpenWarpText, onToggleLayerLockFlag,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -328,6 +332,37 @@ export function LayersPanel({
         </>
       }
     >
+        {onToggleLayerLockFlag && activeLayerId && !findLayer(layers, activeLayerId)?.isBackground && (() => {
+          const active = findLayer(layers, activeLayerId);
+          if (!active) return null;
+          const lockButtons: { key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked'; label: string; Icon: typeof Lock }[] = [
+            { key: 'lockTransparentPixels', label: 'Lock Transparent Pixels', Icon: Grid2x2 },
+            { key: 'lockImagePixels', label: 'Lock Image Pixels', Icon: Paintbrush },
+            { key: 'lockPosition', label: 'Lock Position', Icon: Move },
+            { key: 'locked', label: 'Lock All', Icon: Lock },
+          ];
+          return (
+            <div className="flex items-center gap-1 px-1 pb-1.5 mb-1 border-b border-hairline/60">
+              <span className="text-[10px] uppercase tracking-wide text-ink-faint mr-0.5">Lock</span>
+              {lockButtons.map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-label={label}
+                  title={label}
+                  aria-pressed={!!active[key]}
+                  onClick={() => onToggleLayerLockFlag(active.id, key)}
+                  className={cn(
+                    'w-6 h-6 flex items-center justify-center rounded-control border',
+                    active[key] ? 'bg-accent-soft text-accent border-accent/40' : 'border-transparent text-ink-faint hover:bg-ink/5'
+                  )}
+                >
+                  <Icon size={13} />
+                </button>
+              ))}
+            </div>
+          );
+        })()}
         {ordered.map(({ layer, depth }) => {
           const Icon = LAYER_TYPE_ICON[layer.type];
           const active = layer.id === activeLayerId;

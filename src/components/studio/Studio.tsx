@@ -22,7 +22,7 @@ import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
 import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
-  collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
+  collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase, canPaintLayer,
 } from './layerTree';
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, invertSelection, clipToSelection, type Selection } from './paint/selection';
 import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
@@ -459,7 +459,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *  *active* layer specifically (Photoshop's own target for all four), not the "topmost raster
    *  layer" fallback Fill/Stroke Path use for baking a path that has no raster of its own. */
   function canOperateOnSelection(): boolean {
-    return !!activeLayer && activeLayer.type === 'clean-patch' && !activeLayer.locked && hasSelection(selection);
+    return !!activeLayer && activeLayer.type === 'clean-patch' && canPaintLayer(activeLayer) && hasSelection(selection);
   }
 
   function handleOpenFillSelectionDialog() { if (canOperateOnSelection()) setFillSelectionDialogOpen(true); }
@@ -495,6 +495,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   function extractSelectionToNewLayer(cut: boolean) {
     const target = activeLayer;
     if (!target || target.type !== 'clean-patch' || target.locked || !hasSelection(selection)) return;
+    // Cut writes to the source layer (clearing the selected region); Copy only ever reads it, so
+    // Lock Image Pixels — which blocks writes, not reads — only needs to gate the Cut half.
+    if (cut && !canPaintLayer(target)) return;
     const sourceCanvas = canvasRef.current?.getPaintCanvas(target.id);
     const sourceCtx = sourceCanvas?.getContext('2d');
     if (!sourceCanvas || !sourceCtx) return;
@@ -1847,6 +1850,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, locked: !l.locked })), 'Toggle Lock');
   }
 
+  /** The Layers panel header's 4 granular lock buttons, and the Layer menu's own Lock Transparent/
+   *  Image/Position Pixels items (previously permanently-disabled stubs) — both funnel through this. */
+  function handleToggleLayerLockFlag(id: string, key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked') {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, [key]: !l[key] })), 'Toggle Lock');
+  }
+
   function handleOpacityChange(id: string, opacity: number) {
     // Continuous slider drag — intentionally not tracked in history (would spam an entry per pixel).
     updateLayers(current => updateLayer(current, id, l => ({ ...l, opacity })));
@@ -2382,6 +2391,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSelect={selectLayer}
       onToggleVisible={handleToggleVisible}
       onToggleLocked={handleToggleLocked}
+      onToggleLayerLockFlag={handleToggleLayerLockFlag}
       onOpacityChange={handleOpacityChange}
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
@@ -2649,6 +2659,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     moveLayerUp: () => activeLayerId && handleMoveLayer(activeLayerId, 'up'),
     moveLayerDown: () => activeLayerId && handleMoveLayer(activeLayerId, 'down'),
     hasActiveLayer: !!activeLayer && !activeLayer.isBackground,
+    toggleLockTransparentPixels: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockTransparentPixels'); },
+    lockTransparentPixels: !!activeLayer?.lockTransparentPixels,
+    toggleLockImagePixels: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockImagePixels'); },
+    lockImagePixels: !!activeLayer?.lockImagePixels,
+    toggleLockPosition: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockPosition'); },
+    lockPosition: !!activeLayer?.lockPosition,
     groupLayers: handleGroupLayers,
     ungroupLayers: () => activeLayerId && handleUngroupLayer(activeLayerId),
     isGroupActive: activeLayer?.type === 'group',

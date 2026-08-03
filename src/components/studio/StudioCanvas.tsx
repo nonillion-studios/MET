@@ -12,6 +12,7 @@ import { traceAnchors, applyCurvatureSmoothing } from './pathGeometry';
 import { genId } from '../../lib/id';
 import {
   findLayer, findPath, getAtPath, getSiblings, flattenTree, mapTree, partitionAdjustments, groupClipRuns,
+  canPaintLayer, canMoveLayer,
   type RenderNode, type ClipRun,
 } from './layerTree';
 import { layoutText } from './textLayout';
@@ -624,7 +625,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
   const paintLayerIdRef = useRef<string | null>(null);
-  paintLayerIdRef.current = activeLayer?.type === 'clean-patch' && !activeLayer.locked ? activeLayer.id : null;
+  paintLayerIdRef.current = activeLayer?.type === 'clean-patch' && canPaintLayer(activeLayer) ? activeLayer.id : null;
 
   // The layer whose mask is being painted, and that mask's own registry id — derived from the
   // current tree rather than passed as two separate props, so they can never disagree.
@@ -744,6 +745,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     getSampleCanvas: () => getSampleComposite(paintSettings.sampleMode),
     onGradientPreview: (start, current) => setGradientPreview(start && current ? { start, current } : null),
     getShiftHeld: () => shiftHeld,
+    getPreserveTransparency: () => activeLayer?.type === 'clean-patch' && !!activeLayer.lockTransparentPixels,
   });
 
   // Switching away from the gradient tool mid-drag (a keyboard shortcut, picking another tool) has
@@ -1706,7 +1708,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // active layer" path here. No layer selected, the Background layer, or a locked layer are all
     // covered by paintLayerIdRef being null (see its assignment above).
     if (!editingMaskLayer && !quickMaskActive && !paintLayerIdRef.current) {
-      swalToast({ icon: 'warning', title: 'Select a layer to paint on' });
+      if (activeLayer?.type === 'clean-patch' && !canPaintLayer(activeLayer)) {
+        swalToast({ icon: 'warning', title: "This layer's pixels are locked" });
+      } else {
+        swalToast({ icon: 'warning', title: 'Select a layer to paint on' });
+      }
       return;
     }
     const p = imageSpacePointer();
@@ -2407,7 +2413,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
             editing={layer.id === editingLayerId}
             selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-            draggable={activeTool === 'select' && !layer.locked && !spaceDown}
+            draggable={activeTool === 'select' && canMoveLayer(layer) && !spaceDown}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
@@ -2424,8 +2430,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             layer={layer}
             groupRef={(node) => { pathNodeRefs.current[layer.id] = node; }}
             selected={selectionIds.includes(layer.id)}
-            draggable={activeTool === 'path-select' && !layer.locked}
-            directSelect={activeTool === 'direct-select' && !layer.locked}
+            draggable={activeTool === 'path-select' && canMoveLayer(layer)}
+            directSelect={activeTool === 'direct-select' && canMoveLayer(layer)}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onUpdate={(patch) => onUpdatePathLayer(layer.id, patch)}
             onContextMenu={(clientX, clientY) => {
@@ -3068,7 +3074,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         );
       })()}
       {selectionContextMenu && (() => {
-        const canOperate = activeLayerId != null && findLayer(layers, activeLayerId)?.type === 'clean-patch' && !findLayer(layers, activeLayerId)?.locked;
+        const activeForMenu = activeLayerId != null ? findLayer(layers, activeLayerId) : null;
+        const canOperate = !!activeForMenu && activeForMenu.type === 'clean-patch' && canPaintLayer(activeForMenu);
         const items: MenuItemDef[] = [
           { id: 'select-inverse', label: 'Select Inverse', shortcut: 'Ctrl+Shift+I', action: onSelectInverse },
           { id: 'sep1', label: '', separator: true },

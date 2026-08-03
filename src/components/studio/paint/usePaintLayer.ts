@@ -43,6 +43,12 @@ interface UsePaintLayerArgs {
   /** Accessor rather than a raw boolean prop — read fresh on every pointermove instead of closing
    *  over a value that'd go stale mid-drag (same reasoning as `getLayerId`/`getFallbackCanvas`). */
   getShiftHeld?: () => boolean;
+  /** Layer > Lock Transparent Pixels: when true, the stroke buffer composites onto the layer with
+   *  'source-atop' instead of 'source-over', so new paint only ever lands on pixels the layer
+   *  already had some opacity on — Photoshop's exact "preserve transparency" semantics. Read fresh
+   *  per stroke commit (same accessor convention as the rest of this interface), not cached, since
+   *  the active layer/its lock can change between strokes. */
+  getPreserveTransparency?: () => boolean;
 }
 
 /** Shift-snap: preserves the drag distance but rounds the angle to the nearest 45° increment —
@@ -64,7 +70,7 @@ function snapGradientPoint(start: { x: number; y: number }, current: { x: number
  * coordinates) only when `activeTool` is one of PAINT_TOOLS; select/pan/text keep
  * their existing, untouched code paths.
  */
-export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas, onGradientPreview, getShiftHeld }: UsePaintLayerArgs) {
+export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas, onGradientPreview, getShiftHeld, getPreserveTransparency }: UsePaintLayerArgs) {
   const drawingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   // Intentionally shared between Clone Stamp and Healing Brush — Photoshop keeps one source point
@@ -153,7 +159,13 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     ctx.putImageData(before, 0, 0, x, y, w, h);
     ctx.save();
     ctx.globalAlpha = settings.opacity;
-    ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+    // Eraser already only ever removes from pixels that exist, so Lock Transparent Pixels changes
+    // nothing for it — 'source-atop' only matters for tools that add new opaque pixels.
+    ctx.globalCompositeOperation = tool === 'eraser'
+      ? 'destination-out'
+      : getPreserveTransparency?.()
+        ? 'source-atop'
+        : 'source-over';
     ctx.drawImage(buf, x, y, w, h, x, y, w, h);
     ctx.restore();
   }

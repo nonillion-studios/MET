@@ -161,6 +161,21 @@ export function isEffectivelyLocked(layers: StudioLayer[], id: string): boolean 
   return ancestorChain(layers, id).some((a) => a.locked);
 }
 
+/** Whether painting on `layer` is allowed at all — "Lock All" or "Lock Image Pixels" both block it
+ *  outright. Doesn't account for "Lock Transparent Pixels", which still permits painting (just
+ *  clipped to the layer's existing alpha) — that one is enforced at the paint-engine level instead,
+ *  not by refusing the paint target. Flat (no ancestor check), matching every existing call site's
+ *  own `!layer.locked` convention rather than `isEffectivelyLocked`'s tree-aware one, which nothing
+ *  in this codebase currently calls. */
+export function canPaintLayer(layer: StudioLayer): boolean {
+  return !layer.locked && !layer.lockImagePixels;
+}
+
+/** Whether `layer` can be dragged/transformed — "Lock All" or "Lock Position" both block it. */
+export function canMoveLayer(layer: StudioLayer): boolean {
+  return !layer.locked && !layer.lockPosition;
+}
+
 /** Whether the up/down buttons should be live — mirrors what `moveWithinParent` will accept. */
 export function canMove(layers: StudioLayer[], id: string, dir: 'up' | 'down'): boolean {
   const layer = findLayer(layers, id);
