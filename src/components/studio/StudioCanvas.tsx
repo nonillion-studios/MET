@@ -1525,6 +1525,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // A second touch point mid-gesture belongs to two-finger pan/pinch (handled by the Touch
     // handlers below), not tool dispatch — Pointer Events fire per-finger independently.
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
+    // Right-click never starts a paint/marquee/lasso gesture for any tool — it's excluded here so
+    // it falls through to the Stage's own `onContextMenu` (the selection context menu) instead,
+    // rather than also kicking off (and, on the matching pointerup, finalizing or deselecting) a
+    // marquee/lasso drag no user gesture actually asked for.
+    if (e.evt.button === 2) return;
     // Middle-mouse-button drag, or left-click while Space is held, pans regardless of the active tool.
     if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
       e.evt.preventDefault();
@@ -1961,7 +1966,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (MARQUEE_TOOLS.has(activeTool)) {
       // A click with no real drag never touched the selection (see the dead-zone guard in
-      // pointermove) — nothing to combine, and nothing to revert either.
+      // pointermove) — nothing to combine. It DOES deselect, though, same as clicking empty canvas
+      // with the Select tool does for layer selection: a plain click outside the current
+      // selection's own shape clears it; a plain click *inside* it (or with no selection active at
+      // all) is left untouched, matching Photoshop's marquee/lasso click behavior.
       let finalShape: Selection | null = null;
       if (marqueeStartRef.current && marqueeDraggedRef.current) {
         if (combineModeRef.current !== 'replace' && image) {
@@ -1970,6 +1978,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         } else {
           finalShape = selection; // already the live rect/ellipse committed on the last pointermove
         }
+      } else if (marqueeStartRef.current && hasSelection(selection) && !selectionContainsPoint(selection, marqueeStartRef.current.x, marqueeStartRef.current.y)) {
+        onSelectionChange(NO_SELECTION);
       }
       marqueeStartRef.current = null;
       marqueeDraggedRef.current = false;
@@ -1982,6 +1992,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
+      // Same click-vs-drag deselect rule as the marquee branch above: a plain click (no drag)
+      // outside the current selection clears it; inside it (or with nothing selected) is a no-op.
       let finalShape: Selection | null = null;
       if (lassoPointsRef.current && lassoDraggedRef.current) {
         if (combineModeRef.current !== 'replace' && image) {
@@ -1990,6 +2002,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         } else {
           finalShape = { kind: 'polygon', points: lassoPointsRef.current };
         }
+      } else if (lassoPointsRef.current && hasSelection(selection) && !selectionContainsPoint(selection, lassoPointsRef.current[0].x, lassoPointsRef.current[0].y)) {
+        onSelectionChange(NO_SELECTION);
       }
       lassoPointsRef.current = null;
       lassoDraggedRef.current = false;
