@@ -22,15 +22,18 @@ import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
 import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
-  collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase,
+  collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase, canPaintLayer,
 } from './layerTree';
-import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, type Selection } from './paint/selection';
+import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, invertSelection, clipToSelection, type Selection } from './paint/selection';
+import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
+import { StrokeSelectionDialog, type StrokeSelectionResult } from './StrokeSelectionDialog';
+import { WarpTextDialog } from './WarpTextDialog';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
-import { ToolOptionsBar } from './toolOptions/ToolOptionsBar';
+import { ToolOptionsBar, type PendingTextDefaults } from './toolOptions/ToolOptionsBar';
 import { StatusBar } from './StatusBar';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
@@ -42,12 +45,13 @@ import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
+import { parsePsdFile } from '../../lib/importPsd';
 import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
 import JSZip from 'jszip';
 import {
   createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, parseTyperScript,
   createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
-  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign,
+  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
 } from './studioTypes';
 import { applyCharPatch, resolveCharValue } from './textRuns';
 import { getClipboardLayer, setClipboardLayer } from '../../lib/layerClipboard';
@@ -127,6 +131,8 @@ export function Studio(props: StudioProps) {
 
 function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
+  const placeImageInputRef = useRef<HTMLInputElement>(null);
+  const placePsdInputRef = useRef<HTMLInputElement>(null);
 
   // Live collab (spectator mode) — a hosted session for this chapter, joined either as the host
   // (via "Go Live" below) or as a viewer (viewOnlySession, set by App.tsx when opened from a
@@ -442,6 +448,87 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setSelection(sel => growSelection(sel, -amount, activePage.original.width, activePage.original.height));
   }
 
+  /** Marquee selection's own right-click context menu > Select Inverse — same effect as the Select
+   *  menu's item, just reachable from the selection itself. */
+  function handleSelectInverse() {
+    if (!activePage) return;
+    setSelection(sel => invertSelection(sel, activePage.original.width, activePage.original.height));
+  }
+
+  /** Whether Fill/Stroke Selection and Layer Via Copy/Cut have anywhere real to operate — the
+   *  *active* layer specifically (Photoshop's own target for all four), not the "topmost raster
+   *  layer" fallback Fill/Stroke Path use for baking a path that has no raster of its own. */
+  function canOperateOnSelection(): boolean {
+    return !!activeLayer && activeLayer.type === 'clean-patch' && canPaintLayer(activeLayer) && hasSelection(selection);
+  }
+
+  function handleOpenFillSelectionDialog() { if (canOperateOnSelection()) setFillSelectionDialogOpen(true); }
+  function handleOpenStrokeSelectionDialog() { if (canOperateOnSelection()) setStrokeSelectionDialogOpen(true); }
+
+  function confirmFillSelection(result: FillPathResult) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch') return;
+    const canvas = canvasRef.current?.getPaintCanvas(target.id);
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    fillSelectionOntoCanvas(ctx, selection, result);
+    canvasRef.current?.redrawLayer(target.id);
+    handlePaintStrokeEnd(target.id, before);
+  }
+
+  function confirmStrokeSelection(result: StrokeSelectionResult) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch') return;
+    const canvas = canvasRef.current?.getPaintCanvas(target.id);
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    strokeSelectionOntoCanvas(ctx, selection, canvas.width, canvas.height, result);
+    canvasRef.current?.redrawLayer(target.id);
+    handlePaintStrokeEnd(target.id, before);
+  }
+
+  /** Ctrl+J / Ctrl+Shift+J (also the marquee context menu's own Layer Via Copy/Cut entries):
+   *  extracts the active layer's pixels within the current selection into a new layer directly
+   *  above it. Copy leaves the original untouched; Cut also clears the selected region from it. */
+  function extractSelectionToNewLayer(cut: boolean) {
+    const target = activeLayer;
+    if (!target || target.type !== 'clean-patch' || target.locked || !hasSelection(selection)) return;
+    // Cut writes to the source layer (clearing the selected region); Copy only ever reads it, so
+    // Lock Image Pixels — which blocks writes, not reads — only needs to gate the Cut half.
+    if (cut && !canPaintLayer(target)) return;
+    const sourceCanvas = canvasRef.current?.getPaintCanvas(target.id);
+    const sourceCtx = sourceCanvas?.getContext('2d');
+    if (!sourceCanvas || !sourceCtx) return;
+
+    const newLayer = createLayer('clean-patch', `${target.name} (${cut ? 'Cut' : 'Copy'})`);
+    updateLayers(current => insertAfter(current, target.id, newLayer), cut ? 'Layer Via Cut' : 'Layer Via Copy');
+    setActiveLayerId(newLayer.id);
+
+    const newCanvas = canvasRef.current?.getPaintCanvas(newLayer.id);
+    const newCtx = newCanvas?.getContext('2d');
+    if (newCanvas && newCtx) {
+      clipToSelection(newCtx, selection);
+      newCtx.drawImage(sourceCanvas, 0, 0);
+      newCtx.restore();
+      canvasRef.current?.redrawLayer(newLayer.id);
+    }
+
+    if (cut) {
+      const before = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      clipToSelection(sourceCtx, selection);
+      sourceCtx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+      sourceCtx.restore();
+      canvasRef.current?.redrawLayer(target.id);
+      handlePaintStrokeEnd(target.id, before);
+    }
+    setSelection(NO_SELECTION);
+  }
+
+  function handleLayerViaCopy() { extractSelectionToNewLayer(false); }
+  function handleLayerViaCut() { extractSelectionToNewLayer(true); }
+
   // Select > Transform Selection: StudioCanvas owns the interactive box and calls back here only
   // to flip the mode off again once the user commits (Enter) or cancels (Escape).
   const [transformingSelection, setTransformingSelection] = useState(false);
@@ -499,6 +586,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   } | null>(null);
   const [fillPathDialogOpen, setFillPathDialogOpen] = useState(false);
   const [strokePathDialogOpen, setStrokePathDialogOpen] = useState(false);
+  const [fillSelectionDialogOpen, setFillSelectionDialogOpen] = useState(false);
+  const [strokeSelectionDialogOpen, setStrokeSelectionDialogOpen] = useState(false);
+  const [warpDialogLayerId, setWarpDialogLayerId] = useState<string | null>(null);
 
   useEffect(() => {
     function onFullscreenChange() { setIsFullscreen(document.fullscreenElement === studioRootRef.current); }
@@ -554,6 +644,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onNewLayer: () => handleAddLayer(),
     onMergeVisible: () => handleMergeVisible(),
     onToggleMultiBubble: () => setMultiBubbleMode(!multiBubbleMode),
+    onLayerViaCopy: () => handleLayerViaCopy(),
+    onLayerViaCut: () => handleLayerViaCut(),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -697,6 +789,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // rather than in StudioCanvas because TextPanel — a sibling in the dock — is what applies
   // character styling to it.
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
+  /** What the *next* text layer will be created with, while the Text tool is armed but nothing is
+   *  placed/selected yet — the text options bar (ToolOptionsBar.tsx) reads/writes this instead of a
+   *  real layer in that state, and `handleAddTextLayer` seeds a freshly placed layer from it. */
+  const [pendingTextDefaults, setPendingTextDefaults] = useState<PendingTextDefaults>({
+    fontFamily: FONT_FAMILIES[0], fontSize: 28, color: '#000000', align: 'center', bold: false, italic: false,
+  });
   // A wrapped line clicked on a selected (not editing) text layer — independent of textSelection
   // above, which only exists while the editing textarea is open.
   const [textLineSelection, setTextLineSelection] = useState<TextLineSelection | null>(null);
@@ -1231,6 +1329,86 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveLayerId(layer.id);
   }
 
+  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file, adds a new
+   *  clean-patch layer named "Image: <filename>" above the current stack, and draws the image
+   *  centered on the page — scaled down to fit if it's larger than the page, never scaled up. The
+   *  new layer is immediately selected and the tool switches to Move so it's draggable right away;
+   *  this app has no resize/rotate "Free Transform" handles for raster layers to activate (only
+   *  text/path layers get the Transformer — see TextLayerNode/PathLayerNode), so drag-to-reposition
+   *  is the honest extent of "immediately adjustable" here. */
+  async function handlePlaceImageFiles(files: FileList | File[]) {
+    if (!activePage) return;
+    const source = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
+    const list = Array.from(files);
+    for (const file of list) {
+      const url = URL.createObjectURL(file);
+      try {
+        const img = await loadImageFromSrc(url);
+        const layer = createLayer('clean-patch', `Image: ${file.name}`);
+        updateLayers(current => [...current, layer], 'Place Image');
+        setActiveLayerId(layer.id);
+        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
+          const drawW = img.naturalWidth * scale;
+          const drawH = img.naturalHeight * scale;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, (source.width - drawW) / 2, (source.height - drawH) / 2, drawW, drawH);
+          canvasRef.current?.redrawLayer(layer.id);
+        }
+      } catch {
+        swalToast({ icon: 'error', title: `Couldn't place "${file.name}"`, text: 'Not a readable image file.' });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    setActiveTool('select');
+  }
+
+  /** Layers panel > double-click Background (with confirmation) or right-click > "Layer from
+   *  Background": promotes the special locked background row into a regular, fully editable
+   *  `clean-patch` layer. Flipping `isBackground`/`locked` alone isn't enough — `StudioCanvas`'s
+   *  render path draws a `type === 'background'` layer straight from the page image, never from a
+   *  raster canvas of its own, so the type has to change too. `seedLayerWithBackground` (already
+   *  used to give new layers real content for Clone/Heal/Liquify to work on) copies the current
+   *  page pixels into that same layer id's own raster canvas, so the visual result is identical to
+   *  what was on screen the moment before conversion. */
+  function handleConvertBackgroundToLayer() {
+    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false })), 'Convert Background to Layer');
+    canvasRef.current?.seedLayerWithBackground('background');
+  }
+
+  async function handlePlacePsdFile(file: File) {
+    try {
+      const source = activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original) : null;
+      const parsed = await parsePsdFile(file);
+      if (source && (parsed.width !== source.width || parsed.height !== source.height)) {
+        swalToast({
+          icon: 'warning', title: 'PSD size differs from this page',
+          text: `PSD is ${parsed.width}×${parsed.height}, page is ${source.width}×${source.height} — layers may be misaligned.`,
+        });
+      }
+      updateLayers(current => [...current, ...parsed.layers], 'Place PSD as Layers');
+      const flatImported = flattenTree(parsed.layers);
+      for (const layer of flatImported) {
+        const raster = parsed.rasters.get(layer.id);
+        if (!raster) continue;
+        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(raster.canvas, raster.left, raster.top);
+          canvasRef.current?.redrawLayer(layer.id);
+        }
+      }
+      if (flatImported.length > 0) setActiveLayerId(flatImported[flatImported.length - 1].id);
+      swalToast({ icon: 'success', title: `Imported ${flatImported.length} layer${flatImported.length === 1 ? '' : 's'} from PSD` });
+    } catch {
+      swalToast({ icon: 'error', title: `Couldn't open "${file.name}"`, text: 'Not a readable PSD file.' });
+    }
+  }
+
   async function handleCreateWhitedPatchLayer(page: Page, whited: ProcessedImage) {
     try {
       const [originalImg, whitedImg] = await Promise.all([
@@ -1672,6 +1850,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, locked: !l.locked })), 'Toggle Lock');
   }
 
+  /** The Layers panel header's 4 granular lock buttons, and the Layer menu's own Lock Transparent/
+   *  Image/Position Pixels items (previously permanently-disabled stubs) — both funnel through this. */
+  function handleToggleLayerLockFlag(id: string, key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked') {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, [key]: !l[key] })), 'Toggle Lock');
+  }
+
   function handleOpacityChange(id: string, opacity: number) {
     // Continuous slider drag — intentionally not tracked in history (would spam an entry per pixel).
     updateLayers(current => updateLayer(current, id, l => ({ ...l, opacity })));
@@ -1723,6 +1907,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     }
 
     const layer = createTextLayer(x, y, boxWidth, boxHeight);
+    // Seeds from whatever the text options bar had armed while no layer was selected yet — the
+    // TypeR branch below fully replaces `layer.text` anyway, so this is harmless when TypeR is
+    // driving placement instead of a plain click.
+    layer.text = {
+      ...layer.text!,
+      fontFamily: pendingTextDefaults.fontFamily,
+      fontSize: pendingTextDefaults.fontSize,
+      color: pendingTextDefaults.color,
+      align: pendingTextDefaults.align,
+      bold: pendingTextDefaults.bold,
+      italic: pendingTextDefaults.italic,
+    };
 
     if (typerArmed && typerLines[typerIndex]) {
       const { content, style, boldOverride, italicOverride } = typerLines[typerIndex];
@@ -1753,7 +1949,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     panelLayout.reveal('text');
   }
 
-  function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>) {
+  function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>, historyLabel?: string) {
     updateLayers(current => updateLayer(current, id, l => {
       if (l.type !== 'text' || !l.text) return l;
       // Default a freshly-typed layer to RTL/right alignment the moment its content first reads as
@@ -1764,7 +1960,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         next = { ...patch, align: 'right' };
       }
       return { ...l, text: { ...l.text, ...next } };
-    }));
+    }), historyLabel);
+  }
+
+  /** Text menu / options-bar warp button / right-click "Warp Text…" — all open the same dialog for
+   *  whichever text layer is active. */
+  function handleOpenWarpDialog() {
+    if (activeLayer?.type === 'text') setWarpDialogLayerId(activeLayer.id);
+  }
+  /** The options bar's ✓/✗ commit/cancel buttons — both just exit editing (blurring the textarea
+   *  triggers its own onBlur -> setEditingLayerId(null) in StudioCanvas.tsx). Content is already
+   *  written live on every keystroke (same architecture the Text menu's Bold/Italic actions and
+   *  TextPanel's own controls already rely on), so there's no separate uncommitted draft for
+   *  Cancel to discard — a real, if simplified, limit rather than a decorative no-op distinction. */
+  function handleCommitTextEdit() { (document.activeElement as HTMLElement | null)?.blur(); }
+  function handleCancelTextEdit() { (document.activeElement as HTMLElement | null)?.blur(); }
+  function handlePreviewWarp(warp: WarpTextSettings) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp });
+  }
+  function handleConfirmWarp(warp: WarpTextSettings) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp }, 'Warp Text');
+  }
+  function handleCancelWarp(previous: WarpTextSettings | undefined) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp: previous });
   }
 
   /** Double-clicking a text layer's own ⊞ overflow indicator: fits fixedHeight tightly to the
@@ -2173,6 +2391,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSelect={selectLayer}
       onToggleVisible={handleToggleVisible}
       onToggleLocked={handleToggleLocked}
+      onToggleLayerLockFlag={handleToggleLayerLockFlag}
       onOpacityChange={handleOpacityChange}
       onBlendChange={handleBlendChange}
       onAdd={handleAddLayer}
@@ -2204,6 +2423,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         const key = styleKey as keyof typeof currentEffects;
         handleUpdateLayerStyle(id, { effects: { ...currentEffects, [key]: { ...currentEffects[key], enabled } } }, true);
       }}
+      onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
+      onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
+      onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
   );
@@ -2408,6 +2630,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     hasSliceRects: sliceRects.length > 0,
     exportMsp: () => onExportMsp?.(),
     saveProjectNow: handleSaveProjectNow,
+    placeImage: () => placeImageInputRef.current?.click(),
+    placePsd: () => placePsdInputRef.current?.click(),
     undo: history.undo,
     redo: history.redo,
     canUndo: history.canUndo,
@@ -2426,12 +2650,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleDock: () => setRightOpen(v => !v),
     addLayer: handleAddLayer,
     addBlankLayer: handleAddBlankLayer,
+    layerViaCopy: handleLayerViaCopy,
+    layerViaCut: handleLayerViaCut,
+    canOperateOnSelection: canOperateOnSelection(),
     duplicateLayer: () => activeLayerId && handleDuplicateLayer(activeLayerId),
     // Delete removes the whole selection, not just the primary layer.
     deleteLayer: () => handleDeleteLayers(selectedLayerIds),
     moveLayerUp: () => activeLayerId && handleMoveLayer(activeLayerId, 'up'),
     moveLayerDown: () => activeLayerId && handleMoveLayer(activeLayerId, 'down'),
     hasActiveLayer: !!activeLayer && !activeLayer.isBackground,
+    toggleLockTransparentPixels: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockTransparentPixels'); },
+    lockTransparentPixels: !!activeLayer?.lockTransparentPixels,
+    toggleLockImagePixels: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockImagePixels'); },
+    lockImagePixels: !!activeLayer?.lockImagePixels,
+    toggleLockPosition: () => { if (activeLayerId) handleToggleLayerLockFlag(activeLayerId, 'lockPosition'); },
+    lockPosition: !!activeLayer?.lockPosition,
     groupLayers: handleGroupLayers,
     ungroupLayers: () => activeLayerId && handleUngroupLayer(activeLayerId),
     isGroupActive: activeLayer?.type === 'group',
@@ -2459,6 +2692,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
     increaseTextSize: () => handleTextSizeStep(1),
     decreaseTextSize: () => handleTextSizeStep(-1),
+    openWarpTextDialog: handleOpenWarpDialog,
     hasActiveTextLayer: activeLayer?.type === 'text',
     textSetBold: handleToggleTextBold,
     textSetItalic: handleToggleTextItalic,
@@ -2612,6 +2846,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onFillActivePath={handleFillActivePath}
       canBakePath={canBakePath}
       onDeleteActivePath={() => activeLayerId && handleDeleteLayers([activeLayerId])}
+      onSelectInverse={handleSelectInverse}
+      onOpenFillSelectionDialog={handleOpenFillSelectionDialog}
+      onOpenStrokeSelectionDialog={handleOpenStrokeSelectionDialog}
+      onLayerViaCopy={handleLayerViaCopy}
+      onLayerViaCut={handleLayerViaCut}
+      onAddLayerFromContextMenu={handleAddLayer}
       typerArmed={typerArmed}
       typerPreviewLine={typerPreviewLine}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
@@ -2772,6 +3012,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onExportSlices={handleExportSlices}
           hasSelection={hasSelection(selection)}
           onDeselect={() => setSelection(NO_SELECTION)}
+          activeText={activeLayer?.type === 'text' ? (activeLayer.text ?? null) : null}
+          activeTextLayerId={activeLayer?.type === 'text' ? activeLayer.id : null}
+          textSelection={textSelection}
+          onUpdateText={handleUpdateTextLayer}
+          pendingTextDefaults={pendingTextDefaults}
+          onUpdatePendingTextDefaults={(patch) => setPendingTextDefaults(prev => ({ ...prev, ...patch }))}
+          fontFamilies={allFontFamilies}
+          onOpenWarpText={handleOpenWarpDialog}
+          isEditingActiveText={textSelection != null && textSelection.layerId === activeLayerId}
+          onCommitTextEdit={handleCommitTextEdit}
+          onCancelTextEdit={handleCancelTextEdit}
         />
       )}
 
@@ -2785,8 +3036,34 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
 
-        <div className="flex-1 min-h-0 min-w-0 relative">
+        <div
+          className="flex-1 min-h-0 min-w-0 relative"
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+            if (files.length === 0) return;
+            e.preventDefault();
+            void handlePlaceImageFiles(files);
+          }}
+        >
           {canvasNode}
+          <input
+            ref={placeImageInputRef}
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => { if (e.target.files) void handlePlaceImageFiles(e.target.files); e.target.value = ''; }}
+          />
+          <input
+            ref={placePsdInputRef}
+            type="file"
+            accept=".psd"
+            className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePlacePsdFile(f); e.target.value = ''; }}
+          />
           {collabCursorsOverlay}
           {(magicEraseBusy || magicEraseDetecting) && (
             <MagicEraseLoadingOverlay label={magicEraseDetecting ? 'Scanning for text…' : 'Erasing with AI…'} />
@@ -2932,6 +3209,28 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         open={strokePathDialogOpen}
         onClose={() => setStrokePathDialogOpen(false)}
         onConfirm={confirmStrokePath}
+      />
+      <FillPathDialog
+        open={fillSelectionDialogOpen}
+        onClose={() => setFillSelectionDialogOpen(false)}
+        onConfirm={confirmFillSelection}
+        foregroundColor={paintSettings.color}
+        backgroundColor={paintSettings.bgColor}
+        title="Fill Selection"
+      />
+      <StrokeSelectionDialog
+        open={strokeSelectionDialogOpen}
+        onClose={() => setStrokeSelectionDialogOpen(false)}
+        onConfirm={confirmStrokeSelection}
+        foregroundColor={paintSettings.color}
+      />
+      <WarpTextDialog
+        open={warpDialogLayerId != null}
+        initial={warpDialogLayerId ? findLayer(layers, warpDialogLayerId)?.text?.warp : undefined}
+        onClose={() => setWarpDialogLayerId(null)}
+        onPreview={handlePreviewWarp}
+        onConfirm={handleConfirmWarp}
+        onCancel={handleCancelWarp}
       />
       {blendingOptionsLayerId && (() => {
         const target = findLayer(layers, blendingOptionsLayerId);

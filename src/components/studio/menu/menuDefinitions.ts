@@ -31,6 +31,12 @@ export interface MenuActions {
   exportMsp: () => void;
   /** Real: flushes the debounced studio-project autosave immediately. */
   saveProjectNow: () => void;
+  /** Opens a file picker (jpg/png/webp/gif/bmp) and adds each selection as a new raster layer,
+   *  centered on the page. Dropping an image file onto the canvas does the same thing. */
+  placeImage: () => void;
+  /** Opens a file picker for a single .psd and imports its layers (flattened to raster — see
+   *  importPsd.ts) into the current page's layer stack. */
+  placePsd: () => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -50,11 +56,26 @@ export interface MenuActions {
   toggleDock: () => void;
   addLayer: () => void;
   addBlankLayer: () => void;
+  /** Layer > Layer Via Copy/Cut (Ctrl+J / Ctrl+Shift+J) — extracts the active layer's pixels
+   *  within the current selection into a new layer above it; Cut also clears them from the
+   *  original. Gated on the same target this app's marquee context menu uses: the active layer
+   *  must be an unlocked raster layer with a real selection. */
+  layerViaCopy: () => void;
+  layerViaCut: () => void;
+  canOperateOnSelection: boolean;
   duplicateLayer: () => void;
   deleteLayer: () => void;
   moveLayerUp: () => void;
   moveLayerDown: () => void;
   hasActiveLayer: boolean;
+  /** Layer > Lock Transparent/Image/Position Pixels — the active layer's own three granular lock
+   *  flags, each toggled independently. Previously permanently-disabled stubs. */
+  toggleLockTransparentPixels: () => void;
+  lockTransparentPixels: boolean;
+  toggleLockImagePixels: () => void;
+  lockImagePixels: boolean;
+  toggleLockPosition: () => void;
+  lockPosition: boolean;
   groupLayers: () => void;
   ungroupLayers: () => void;
   /** Gates Ungroup — it's only meaningful when the primary selection is a group. */
@@ -88,6 +109,9 @@ export interface MenuActions {
   increaseTextSize: () => void;
   decreaseTextSize: () => void;
   hasActiveTextLayer: boolean;
+  /** Text > Warp Text… — same dialog the text options bar's warp button and a text layer's own
+   *  right-click menu open, targeting whichever text layer is currently active. */
+  openWarpTextDialog: () => void;
   /** Text menu's Font/Size/Bold/Italic/Align/RTL/LTR — real, via textRuns.ts's applyCharPatch
    *  (Bold/Italic/Size) or a direct layer-level align patch (Align/RTL/LTR — paragraph properties,
    *  never per-run). No-ops (and the items disable) without an active text layer. */
@@ -293,6 +317,9 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'image-size', label: 'Image Size…', disabled: true },
         { id: 'canvas-size', label: 'Canvas Size…', disabled: true },
         { id: 'sep1', label: '', separator: true },
+        { id: 'place-image', label: 'Place Image…', action: a.placeImage },
+        { id: 'place-psd', label: 'Place PSD as Layers…', action: a.placePsd },
+        { id: 'sep1b', label: '', separator: true },
         {
           id: 'rotate-canvas', label: 'Rotate Canvas', submenu: [
             { id: 'rotate-cw', label: '90° CW', action: () => a.rotateCanvas('cw') },
@@ -321,6 +348,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'add-layer', label: 'New Layer', shortcut: 'Ctrl+Shift+N', action: a.addLayer },
         { id: 'add-layer', label: 'New Layer', action: a.addLayer },
         { id: 'add-blank-layer', label: 'New Blank Layer', action: a.addBlankLayer },
+        { id: 'layer-via-copy', label: 'Layer Via Copy', shortcut: 'Ctrl+J', action: a.layerViaCopy, disabled: !a.canOperateOnSelection },
+        { id: 'layer-via-cut', label: 'Layer Via Cut', shortcut: 'Ctrl+Shift+J', action: a.layerViaCut, disabled: !a.canOperateOnSelection },
         { id: 'duplicate-layer', label: 'Duplicate Layer', action: a.duplicateLayer, disabled: !a.hasActiveLayer },
         { id: 'delete-layer', label: 'Delete Layer', action: a.deleteLayer, disabled: !a.hasActiveLayer },
         { id: 'sep1', label: '', separator: true },
@@ -346,9 +375,9 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'layer-properties', label: 'Layer Properties…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'blending-options', label: 'Blending Options…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'sep4', label: '', separator: true },
-        { id: 'lock-transparent', label: 'Lock Transparent Pixels', disabled: true, checked: false },
-        { id: 'lock-image', label: 'Lock Image Pixels', disabled: true, checked: false },
-        { id: 'lock-position', label: 'Lock Position', disabled: true, checked: false },
+        { id: 'lock-transparent', label: 'Lock Transparent Pixels', action: a.toggleLockTransparentPixels, disabled: !a.hasActiveLayer, checked: a.lockTransparentPixels },
+        { id: 'lock-image', label: 'Lock Image Pixels', action: a.toggleLockImagePixels, disabled: !a.hasActiveLayer, checked: a.lockImagePixels },
+        { id: 'lock-position', label: 'Lock Position', action: a.toggleLockPosition, disabled: !a.hasActiveLayer, checked: a.lockPosition },
         { id: 'sep5', label: '', separator: true },
         { id: 'stroke-path', label: 'Stroke Path…', action: a.strokeActivePath, disabled: !a.canBakePath },
         { id: 'fill-path', label: 'Fill Path…', action: a.fillActivePath, disabled: !a.canBakePath },
@@ -384,6 +413,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'center-bubble', label: 'Center in Bubble', action: a.centerTextInBubble, disabled: !a.hasActiveTextLayer },
         { id: 'increase-text-size', label: 'Increase Size', shortcut: 'Ctrl+.', action: a.increaseTextSize, disabled: !a.hasActiveTextLayer },
         { id: 'decrease-text-size', label: 'Decrease Size', shortcut: 'Ctrl+,', action: a.decreaseTextSize, disabled: !a.hasActiveTextLayer },
+        { id: 'sep6', label: '', separator: true },
+        { id: 'warp-text', label: 'Warp Text…', action: a.openWarpTextDialog, disabled: !a.hasActiveTextLayer },
       ],
     },
     {

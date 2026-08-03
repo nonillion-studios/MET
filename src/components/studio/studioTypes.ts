@@ -231,9 +231,33 @@ export interface TextLayerData {
   lineOverrides?: Record<number, LineStyleOverride>;
   /** Set by Type Region for a non-rectangular container. See TextClipShape. */
   clipShape?: TextClipShape;
+  /** Warp Text (Text menu / options bar). Absent or `style: 'none'` means unwarped — rendered the
+   *  normal per-run `Konva.Text` way. Stored as settings rather than a baked image so the warp is
+   *  re-applied automatically whenever the text's own content/style changes; see textWarp.ts. */
+  warp?: WarpTextSettings;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;
+}
+
+/** Photoshop's Warp Text style list. `'none'` disables warping entirely (the field can also just be
+ *  absent for the same effect — both mean "render normally"). */
+export type WarpStyle =
+  | 'none' | 'arc' | 'arcLower' | 'arcUpper' | 'arch'
+  | 'bulge' | 'shellLower' | 'shellUpper' | 'flag'
+  | 'wave' | 'fish' | 'rise' | 'fisheye' | 'inflate'
+  | 'squeeze' | 'twist';
+
+export interface WarpTextSettings {
+  orientation: 'horizontal' | 'vertical';
+  style: WarpStyle;
+  bend: number; // -100..100
+  horizontalDistortion: number; // -100..100
+  verticalDistortion: number; // -100..100
+}
+
+export function createDefaultWarpSettings(): WarpTextSettings {
+  return { orientation: 'horizontal', style: 'none', bend: 50, horizontalDistortion: 0, verticalDistortion: 0 };
 }
 
 export const DEFAULT_TEXT_SHADOW: TextShadow = {
@@ -827,7 +851,20 @@ export interface StudioLayer {
   type: StudioLayerType;
   name: string;
   visible: boolean;
+  /** "Lock All" — the original single lock flag, unchanged in meaning (blocks paint, move, and
+   *  delete together). The three granular locks below are independent additions on top of it, not
+   *  a replacement — an old persisted layer with only `locked` set behaves exactly as it always
+   *  did, since the new fields are optional and simply absent (falsy) on it. */
   locked: boolean;
+  /** Painting only affects pixels that already have some opacity — new strokes get clipped to the
+   *  layer's current alpha shape instead of extending it. */
+  lockTransparentPixels?: boolean;
+  /** No painting at all, full stop — distinct from `lockTransparentPixels`, which still allows
+   *  painting over already-opaque pixels. */
+  lockImagePixels?: boolean;
+  /** The layer can't be dragged/transformed, but can still be painted on (unless one of the other
+   *  two locks above also applies). */
+  lockPosition?: boolean;
   opacity: number; // 0-1
   blendMode: BlendMode;
   /** Background layers can't be deleted, reordered below, or have opacity/blend changed. */

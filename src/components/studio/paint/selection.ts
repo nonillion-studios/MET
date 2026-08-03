@@ -238,6 +238,18 @@ export function combineSelections(base: Selection, incoming: Selection, mode: Se
   return { kind: 'mask', data: result, width, height, bounds };
 }
 
+/** Select > Select Inverse (or the marquee selection's own right-click context menu entry) — every
+ *  currently-unselected pixel becomes selected and vice versa. Rasterizes first (an inverted rect/
+ *  ellipse/polygon isn't representable as one of those vector kinds — the inverse of a rectangle
+ *  is everything *outside* it, which a `{kind:'rect'}` has no way to express), same tradeoff
+ *  `transformSelectionMask` already documents for its own vector-kinds-in, mask-out shape. */
+export function invertSelection(sel: Selection, width: number, height: number): Selection {
+  const rasterized = rasterizeSelectionMask(sel, width, height);
+  const data = new Uint8ClampedArray(width * height);
+  for (let i = 0; i < data.length; i++) data[i] = 255 - rasterized.data[i];
+  return { kind: 'mask', data, width, height, bounds: boundsOfMask(data, width, height) };
+}
+
 /** Grows (positive) or shrinks (negative) a selection's edge by `amount` pixels via iterative 1px morphology. */
 export function growSelection(sel: Selection, amount: number, width: number, height: number): Selection {
   if (amount === 0 || sel.kind === 'none') return sel;

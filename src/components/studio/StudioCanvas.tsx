@@ -12,6 +12,7 @@ import { traceAnchors, applyCurvatureSmoothing } from './pathGeometry';
 import { genId } from '../../lib/id';
 import {
   findLayer, findPath, getAtPath, getSiblings, flattenTree, mapTree, partitionAdjustments, groupClipRuns,
+  canPaintLayer, canMoveLayer,
   type RenderNode, type ClipRun,
 } from './layerTree';
 import { layoutText } from './textLayout';
@@ -26,6 +27,7 @@ import {
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
+import { paintLiveEffectCanvases, hasLiveHaloEffects } from '../../lib/liveLayerEffects';
 import { Menu } from './menu/Menu';
 import type { MenuItemDef } from './menu/menuDefinitions';
 import { snapSegmentToEdges } from './paint/magneticLasso';
@@ -165,6 +167,19 @@ interface StudioCanvasProps {
   canBakePath?: boolean;
   /** Right-click "Delete Path" — removes the active path layer. */
   onDeleteActivePath?: () => void;
+  /** Right-click inside a marquee/lasso/wand selection — Select Inverse, same effect as the Select
+   *  menu's own item, just reachable from the selection itself. */
+  onSelectInverse?: () => void;
+  /** Right-click "Fill…"/"Stroke…" inside a selection — opens the Fill/Stroke Selection dialogs,
+   *  which bake onto the active layer the same way Fill/Stroke Path do. */
+  onOpenFillSelectionDialog?: () => void;
+  onOpenStrokeSelectionDialog?: () => void;
+  /** Right-click "Layer Via Copy"/"Layer Via Cut" (Ctrl+J / Ctrl+Shift+J) — extracts the selected
+   *  pixels from the active layer into a new layer above it; Cut also clears them from the original. */
+  onLayerViaCopy?: () => void;
+  onLayerViaCut?: () => void;
+  /** Right-click "New Layer" inside a selection — same as the Layers panel's own Add button. */
+  onAddLayerFromContextMenu?: () => void;
   /** TypeR armed placement: while dragging out a text box, the current script line previews inside
    *  it (semi-transparent, in its real font/color/size) — a pure rendering overlay, never touching
    *  the contentEditable-equivalent text-edit state or any paint canvas. Undefined/false when TypeR
@@ -307,6 +322,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
   activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
+  onSelectInverse, onOpenFillSelectionDialog, onOpenStrokeSelectionDialog, onLayerViaCopy, onLayerViaCut, onAddLayerFromContextMenu,
   typerArmed = false, typerPreviewLine = null,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -336,6 +352,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // painting) already calls this right after touching pixels — the one universal chokepoint to
     // invalidate the sampling composite cache from, instead of chasing every individual call site.
     sampleCompositeDirtyRef.current = true;
+    // Same reasoning extends to the live Drop Shadow/Inner Shadow/Glow/Bevel/Satin/Stroke halo
+    // canvases (see `recomputeLiveEffects` below, defined further down but safe to call here since
+    // this function itself is only ever invoked from effects/event handlers, never during render):
+    // a brush stroke on a layer that also has one of those enabled needs its halo refreshed too, or
+    // the shadow/glow would silently go stale the moment new pixels are painted under it.
+    if (layerId) recomputeLiveEffects(layerId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   /** A layer's mask and its own raster content are two separate registry entries, keyed by the
@@ -354,6 +377,47 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
+
+  /** Three extra persistent per-layer canvases for the Layer Style effects that aren't Color/
+   *  Gradient Overlay (see `liveLayerEffects.ts`'s own doc comment for why those two are excluded
+   *  and why the other five don't need real content as a backdrop). Same "one stable canvas per id,
+   *  mutated in place" convention as `paintCanvasRegistry` — a `Konva.Image` pointed at one of these
+   *  only ever needs a `.batchDraw()` to pick up a change, never a new `image` prop reference. */
+  const behindEffectsRegistry = useRef<PaintCanvasRegistry>({});
+  const overlayBaseEffectsRegistry = useRef<PaintCanvasRegistry>({});
+  const strokeEffectsRegistry = useRef<PaintCanvasRegistry>({});
+
+  /** Recomputes `layerId`'s live halo canvases from its current content + effects. Called both from
+   *  `redrawLayerNode` (so a paint stroke on an effect-bearing layer keeps its shadow/glow in sync)
+   *  and from the structural-cache effect below (so toggling/editing an effect in the Blending
+   *  Options dialog updates immediately, independent of any paint activity). Cheap no-op via
+   *  `hasLiveHaloEffects` for the overwhelmingly common case of a layer with no such effect enabled,
+   *  so this never costs anything on the hot paint-stroke path except for the rare layer that has
+   *  both paint activity and one of these effects at once. */
+  const recomputeLiveEffects = useCallback((layerId: string) => {
+    const img = imageRef.current;
+    const layer = findLayer(layersRef.current, layerId);
+    if (!img || !layer) return;
+    const behind = getOrCreateCanvasFor(behindEffectsRegistry.current, layerId, img.width, img.height);
+    const overlayBase = getOrCreateCanvasFor(overlayBaseEffectsRegistry.current, layerId, img.width, img.height);
+    const stroke = getOrCreateCanvasFor(strokeEffectsRegistry.current, layerId, img.width, img.height);
+    if (!hasLiveHaloEffects(layer)) {
+      // Still clear them — an effect that was just disabled must stop showing its old halo.
+      behind.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      overlayBase.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      stroke.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      return;
+    }
+    paintLiveEffectCanvases(layer, {
+      layers: layersRef.current,
+      background: img,
+      width: img.width,
+      height: img.height,
+      getRaster: (id) => paintCanvasRegistry.current[id] ?? null,
+      getMask: (id) => maskCanvasRegistry.current[id] ?? null,
+    }, { behind, overlayBase, stroke });
+  }, []);
+
   const bgImageNodeRef = useRef<Konva.Image | null>(null);
   const pinchDistRef = useRef<number | null>(null);
   const prevPinchCenterRef = useRef<{ x: number; y: number } | null>(null);
@@ -481,6 +545,30 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     };
   }, [pathContextMenu]);
 
+  /** Right-click inside a marquee/lasso/wand selection — Select Inverse/Fill/Stroke/Layer Via Copy/
+   *  Layer Via Cut/New Layer, positioned at the click's container coordinates (same HTML-overlay-
+   *  above-the-stage pattern as `pathContextMenu` above). Only ever set when the active tool is a
+   *  selection tool and the click landed inside the current selection's own shape — see the
+   *  `onContextMenu` handler on `<Stage>` below. */
+  const [selectionContextMenu, setSelectionContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const selectionContextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selectionContextMenu) return;
+    function onPointerDown(e: PointerEvent) {
+      if (selectionContextMenuRef.current && !selectionContextMenuRef.current.contains(e.target as Node)) setSelectionContextMenu(null);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSelectionContextMenu(null);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [selectionContextMenu]);
+
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
   const [spaceDown, setSpaceDown] = useState(false);
   const panRef = useRef<{ active: boolean; lastX: number; lastY: number } | null>(null);
@@ -537,7 +625,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
   const paintLayerIdRef = useRef<string | null>(null);
-  paintLayerIdRef.current = activeLayer?.type === 'clean-patch' && !activeLayer.locked ? activeLayer.id : null;
+  paintLayerIdRef.current = activeLayer?.type === 'clean-patch' && canPaintLayer(activeLayer) ? activeLayer.id : null;
 
   // The layer whose mask is being painted, and that mask's own registry id — derived from the
   // current tree rather than passed as two separate props, so they can never disagree.
@@ -657,6 +745,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     getSampleCanvas: () => getSampleComposite(paintSettings.sampleMode),
     onGradientPreview: (start, current) => setGradientPreview(start && current ? { start, current } : null),
     getShiftHeld: () => shiftHeld,
+    getPreserveTransparency: () => activeLayer?.type === 'clean-patch' && !!activeLayer.lockTransparentPixels,
   });
 
   // Switching away from the gradient tool mid-drag (a keyboard shortcut, picking another tool) has
@@ -677,6 +766,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     },
     deletePaintCanvas(layerId: string) {
       deleteCanvasFor(paintCanvasRegistry.current, layerId);
+      deleteCanvasFor(behindEffectsRegistry.current, layerId);
+      deleteCanvasFor(overlayBaseEffectsRegistry.current, layerId);
+      deleteCanvasFor(strokeEffectsRegistry.current, layerId);
       delete liquifySnapshots[layerId];
     },
     clonePaintCanvases(idMap: Map<string, string>) {
@@ -1212,6 +1304,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // node inside the layer's own Group below) need the layer already rasterized to know what
       // "atop" means; the other style types isolate here for boolean parity with `exportImage.ts`'s
       // `isolatesGroup` even though they don't yet render live (see `needsIsolation`'s own comment).
+      // Must run BEFORE `.cache()` below, not after: caching snapshots whatever these Konva.Image
+      // nodes currently show, so repainting their backing canvases afterward would have no visible
+      // effect until the next unrelated structural change forces a re-cache.
+      recomputeLiveEffects(layer.id);
       const isolate = needsIsolation(layer)
         || (layer.type === 'adjustment' && layer.visible)
         || hasClippedFollowers(layer.id)
@@ -1231,6 +1327,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       refreshMaskFilter(layer.id);
     }
     stageRef.current?.batchDraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupStructureKey, image, needsIsolation, refreshMaskFilter]);
 
   /**
@@ -1412,10 +1509,29 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
   };
 
+  /** Right-click handler for the whole Stage — only ever opens the selection context menu (never
+   *  the browser's native one) when a selection tool is active, a selection exists, and the click
+   *  landed inside its own shape; otherwise falls through to whatever the browser/other handlers
+   *  would normally do (e.g. a right-click with the brush tool active does nothing special here). */
+  const handleStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    const isSelectionTool = MARQUEE_TOOLS.has(activeTool) || LASSO_TOOLS.has(activeTool) || activeTool === 'wand';
+    if (!isSelectionTool || !hasSelection(selection)) return;
+    const p = imageSpacePointer();
+    if (!p || !selectionContainsPoint(selection, p.x, p.y)) return;
+    e.evt.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
+  };
+
   const handlePaintPointerDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
     // A second touch point mid-gesture belongs to two-finger pan/pinch (handled by the Touch
     // handlers below), not tool dispatch — Pointer Events fire per-finger independently.
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
+    // Right-click never starts a paint/marquee/lasso gesture for any tool — it's excluded here so
+    // it falls through to the Stage's own `onContextMenu` (the selection context menu) instead,
+    // rather than also kicking off (and, on the matching pointerup, finalizing or deselecting) a
+    // marquee/lasso drag no user gesture actually asked for.
+    if (e.evt.button === 2) return;
     // Middle-mouse-button drag, or left-click while Space is held, pans regardless of the active tool.
     if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
       e.evt.preventDefault();
@@ -1592,7 +1708,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // active layer" path here. No layer selected, the Background layer, or a locked layer are all
     // covered by paintLayerIdRef being null (see its assignment above).
     if (!editingMaskLayer && !quickMaskActive && !paintLayerIdRef.current) {
-      swalToast({ icon: 'warning', title: 'Select a layer to paint on' });
+      if (activeLayer?.type === 'clean-patch' && !canPaintLayer(activeLayer)) {
+        swalToast({ icon: 'warning', title: "This layer's pixels are locked" });
+      } else {
+        swalToast({ icon: 'warning', title: 'Select a layer to paint on' });
+      }
       return;
     }
     const p = imageSpacePointer();
@@ -1852,7 +1972,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
     if (MARQUEE_TOOLS.has(activeTool)) {
       // A click with no real drag never touched the selection (see the dead-zone guard in
-      // pointermove) — nothing to combine, and nothing to revert either.
+      // pointermove) — nothing to combine. It DOES deselect, though, same as clicking empty canvas
+      // with the Select tool does for layer selection: a plain click outside the current
+      // selection's own shape clears it; a plain click *inside* it (or with no selection active at
+      // all) is left untouched, matching Photoshop's marquee/lasso click behavior.
       let finalShape: Selection | null = null;
       if (marqueeStartRef.current && marqueeDraggedRef.current) {
         if (combineModeRef.current !== 'replace' && image) {
@@ -1861,6 +1984,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         } else {
           finalShape = selection; // already the live rect/ellipse committed on the last pointermove
         }
+      } else if (marqueeStartRef.current && hasSelection(selection) && !selectionContainsPoint(selection, marqueeStartRef.current.x, marqueeStartRef.current.y)) {
+        onSelectionChange(NO_SELECTION);
       }
       marqueeStartRef.current = null;
       marqueeDraggedRef.current = false;
@@ -1873,6 +1998,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return;
     }
     if (LASSO_TOOLS.has(activeTool)) {
+      // Same click-vs-drag deselect rule as the marquee branch above: a plain click (no drag)
+      // outside the current selection clears it; inside it (or with nothing selected) is a no-op.
       let finalShape: Selection | null = null;
       if (lassoPointsRef.current && lassoDraggedRef.current) {
         if (combineModeRef.current !== 'replace' && image) {
@@ -1881,6 +2008,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         } else {
           finalShape = { kind: 'polygon', points: lassoPointsRef.current };
         }
+      } else if (lassoPointsRef.current && hasSelection(selection) && !selectionContainsPoint(selection, lassoPointsRef.current[0].x, lassoPointsRef.current[0].y)) {
+        onSelectionChange(NO_SELECTION);
       }
       lassoPointsRef.current = null;
       lassoDraggedRef.current = false;
@@ -2234,6 +2363,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         globalCompositeOperation={compositeOperationFor(layer.blendMode)}
         listening={layer.visible && !layer.locked}
       >
+        {/* Drop Shadow / Outer Glow — drawn behind everything else in this Group, matching
+            `applyLeafEffects` painting them onto the backdrop `ctx` in exportImage.ts rather than
+            the leaf's own scratch canvas. Blank/transparent (drawn but invisible) whenever neither
+            is enabled — see `liveLayerEffects.ts`'s "one stable canvas per id" doc comment for why
+            this doesn't need a conditional mount/unmount. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(behindEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
+
         {layer.type === 'group' && renderLayerNodes(layer.children ?? [])}
 
         {layer.type === 'background' && image && (
@@ -2270,7 +2413,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
             editing={layer.id === editingLayerId}
             selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-            draggable={activeTool === 'select' && !layer.locked && !spaceDown}
+            draggable={activeTool === 'select' && canMoveLayer(layer) && !spaceDown}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
@@ -2287,14 +2430,29 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             layer={layer}
             groupRef={(node) => { pathNodeRefs.current[layer.id] = node; }}
             selected={selectionIds.includes(layer.id)}
-            draggable={activeTool === 'path-select' && !layer.locked}
-            directSelect={activeTool === 'direct-select' && !layer.locked}
+            draggable={activeTool === 'path-select' && canMoveLayer(layer)}
+            directSelect={activeTool === 'direct-select' && canMoveLayer(layer)}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onUpdate={(patch) => onUpdatePathLayer(layer.id, patch)}
             onContextMenu={(clientX, clientY) => {
               const rect = containerRef.current?.getBoundingClientRect();
               setPathContextMenu({ layerId: layer.id, x: clientX - (rect?.left ?? 0), y: clientY - (rect?.top ?? 0) });
             }}
+          />
+        )}
+
+        {/* Inner Shadow / Inner Glow / Bevel & Emboss / Satin — real pixel effects (see
+            `liveLayerEffects.ts`), self-clipped to this leaf's own alpha by the halo math itself
+            (every function in layerEffects.ts multiplies by the source alpha already), so this can
+            render as a plain extra image rather than needing `source-atop` against real content —
+            drawn after the content above but before Color/Gradient Overlay, matching the
+            compositing order `applyLeafEffects` uses in exportImage.ts. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(overlayBaseEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
           />
         )}
 
@@ -2355,6 +2513,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             />
           );
         })()}
+
+        {/* Stroke — real pixel effect (see `liveLayerEffects.ts`), self-clipped to a dilate/erode
+            ring around this leaf's own alpha, drawn last so it sits above Color/Gradient Overlay,
+            matching `applyLeafEffects`'s compositing order in exportImage.ts. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(strokeEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
       </Group>
     );
   }
@@ -2396,6 +2566,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           onClick={handleStageClick}
           onTap={handleStageClick}
           onDblClick={handleStageDblClick}
+          onContextMenu={handleStageContextMenu}
           onPointerDown={handlePaintPointerDown}
           onPointerMove={handlePaintPointerMove}
           onPointerUp={handlePaintPointerUp}
@@ -2822,7 +2993,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // editing starts, so the third click never reaches the Konva node — it has to be handled
           // here, not on the shape.
           onClick={(e) => { if (e.detail === 3) e.currentTarget.select(); reportSelection(e.currentTarget); }}
-          onBlur={() => { setEditingLayerId(null); onTextSelectionChange?.(null); }}
+          // Deliberately does NOT also clear the reported text selection: focusing a font/size/
+          // color/align control in the options bar or the Text panel blurs this textarea on the
+          // way there, and clearing the range on every such blur meant only the *first* toolbar
+          // edit after a selection ever applied to that range — every edit after it silently fell
+          // back to whole-layer, since `range` had already gone null by the time the second
+          // control's onChange ran. The range is scoped to `editingLayerId` by whoever reads it
+          // (`selection.layerId === activeLayer.id`), so it never misapplies to a different layer;
+          // it just naturally goes stale-but-harmless once the user moves on, and gets overwritten
+          // the next time they actually select/type in a textarea again.
+          onBlur={() => setEditingLayerId(null)}
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
           className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
           style={{
@@ -2890,6 +3070,26 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         return (
           <div ref={pathContextMenuRef} className="absolute z-50" style={{ left: pathContextMenu.x, top: pathContextMenu.y }}>
             <Menu items={items} onItemClick={(action) => { action?.(); setPathContextMenu(null); }} />
+          </div>
+        );
+      })()}
+      {selectionContextMenu && (() => {
+        const activeForMenu = activeLayerId != null ? findLayer(layers, activeLayerId) : null;
+        const canOperate = !!activeForMenu && activeForMenu.type === 'clean-patch' && canPaintLayer(activeForMenu);
+        const items: MenuItemDef[] = [
+          { id: 'select-inverse', label: 'Select Inverse', shortcut: 'Ctrl+Shift+I', action: onSelectInverse },
+          { id: 'sep1', label: '', separator: true },
+          { id: 'fill', label: 'Fill…', disabled: !canOperate, action: onOpenFillSelectionDialog },
+          { id: 'stroke', label: 'Stroke…', disabled: !canOperate, action: onOpenStrokeSelectionDialog },
+          { id: 'sep2', label: '', separator: true },
+          { id: 'layer-via-copy', label: 'Layer Via Copy', shortcut: 'Ctrl+J', disabled: !canOperate, action: onLayerViaCopy },
+          { id: 'layer-via-cut', label: 'Layer Via Cut', shortcut: 'Ctrl+Shift+J', disabled: !canOperate, action: onLayerViaCut },
+          { id: 'sep3', label: '', separator: true },
+          { id: 'new-layer', label: 'New Layer…', action: onAddLayerFromContextMenu },
+        ];
+        return (
+          <div ref={selectionContextMenuRef} className="absolute z-50" style={{ left: selectionContextMenu.x, top: selectionContextMenu.y }}>
+            <Menu items={items} onItemClick={(action) => { action?.(); setSelectionContextMenu(null); }} />
           </div>
         );
       })()}

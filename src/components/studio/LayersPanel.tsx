@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, SlidersHorizontal, ChevronUp, ChevronDown,
-  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2,
+  FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2, Grid2x2, Paintbrush, Move,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -11,10 +11,11 @@ import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
 import {
-  LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL,
-  type StudioLayer, type LayerSelectMode, type AdjustmentKind,
+  LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL, createDefaultLayerEffects,
+  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects,
 } from './studioTypes';
 import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
+import { getClipboardLayerStyle, setClipboardLayerStyle } from '../../lib/layerStyleClipboard';
 
 /** Where a drop lands relative to the row under the cursor. */
 type DropZone = 'above' | 'into' | 'below';
@@ -68,6 +69,9 @@ interface LayersPanelProps {
    *  layer's own current `text.autoWidth` (Convert to Point Text only when it's currently area
    *  text, and vice versa) — the caller decides how the box's dimensions get seeded on conversion. */
   onConvertTextMode?: (id: string, toAutoWidth: boolean) => void;
+  /** Right-click a text layer > "Warp Text…" — opens the same dialog the Text menu and options bar
+   *  warp button do, targeting this specific layer regardless of which one is currently active. */
+  onOpenWarpText?: (id: string) => void;
   /** Explicit "open full settings" intent (the Text/Adjustment panel) — separate from onSelect, so
    *  a plain click never navigates away from this list. No-ops for layer types without a panel. */
   onOpenSettings?: (id: string) => void;
@@ -76,6 +80,16 @@ interface LayersPanelProps {
   onOpenBlendingOptions?: (id: string, section?: string) => void;
   /** Toggles one style's own `enabled` flag without opening the dialog — the sub-row eye icons. */
   onToggleLayerStyle?: (id: string, styleKey: string, enabled: boolean) => void;
+  /** Right-click > Copy/Paste/Clear Layer Style — replaces this layer's whole `effects` object in
+   *  one committed, undo-able step (unlike `onToggleLayerStyle`, which only flips one key). */
+  onSetLayerEffects?: (id: string, effects: LayerEffects) => void;
+  /** Double-click (with confirmation) or right-click > "Layer from Background" — converts the
+   *  locked, restriction-bearing background row into a regular, fully editable layer. */
+  onConvertBackgroundToLayer?: () => void;
+  /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
+   *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
+   *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
+  onToggleLayerLockFlag?: (id: string, key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked') => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -98,7 +112,8 @@ export function LayersPanel({
   onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
-  hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle,
+  hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
+  onConvertBackgroundToLayer, onOpenWarpText, onToggleLayerLockFlag,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -132,6 +147,17 @@ export function LayersPanel({
     else onDelete(id);
   }
 
+  async function confirmConvertBackground() {
+    if (!onConvertBackgroundToLayer) return;
+    const result = await swal({
+      title: 'Convert to Normal Layer?',
+      text: 'The background will become a regular editable layer — you can paint on it, move it, and apply effects to it like any other layer.',
+      showCancelButton: true,
+      confirmButtonText: 'OK',
+    });
+    if (result.isConfirmed) onConvertBackgroundToLayer();
+  }
+
   async function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
     e.preventDefault();
     e.stopPropagation();
@@ -146,9 +172,14 @@ export function LayersPanel({
           ? { convertText: 'Convert to Area Text' }
           : { convertText: 'Convert to Point Text' })
         : {}),
+      ...(layer.type === 'text' && onOpenWarpText ? { warpText: 'Warp Text…' } : {}),
       moveUp: 'Move Up',
       moveDown: 'Move Down',
       ...(onOpenBlendingOptions ? { blendingOptions: 'Blending Options…' } : {}),
+      ...(onSetLayerEffects ? { copyStyle: 'Copy Layer Style' } : {}),
+      ...(onSetLayerEffects && getClipboardLayerStyle() ? { pasteStyle: 'Paste Layer Style' } : {}),
+      ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? { clearStyle: 'Clear Layer Style' } : {}),
+      ...(layer.isBackground && onConvertBackgroundToLayer ? { layerFromBackground: 'Layer from Background' } : {}),
       ...(layer.isBackground ? {} : { delete: 'Delete' }),
     };
     const result = await swal({
@@ -177,11 +208,20 @@ export function LayersPanel({
       }
       case 'duplicate': onDuplicate(layer.id); break;
       case 'convertText': onConvertTextMode?.(layer.id, !layer.text?.autoWidth); break;
+      case 'warpText': onOpenWarpText?.(layer.id); break;
       case 'visibility': onToggleVisible(layer.id); break;
       case 'lock': onToggleLocked(layer.id); break;
       case 'moveUp': onMove(layer.id, 'up'); break;
       case 'moveDown': onMove(layer.id, 'down'); break;
       case 'blendingOptions': onOpenBlendingOptions?.(layer.id); break;
+      case 'copyStyle': setClipboardLayerStyle(layer.effects ?? createDefaultLayerEffects()); break;
+      case 'pasteStyle': {
+        const copied = getClipboardLayerStyle();
+        if (copied) onSetLayerEffects?.(layer.id, copied);
+        break;
+      }
+      case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
+      case 'layerFromBackground': onConvertBackgroundToLayer?.(); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }
@@ -292,6 +332,37 @@ export function LayersPanel({
         </>
       }
     >
+        {onToggleLayerLockFlag && activeLayerId && !findLayer(layers, activeLayerId)?.isBackground && (() => {
+          const active = findLayer(layers, activeLayerId);
+          if (!active) return null;
+          const lockButtons: { key: 'lockTransparentPixels' | 'lockImagePixels' | 'lockPosition' | 'locked'; label: string; Icon: typeof Lock }[] = [
+            { key: 'lockTransparentPixels', label: 'Lock Transparent Pixels', Icon: Grid2x2 },
+            { key: 'lockImagePixels', label: 'Lock Image Pixels', Icon: Paintbrush },
+            { key: 'lockPosition', label: 'Lock Position', Icon: Move },
+            { key: 'locked', label: 'Lock All', Icon: Lock },
+          ];
+          return (
+            <div className="flex items-center gap-1 px-1 pb-1.5 mb-1 border-b border-hairline/60">
+              <span className="text-[10px] uppercase tracking-wide text-ink-faint mr-0.5">Lock</span>
+              {lockButtons.map(({ key, label, Icon }) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-label={label}
+                  title={label}
+                  aria-pressed={!!active[key]}
+                  onClick={() => onToggleLayerLockFlag(active.id, key)}
+                  className={cn(
+                    'w-6 h-6 flex items-center justify-center rounded-control border',
+                    active[key] ? 'bg-accent-soft text-accent border-accent/40' : 'border-transparent text-ink-faint hover:bg-ink/5'
+                  )}
+                >
+                  <Icon size={13} />
+                </button>
+              ))}
+            </div>
+          );
+        })()}
         {ordered.map(({ layer, depth }) => {
           const Icon = LAYER_TYPE_ICON[layer.type];
           const active = layer.id === activeLayerId;
@@ -423,6 +494,7 @@ export function LayersPanel({
                         className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (layer.isBackground) { void confirmConvertBackground(); return; }
                           setRenameValue(layer.name);
                           setRenamingId(layer.id);
                         }}
