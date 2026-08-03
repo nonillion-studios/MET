@@ -6,6 +6,7 @@ import { traceAnchors } from '../components/studio/pathGeometry';
 import { gradientVector } from '../components/studio/textGradient';
 import { layoutText, applyLetterSpacing } from '../components/studio/textLayout';
 import { runFontString } from '../components/studio/textRuns';
+import { rasterizeWarpedTextLocal } from '../components/studio/textWarpRender';
 import { partitionAdjustments, groupClipRuns, type RenderNode, type ClipRun } from '../components/studio/layerTree';
 import { filterForAdjustment, withStrength } from './adjustments';
 import { applyCustomBlend } from './customBlendModes';
@@ -69,6 +70,17 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
     ctx.rect(text.x, text.y, layout.width, text.fixedHeight);
     ctx.closePath();
     ctx.clip();
+  }
+
+  // Warp Text: the rasterize-in-local-space-then-warp path shared with TextLayerNode.tsx's live
+  // render — shadow/gradient/stroke are already baked into that local bitmap, so this draws it
+  // straight onto the (already rotated + clipped) export ctx and skips the per-run text below
+  // entirely, the same way the live render swaps a single Konva.Image in for the per-run nodes.
+  if (text.warp && text.warp.style !== 'none') {
+    const warped = rasterizeWarpedTextLocal(text, layout);
+    ctx.drawImage(warped, text.x, text.y);
+    ctx.restore();
+    return;
   }
 
   ctx.textBaseline = 'top';

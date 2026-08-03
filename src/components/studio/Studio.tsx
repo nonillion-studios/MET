@@ -27,6 +27,7 @@ import {
 import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSelection, alphaMaskToSelection, selectionBounds, invertSelection, clipToSelection, type Selection } from './paint/selection';
 import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
 import { StrokeSelectionDialog, type StrokeSelectionResult } from './StrokeSelectionDialog';
+import { WarpTextDialog } from './WarpTextDialog';
 import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
@@ -50,7 +51,7 @@ import JSZip from 'jszip';
 import {
   createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, parseTyperScript,
   createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
-  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign,
+  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
 } from './studioTypes';
 import { applyCharPatch, resolveCharValue } from './textRuns';
 import { getClipboardLayer, setClipboardLayer } from '../../lib/layerClipboard';
@@ -584,6 +585,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [strokePathDialogOpen, setStrokePathDialogOpen] = useState(false);
   const [fillSelectionDialogOpen, setFillSelectionDialogOpen] = useState(false);
   const [strokeSelectionDialogOpen, setStrokeSelectionDialogOpen] = useState(false);
+  const [warpDialogLayerId, setWarpDialogLayerId] = useState<string | null>(null);
 
   useEffect(() => {
     function onFullscreenChange() { setIsFullscreen(document.fullscreenElement === studioRootRef.current); }
@@ -1920,7 +1922,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     panelLayout.reveal('text');
   }
 
-  function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>) {
+  function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>, historyLabel?: string) {
     updateLayers(current => updateLayer(current, id, l => {
       if (l.type !== 'text' || !l.text) return l;
       // Default a freshly-typed layer to RTL/right alignment the moment its content first reads as
@@ -1931,7 +1933,22 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         next = { ...patch, align: 'right' };
       }
       return { ...l, text: { ...l.text, ...next } };
-    }));
+    }), historyLabel);
+  }
+
+  /** Text menu / options-bar warp button / right-click "Warp Text…" — all open the same dialog for
+   *  whichever text layer is active. */
+  function handleOpenWarpDialog() {
+    if (activeLayer?.type === 'text') setWarpDialogLayerId(activeLayer.id);
+  }
+  function handlePreviewWarp(warp: WarpTextSettings) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp });
+  }
+  function handleConfirmWarp(warp: WarpTextSettings) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp }, 'Warp Text');
+  }
+  function handleCancelWarp(previous: WarpTextSettings | undefined) {
+    if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp: previous });
   }
 
   /** Double-clicking a text layer's own ⊞ overflow indicator: fits fixedHeight tightly to the
@@ -2373,6 +2390,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       }}
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
+      onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
   );
@@ -2633,6 +2651,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     centerTextInBubble: () => activeLayerId && handleCenterTextLayer(activeLayerId),
     increaseTextSize: () => handleTextSizeStep(1),
     decreaseTextSize: () => handleTextSizeStep(-1),
+    openWarpTextDialog: handleOpenWarpDialog,
     hasActiveTextLayer: activeLayer?.type === 'text',
     textSetBold: handleToggleTextBold,
     textSetItalic: handleToggleTextItalic,
@@ -3152,6 +3171,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onClose={() => setStrokeSelectionDialogOpen(false)}
         onConfirm={confirmStrokeSelection}
         foregroundColor={paintSettings.color}
+      />
+      <WarpTextDialog
+        open={warpDialogLayerId != null}
+        initial={warpDialogLayerId ? findLayer(layers, warpDialogLayerId)?.text?.warp : undefined}
+        onClose={() => setWarpDialogLayerId(null)}
+        onPreview={handlePreviewWarp}
+        onConfirm={handleConfirmWarp}
+        onCancel={handleCancelWarp}
       />
       {blendingOptionsLayerId && (() => {
         const target = findLayer(layers, blendingOptionsLayerId);

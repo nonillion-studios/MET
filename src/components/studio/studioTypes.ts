@@ -231,9 +231,33 @@ export interface TextLayerData {
   lineOverrides?: Record<number, LineStyleOverride>;
   /** Set by Type Region for a non-rectangular container. See TextClipShape. */
   clipShape?: TextClipShape;
+  /** Warp Text (Text menu / options bar). Absent or `style: 'none'` means unwarped — rendered the
+   *  normal per-run `Konva.Text` way. Stored as settings rather than a baked image so the warp is
+   *  re-applied automatically whenever the text's own content/style changes; see textWarp.ts. */
+  warp?: WarpTextSettings;
   /** Translator workflow metadata — surfaced in the Translation Preview panel. */
   status: TranslationStatus;
   comment: string;
+}
+
+/** Photoshop's Warp Text style list. `'none'` disables warping entirely (the field can also just be
+ *  absent for the same effect — both mean "render normally"). */
+export type WarpStyle =
+  | 'none' | 'arc' | 'arcLower' | 'arcUpper' | 'arch'
+  | 'bulge' | 'shellLower' | 'shellUpper' | 'flag'
+  | 'wave' | 'fish' | 'rise' | 'fisheye' | 'inflate'
+  | 'squeeze' | 'twist';
+
+export interface WarpTextSettings {
+  orientation: 'horizontal' | 'vertical';
+  style: WarpStyle;
+  bend: number; // -100..100
+  horizontalDistortion: number; // -100..100
+  verticalDistortion: number; // -100..100
+}
+
+export function createDefaultWarpSettings(): WarpTextSettings {
+  return { orientation: 'horizontal', style: 'none', bend: 50, horizontalDistortion: 0, verticalDistortion: 0 };
 }
 
 export const DEFAULT_TEXT_SHADOW: TextShadow = {

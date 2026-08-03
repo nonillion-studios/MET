@@ -69,6 +69,9 @@ interface LayersPanelProps {
    *  layer's own current `text.autoWidth` (Convert to Point Text only when it's currently area
    *  text, and vice versa) — the caller decides how the box's dimensions get seeded on conversion. */
   onConvertTextMode?: (id: string, toAutoWidth: boolean) => void;
+  /** Right-click a text layer > "Warp Text…" — opens the same dialog the Text menu and options bar
+   *  warp button do, targeting this specific layer regardless of which one is currently active. */
+  onOpenWarpText?: (id: string) => void;
   /** Explicit "open full settings" intent (the Text/Adjustment panel) — separate from onSelect, so
    *  a plain click never navigates away from this list. No-ops for layer types without a panel. */
   onOpenSettings?: (id: string) => void;
@@ -106,7 +109,7 @@ export function LayersPanel({
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
-  onConvertBackgroundToLayer,
+  onConvertBackgroundToLayer, onOpenWarpText,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -165,6 +168,7 @@ export function LayersPanel({
           ? { convertText: 'Convert to Area Text' }
           : { convertText: 'Convert to Point Text' })
         : {}),
+      ...(layer.type === 'text' && onOpenWarpText ? { warpText: 'Warp Text…' } : {}),
       moveUp: 'Move Up',
       moveDown: 'Move Down',
       ...(onOpenBlendingOptions ? { blendingOptions: 'Blending Options…' } : {}),
@@ -200,6 +204,7 @@ export function LayersPanel({
       }
       case 'duplicate': onDuplicate(layer.id); break;
       case 'convertText': onConvertTextMode?.(layer.id, !layer.text?.autoWidth); break;
+      case 'warpText': onOpenWarpText?.(layer.id); break;
       case 'visibility': onToggleVisible(layer.id); break;
       case 'lock': onToggleLocked(layer.id); break;
       case 'moveUp': onMove(layer.id, 'up'); break;

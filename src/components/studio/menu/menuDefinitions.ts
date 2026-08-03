@@ -101,6 +101,9 @@ export interface MenuActions {
   increaseTextSize: () => void;
   decreaseTextSize: () => void;
   hasActiveTextLayer: boolean;
+  /** Text > Warp Text… — same dialog the text options bar's warp button and a text layer's own
+   *  right-click menu open, targeting whichever text layer is currently active. */
+  openWarpTextDialog: () => void;
   /** Text menu's Font/Size/Bold/Italic/Align/RTL/LTR — real, via textRuns.ts's applyCharPatch
    *  (Bold/Italic/Size) or a direct layer-level align patch (Align/RTL/LTR — paragraph properties,
    *  never per-run). No-ops (and the items disable) without an active text layer. */
@@ -402,6 +405,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'center-bubble', label: 'Center in Bubble', action: a.centerTextInBubble, disabled: !a.hasActiveTextLayer },
         { id: 'increase-text-size', label: 'Increase Size', shortcut: 'Ctrl+.', action: a.increaseTextSize, disabled: !a.hasActiveTextLayer },
         { id: 'decrease-text-size', label: 'Decrease Size', shortcut: 'Ctrl+,', action: a.decreaseTextSize, disabled: !a.hasActiveTextLayer },
+        { id: 'sep6', label: '', separator: true },
+        { id: 'warp-text', label: 'Warp Text…', action: a.openWarpTextDialog, disabled: !a.hasActiveTextLayer },
       ],
     },
     {

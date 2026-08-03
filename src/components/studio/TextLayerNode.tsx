@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
-import { Group, Rect, Line, Ellipse, Text as KonvaText } from 'react-konva';
+import { Group, Rect, Line, Ellipse, Text as KonvaText, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes';
 import { layoutText } from './textLayout';
 import { gradientVector } from './textGradient';
+import { rasterizeWarpedTextLocal } from './textWarpRender';
 
 interface TextLayerNodeProps {
   layer: StudioLayer;
@@ -64,6 +65,12 @@ export function TextLayerNode({
 }: TextLayerNodeProps) {
   const text = layer.text!;
   const layout = useMemo(() => layoutText(text), [text]);
+  // Warp Text: re-rasterized (and re-warped) from scratch whenever the text's own content/style
+  // changes, since warp settings are stored data rather than a baked image — see the `warp` field's
+  // own doc comment on TextLayerData. `null` (not warped) keeps the existing per-run Konva.Text
+  // rendering untouched, so the overwhelmingly common unwarped case pays nothing extra.
+  const isWarped = !!text.warp && text.warp.style !== 'none';
+  const warpedCanvas = useMemo(() => (isWarped ? rasterizeWarpedTextLocal(text, layout) : null), [isWarped, text, layout]);
   // Area text with a fixed frame: clips glyph content at the box's bottom edge. Unconditional on
   // fixedHeight being set, not gated on layout.overflowing — the boundary this rect draws is the
   // same one naturalHeight > fixedHeight checks, so there's no discontinuity right at the threshold.
@@ -203,34 +210,42 @@ export function TextLayerNode({
         clipWidth={fixedHeightClip ? Math.max(layout.width, 4) : undefined}
         clipHeight={fixedHeightClip ? text.fixedHeight : undefined}
       >
-        {layout.runs.map((run, i) => (
-          <KonvaText
-            key={i}
-            x={run.x}
-            y={run.y}
-            text={run.text}
-            fontFamily={run.style.fontFamily}
-            fontSize={run.style.fontSize}
-            fontStyle={`${run.style.italic ? 'italic ' : ''}${run.style.fontWeight}`}
-            letterSpacing={run.style.letterSpacing}
-            // Already laid out: one line, no wrapping, no alignment box.
-            wrap="none"
-            lineHeight={1}
-            fill={run.style.color}
-            fillPriority={gradient ? 'linear-gradient' : 'color'}
-            fillLinearGradientColorStops={gradient ? [0, gradient.from, 1, gradient.to] : undefined}
-            fillLinearGradientStartPoint={ramp ? { x: ramp.start.x - run.x, y: ramp.start.y - run.y } : undefined}
-            fillLinearGradientEndPoint={ramp ? { x: ramp.end.x - run.x, y: ramp.end.y - run.y } : undefined}
-            shadowEnabled={text.shadow?.enabled ?? false}
-            shadowColor={text.shadow?.color}
-            shadowBlur={text.shadow?.blur}
-            shadowOffsetX={text.shadow?.offsetX}
-            shadowOffsetY={text.shadow?.offsetY}
-            stroke={text.strokeWidth > 0 ? text.strokeColor : undefined}
-            strokeWidth={text.strokeWidth}
-            listening={false}
-          />
-        ))}
+        {warpedCanvas ? (
+          // Warped: one rasterized (and warped) bitmap instead of per-run Konva.Text nodes — still
+          // just a normal image inside this same clipped/positioned Group, so Type Region clipping,
+          // the fixed-height clip above, and the outer Group's rotation/drag/transform all keep
+          // working exactly as they do for the unwarped case.
+          <KonvaImage image={warpedCanvas} width={warpedCanvas.width} height={warpedCanvas.height} listening={false} />
+        ) : (
+          layout.runs.map((run, i) => (
+            <KonvaText
+              key={i}
+              x={run.x}
+              y={run.y}
+              text={run.text}
+              fontFamily={run.style.fontFamily}
+              fontSize={run.style.fontSize}
+              fontStyle={`${run.style.italic ? 'italic ' : ''}${run.style.fontWeight}`}
+              letterSpacing={run.style.letterSpacing}
+              // Already laid out: one line, no wrapping, no alignment box.
+              wrap="none"
+              lineHeight={1}
+              fill={run.style.color}
+              fillPriority={gradient ? 'linear-gradient' : 'color'}
+              fillLinearGradientColorStops={gradient ? [0, gradient.from, 1, gradient.to] : undefined}
+              fillLinearGradientStartPoint={ramp ? { x: ramp.start.x - run.x, y: ramp.start.y - run.y } : undefined}
+              fillLinearGradientEndPoint={ramp ? { x: ramp.end.x - run.x, y: ramp.end.y - run.y } : undefined}
+              shadowEnabled={text.shadow?.enabled ?? false}
+              shadowColor={text.shadow?.color}
+              shadowBlur={text.shadow?.blur}
+              shadowOffsetX={text.shadow?.offsetX}
+              shadowOffsetY={text.shadow?.offsetY}
+              stroke={text.strokeWidth > 0 ? text.strokeColor : undefined}
+              strokeWidth={text.strokeWidth}
+              listening={false}
+            />
+          ))
+        )}
       </Group>
 
       {selected && !editing && (
