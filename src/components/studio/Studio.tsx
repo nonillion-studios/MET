@@ -2204,6 +2204,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         const key = styleKey as keyof typeof currentEffects;
         handleUpdateLayerStyle(id, { effects: { ...currentEffects, [key]: { ...currentEffects[key], enabled } } }, true);
       }}
+      onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       hideTitle
     />
   );

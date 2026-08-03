@@ -11,10 +11,11 @@ import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
 import {
-  LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL,
-  type StudioLayer, type LayerSelectMode, type AdjustmentKind,
+  LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL, createDefaultLayerEffects,
+  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects,
 } from './studioTypes';
 import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
+import { getClipboardLayerStyle, setClipboardLayerStyle } from '../../lib/layerStyleClipboard';
 
 /** Where a drop lands relative to the row under the cursor. */
 type DropZone = 'above' | 'into' | 'below';
@@ -76,6 +77,9 @@ interface LayersPanelProps {
   onOpenBlendingOptions?: (id: string, section?: string) => void;
   /** Toggles one style's own `enabled` flag without opening the dialog — the sub-row eye icons. */
   onToggleLayerStyle?: (id: string, styleKey: string, enabled: boolean) => void;
+  /** Right-click > Copy/Paste/Clear Layer Style — replaces this layer's whole `effects` object in
+   *  one committed, undo-able step (unlike `onToggleLayerStyle`, which only flips one key). */
+  onSetLayerEffects?: (id: string, effects: LayerEffects) => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -98,7 +102,7 @@ export function LayersPanel({
   onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
-  hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle,
+  hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -149,6 +153,9 @@ export function LayersPanel({
       moveUp: 'Move Up',
       moveDown: 'Move Down',
       ...(onOpenBlendingOptions ? { blendingOptions: 'Blending Options…' } : {}),
+      ...(onSetLayerEffects ? { copyStyle: 'Copy Layer Style' } : {}),
+      ...(onSetLayerEffects && getClipboardLayerStyle() ? { pasteStyle: 'Paste Layer Style' } : {}),
+      ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? { clearStyle: 'Clear Layer Style' } : {}),
       ...(layer.isBackground ? {} : { delete: 'Delete' }),
     };
     const result = await swal({
@@ -182,6 +189,13 @@ export function LayersPanel({
       case 'moveUp': onMove(layer.id, 'up'); break;
       case 'moveDown': onMove(layer.id, 'down'); break;
       case 'blendingOptions': onOpenBlendingOptions?.(layer.id); break;
+      case 'copyStyle': setClipboardLayerStyle(layer.effects ?? createDefaultLayerEffects()); break;
+      case 'pasteStyle': {
+        const copied = getClipboardLayerStyle();
+        if (copied) onSetLayerEffects?.(layer.id, copied);
+        break;
+      }
+      case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }

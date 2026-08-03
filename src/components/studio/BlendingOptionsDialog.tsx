@@ -58,12 +58,11 @@ function BlendModeSelect({ value, onChange }: { value: BlendMode; onChange: (v: 
  * reverts to the snapshot taken on open (same `FilterDialog.tsx` pattern this app already uses for
  * "edit live, commit or revert on close").
  *
- * Only Color Overlay and Gradient Overlay actually render on the live Konva canvas (see
- * `StudioCanvas.tsx`'s `renderLeaf`) — every other style here is real and fully applied in flattened
- * PNG/JPG/WEBP and PSD export, but previews as "no visible change yet" on screen. This is called out
- * inline next to Preview, not hidden: Konva's per-node filter model has no access to the backdrop a
- * genuine shadow/glow/bevel would need to render correctly at arbitrary stack positions, and building
- * that is a materially larger, separate undertaking than this dialog itself.
+ * Every style except Pattern Overlay renders live on the Konva canvas as well as in flattened
+ * PNG/JPG/WEBP and PSD export (see `StudioCanvas.tsx`'s `renderLeaf` and `liveLayerEffects.ts`,
+ * which reuses the exact same halo math `exportImage.ts` uses for export, so the two can't drift).
+ * Pattern Overlay stays a real no-op everywhere — there's no pattern-asset library in this app (see
+ * `PatternOverlayStyleData`'s own doc comment).
  */
 export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialSection }: BlendingOptionsDialogProps) {
   const [section, setSection] = useState<StyleKey>(initialSection ?? 'blending');
@@ -136,7 +135,6 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
           <label className="flex items-center gap-2 text-micro text-ink-faint">
             <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} />
             Preview
-            <span className="text-ink-faint/60">(Color/Gradient Overlay + blend mode only — others apply at export)</span>
           </label>
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={handleReset}>Reset to Default</Button>

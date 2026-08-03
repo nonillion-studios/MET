@@ -26,6 +26,7 @@ import {
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
+import { paintLiveEffectCanvases, hasLiveHaloEffects } from '../../lib/liveLayerEffects';
 import { Menu } from './menu/Menu';
 import type { MenuItemDef } from './menu/menuDefinitions';
 import { snapSegmentToEdges } from './paint/magneticLasso';
@@ -336,6 +337,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // painting) already calls this right after touching pixels — the one universal chokepoint to
     // invalidate the sampling composite cache from, instead of chasing every individual call site.
     sampleCompositeDirtyRef.current = true;
+    // Same reasoning extends to the live Drop Shadow/Inner Shadow/Glow/Bevel/Satin/Stroke halo
+    // canvases (see `recomputeLiveEffects` below, defined further down but safe to call here since
+    // this function itself is only ever invoked from effects/event handlers, never during render):
+    // a brush stroke on a layer that also has one of those enabled needs its halo refreshed too, or
+    // the shadow/glow would silently go stale the moment new pixels are painted under it.
+    if (layerId) recomputeLiveEffects(layerId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
   /** A layer's mask and its own raster content are two separate registry entries, keyed by the
@@ -354,6 +362,47 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   imageRef.current = image;
+
+  /** Three extra persistent per-layer canvases for the Layer Style effects that aren't Color/
+   *  Gradient Overlay (see `liveLayerEffects.ts`'s own doc comment for why those two are excluded
+   *  and why the other five don't need real content as a backdrop). Same "one stable canvas per id,
+   *  mutated in place" convention as `paintCanvasRegistry` — a `Konva.Image` pointed at one of these
+   *  only ever needs a `.batchDraw()` to pick up a change, never a new `image` prop reference. */
+  const behindEffectsRegistry = useRef<PaintCanvasRegistry>({});
+  const overlayBaseEffectsRegistry = useRef<PaintCanvasRegistry>({});
+  const strokeEffectsRegistry = useRef<PaintCanvasRegistry>({});
+
+  /** Recomputes `layerId`'s live halo canvases from its current content + effects. Called both from
+   *  `redrawLayerNode` (so a paint stroke on an effect-bearing layer keeps its shadow/glow in sync)
+   *  and from the structural-cache effect below (so toggling/editing an effect in the Blending
+   *  Options dialog updates immediately, independent of any paint activity). Cheap no-op via
+   *  `hasLiveHaloEffects` for the overwhelmingly common case of a layer with no such effect enabled,
+   *  so this never costs anything on the hot paint-stroke path except for the rare layer that has
+   *  both paint activity and one of these effects at once. */
+  const recomputeLiveEffects = useCallback((layerId: string) => {
+    const img = imageRef.current;
+    const layer = findLayer(layersRef.current, layerId);
+    if (!img || !layer) return;
+    const behind = getOrCreateCanvasFor(behindEffectsRegistry.current, layerId, img.width, img.height);
+    const overlayBase = getOrCreateCanvasFor(overlayBaseEffectsRegistry.current, layerId, img.width, img.height);
+    const stroke = getOrCreateCanvasFor(strokeEffectsRegistry.current, layerId, img.width, img.height);
+    if (!hasLiveHaloEffects(layer)) {
+      // Still clear them — an effect that was just disabled must stop showing its old halo.
+      behind.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      overlayBase.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      stroke.getContext('2d')?.clearRect(0, 0, img.width, img.height);
+      return;
+    }
+    paintLiveEffectCanvases(layer, {
+      layers: layersRef.current,
+      background: img,
+      width: img.width,
+      height: img.height,
+      getRaster: (id) => paintCanvasRegistry.current[id] ?? null,
+      getMask: (id) => maskCanvasRegistry.current[id] ?? null,
+    }, { behind, overlayBase, stroke });
+  }, []);
+
   const bgImageNodeRef = useRef<Konva.Image | null>(null);
   const pinchDistRef = useRef<number | null>(null);
   const prevPinchCenterRef = useRef<{ x: number; y: number } | null>(null);
@@ -677,6 +726,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     },
     deletePaintCanvas(layerId: string) {
       deleteCanvasFor(paintCanvasRegistry.current, layerId);
+      deleteCanvasFor(behindEffectsRegistry.current, layerId);
+      deleteCanvasFor(overlayBaseEffectsRegistry.current, layerId);
+      deleteCanvasFor(strokeEffectsRegistry.current, layerId);
       delete liquifySnapshots[layerId];
     },
     clonePaintCanvases(idMap: Map<string, string>) {
@@ -1212,6 +1264,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // node inside the layer's own Group below) need the layer already rasterized to know what
       // "atop" means; the other style types isolate here for boolean parity with `exportImage.ts`'s
       // `isolatesGroup` even though they don't yet render live (see `needsIsolation`'s own comment).
+      // Must run BEFORE `.cache()` below, not after: caching snapshots whatever these Konva.Image
+      // nodes currently show, so repainting their backing canvases afterward would have no visible
+      // effect until the next unrelated structural change forces a re-cache.
+      recomputeLiveEffects(layer.id);
       const isolate = needsIsolation(layer)
         || (layer.type === 'adjustment' && layer.visible)
         || hasClippedFollowers(layer.id)
@@ -1231,6 +1287,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       refreshMaskFilter(layer.id);
     }
     stageRef.current?.batchDraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupStructureKey, image, needsIsolation, refreshMaskFilter]);
 
   /**
@@ -2234,6 +2291,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         globalCompositeOperation={compositeOperationFor(layer.blendMode)}
         listening={layer.visible && !layer.locked}
       >
+        {/* Drop Shadow / Outer Glow — drawn behind everything else in this Group, matching
+            `applyLeafEffects` painting them onto the backdrop `ctx` in exportImage.ts rather than
+            the leaf's own scratch canvas. Blank/transparent (drawn but invisible) whenever neither
+            is enabled — see `liveLayerEffects.ts`'s "one stable canvas per id" doc comment for why
+            this doesn't need a conditional mount/unmount. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(behindEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
+
         {layer.type === 'group' && renderLayerNodes(layer.children ?? [])}
 
         {layer.type === 'background' && image && (
@@ -2298,6 +2369,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           />
         )}
 
+        {/* Inner Shadow / Inner Glow / Bevel & Emboss / Satin — real pixel effects (see
+            `liveLayerEffects.ts`), self-clipped to this leaf's own alpha by the halo math itself
+            (every function in layerEffects.ts multiplies by the source alpha already), so this can
+            render as a plain extra image rather than needing `source-atop` against real content —
+            drawn after the content above but before Color/Gradient Overlay, matching the
+            compositing order `applyLeafEffects` uses in exportImage.ts. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(overlayBaseEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
+
         {/* Color Overlay / Gradient Overlay — the two Layer Style effects this file renders live
             (see needsIsolation's own comment for why the rest don't yet). `source-atop` composites
             the fill only where this Group has already drawn something, i.e. tints the layer's own
@@ -2355,6 +2441,18 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             />
           );
         })()}
+
+        {/* Stroke — real pixel effect (see `liveLayerEffects.ts`), self-clipped to a dilate/erode
+            ring around this leaf's own alpha, drawn last so it sits above Color/Gradient Overlay,
+            matching `applyLeafEffects`'s compositing order in exportImage.ts. */}
+        {image && layer.effects != null && (
+          <KonvaImage
+            image={getOrCreateCanvasFor(strokeEffectsRegistry.current, layer.id, image.width, image.height)}
+            width={image.width}
+            height={image.height}
+            listening={false}
+          />
+        )}
       </Group>
     );
   }

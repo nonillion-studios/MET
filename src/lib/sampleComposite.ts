@@ -36,6 +36,19 @@ export interface SampleLayerSource {
  * too slow to run on every eyedropper hover or clone-stroke pointerdown. Any change to the
  * compositing *rules* (not just perf) should land in both files.
  */
+/** Renders just one leaf's own content (no opacity/blend/mask/effects applied) onto a fresh
+ *  page-sized canvas — the same synchronous, no-round-trip drawing `drawLeafContentSync` already
+ *  does for the sampling compositor, exposed standalone so `liveLayerEffects.ts` can extract a
+ *  layer's own alpha silhouette without re-deriving how each layer type draws itself. */
+export function renderLeafContentOnly(layer: StudioLayer, src: SampleLayerSource): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = src.width;
+  canvas.height = src.height;
+  const ctx = canvas.getContext('2d');
+  if (ctx) drawLeafContentSync(ctx, layer, src);
+  return canvas;
+}
+
 function drawLeafContentSync(ctx: CanvasRenderingContext2D, layer: StudioLayer, src: SampleLayerSource): void {
   if (layer.type === 'background') {
     ctx.drawImage(src.background, 0, 0, src.width, src.height);
