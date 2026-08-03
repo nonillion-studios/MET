@@ -49,6 +49,10 @@ export interface Track {
   // local-only
   fileName?: string;
   objectUrl?: string | null;
+  /** Embedded ID3v2 APIC cover art, extracted at upload time — an object URL, or null/undefined
+   *  when the file has no embedded art (or it couldn't be parsed), in which case a placeholder is
+   *  shown instead. Session memory only, same lifetime as `objectUrl`. */
+  artwork?: string | null;
   // spotify-only
   spotifyId?: string;
   spotifyType?: 'track' | 'playlist' | 'album';
@@ -96,6 +100,108 @@ export function isYouTubePlaylistOnlyUrl(url: string): boolean {
 
 export function getYouTubeThumbnail(videoId: string): string {
   return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+}
+
+type ParsedMediaUrl = { track: Track } | { error: string };
+
+let mediaUrlCounter = 0;
+
+/** Parses one candidate URL (already trimmed) into a ready-to-add `Track`, or an error message —
+ *  factored out of the add-link handler so a single paste containing several URLs (one per line,
+ *  space- or comma-separated) can resolve each independently. */
+function parseMediaUrl(url: string): ParsedMediaUrl | null {
+  if (!url) return null;
+  const spotify = parseSpotifyUrl(url);
+  if (spotify) {
+    return {
+      track: {
+        id: `spotify-${Date.now()}-${mediaUrlCounter++}-${Math.random().toString(36).slice(2)}`,
+        kind: 'spotify',
+        title: `Spotify ${spotify.type}`,
+        spotifyId: spotify.id,
+        spotifyType: spotify.type,
+      },
+    };
+  }
+  if (isYouTubePlaylistOnlyUrl(url)) {
+    return { error: "Playlist links aren't supported — paste a single video link." };
+  }
+  const youtubeId = extractYouTubeId(url);
+  if (youtubeId) {
+    return {
+      track: {
+        id: `youtube-${Date.now()}-${mediaUrlCounter++}-${Math.random().toString(36).slice(2)}`,
+        kind: 'youtube',
+        title: `YouTube video ${youtubeId}`,
+        youtubeId,
+      },
+    };
+  }
+  return { error: 'Not a valid Spotify or YouTube link.' };
+}
+
+function readSynchsafeInt(view: DataView, offset: number): number {
+  return (
+    ((view.getUint8(offset) & 0x7f) << 21) |
+    ((view.getUint8(offset + 1) & 0x7f) << 14) |
+    ((view.getUint8(offset + 2) & 0x7f) << 7) |
+    (view.getUint8(offset + 3) & 0x7f)
+  );
+}
+
+/** Best-effort ID3v2 APIC (attached picture) extractor for local audio uploads. Only reads the
+ *  leading ID3v2 tag (embedded art always lives there, never scanned from the rest of the file),
+ *  handles both plain (v2.2/2.3) and synchsafe (v2.4) frame sizes, and returns null — never
+ *  throws — for anything it can't confidently parse, so the caller always has a placeholder to
+ *  fall back to. */
+async function extractArtworkFromFile(file: File): Promise<string | null> {
+  try {
+    const headerBuffer = await file.slice(0, 10).arrayBuffer();
+    if (headerBuffer.byteLength < 10) return null;
+    const headerView = new DataView(headerBuffer);
+    if (headerView.getUint8(0) !== 0x49 || headerView.getUint8(1) !== 0x44 || headerView.getUint8(2) !== 0x33) {
+      return null; // no "ID3" magic at the start of the file
+    }
+    const majorVersion = headerView.getUint8(3);
+    const tagSize = readSynchsafeInt(headerView, 6);
+
+    const tagBuffer = await file.slice(0, 10 + tagSize).arrayBuffer();
+    const view = new DataView(tagBuffer);
+
+    let offset = 10;
+    while (offset + 10 <= tagBuffer.byteLength) {
+      const frameId = String.fromCharCode(
+        view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3),
+      );
+      const frameSize = majorVersion >= 4 ? readSynchsafeInt(view, offset + 4) : view.getUint32(offset + 4);
+      if (frameSize <= 0 || offset + 10 + frameSize > tagBuffer.byteLength) break;
+
+      if (frameId === 'APIC') {
+        let picOffset = offset + 10;
+        picOffset += 1; // text-encoding byte
+        const mimeStart = picOffset;
+        while (picOffset < tagBuffer.byteLength && view.getUint8(picOffset) !== 0) picOffset++;
+        const mimeBytes = new Uint8Array(tagBuffer, mimeStart, picOffset - mimeStart);
+        const mimeType = mimeBytes.length > 0 ? String.fromCharCode(...mimeBytes) : 'image/jpeg';
+        picOffset += 1; // null terminator
+        picOffset += 1; // picture-type byte
+        while (picOffset < tagBuffer.byteLength && view.getUint8(picOffset) !== 0) picOffset++; // description
+        picOffset += 1; // null terminator
+
+        const frameEnd = offset + 10 + frameSize;
+        const imageLength = frameEnd - picOffset;
+        if (imageLength <= 0) return null;
+        const imageBytes = new Uint8Array(tagBuffer, picOffset, imageLength);
+        const blob = new Blob([imageBytes], { type: mimeType });
+        return URL.createObjectURL(blob);
+      }
+
+      offset += 10 + frameSize;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /** Minimal ambient typing for the parts of the YouTube IFrame Player API this app actually calls —
@@ -258,6 +364,23 @@ export function MusicPlayer() {
   const tracks = tracksByPlaylist[activePlaylistId] ?? [];
   const currentIndex = tracks.findIndex((t) => t.id === currentTrackId);
   const currentTrack = currentIndex >= 0 ? tracks[currentIndex] : null;
+
+  // Mirrors of the state above, kept in sync every render. The persistent <audio> element's
+  // `ended` listener and the YouTube player's `onStateChange` callback are each registered exactly
+  // once (empty-deps mount effect / first-track-only player construction) and never re-attached
+  // per track — without these refs, the auto-play-next logic they call would forever see the
+  // playlist/track/shuffle/repeat state as it existed at that one registration moment instead of
+  // whatever it actually is when a track really ends.
+  const tracksRef = useRef(tracks);
+  const currentTrackIdRef = useRef(currentTrackId);
+  const currentIndexRef = useRef(currentIndex);
+  const shuffleRef = useRef(persisted.shuffle);
+  const repeatRef = useRef(persisted.repeat);
+  useEffect(() => { tracksRef.current = tracks; }, [tracks]);
+  useEffect(() => { currentTrackIdRef.current = currentTrackId; }, [currentTrackId]);
+  useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
+  useEffect(() => { shuffleRef.current = persisted.shuffle; }, [persisted.shuffle]);
+  useEffect(() => { repeatRef.current = persisted.repeat; }, [persisted.repeat]);
 
   // Persist settings (never track data) on every change.
   useEffect(() => { saveMusicPlayerState(persisted); }, [persisted]);
@@ -430,6 +553,13 @@ export function MusicPlayer() {
     setTracksByPlaylist((prev) => ({ ...prev, [playlistId]: [...(prev[playlistId] ?? []), ...newTracks] }));
   }
 
+  function updateTrackArtwork(playlistId: string, trackId: string, artwork: string) {
+    setTracksByPlaylist((prev) => {
+      const list = prev[playlistId] ?? [];
+      return { ...prev, [playlistId]: list.map((t) => (t.id === trackId ? { ...t, artwork } : t)) };
+    });
+  }
+
   function handleUploadFiles(files: FileList | null) {
     if (!files) return;
     const list = Array.from(files); // FileList is live -- snapshot before the input is ever cleared.
@@ -439,54 +569,42 @@ export function MusicPlayer() {
       title: fileNameToTitle(file.name),
       fileName: file.name,
       objectUrl: URL.createObjectURL(file),
+      artwork: null,
     }));
-    addTracksToPlaylist(activePlaylistId, newTracks);
+    const playlistId = activePlaylistId;
+    addTracksToPlaylist(playlistId, newTracks);
     if (!currentTrackId && newTracks.length > 0) setCurrentTrackId(newTracks[0].id);
+    newTracks.forEach((track, i) => {
+      extractArtworkFromFile(list[i])
+        .then((artwork) => { if (artwork) updateTrackArtwork(playlistId, track.id, artwork); })
+        .catch(() => {});
+    });
   }
 
   function handleAddMediaUrl() {
-    const url = mediaUrlInput.trim();
-    const spotify = parseSpotifyUrl(url);
-    if (spotify) {
-      const track: Track = {
-        id: `spotify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        kind: 'spotify',
-        title: `Spotify ${spotify.type}`,
-        spotifyId: spotify.id,
-        spotifyType: spotify.type,
-      };
-      addTracksToPlaylist(activePlaylistId, [track]);
-      if (!currentTrackId) playTrack(track.id);
+    const rawUrls = mediaUrlInput.split(/[\n\r\s,]+/).map((s) => s.trim()).filter(Boolean);
+    if (rawUrls.length === 0) return;
+    const newTracks: Track[] = [];
+    const errors: string[] = [];
+    for (const raw of rawUrls) {
+      const result = parseMediaUrl(raw);
+      if (!result) continue;
+      if ('error' in result) errors.push(rawUrls.length > 1 ? `${raw} — ${result.error}` : result.error);
+      else newTracks.push(result.track);
+    }
+    if (newTracks.some((t) => t.kind === 'youtube')) loadYouTubeIframeApi();
+    if (newTracks.length > 0) {
+      addTracksToPlaylist(activePlaylistId, newTracks);
+      if (!currentTrackId) playTrack(newTracks[0].id);
       setMediaUrlInput('');
-      setMediaUrlError(null);
-      return;
     }
-    if (isYouTubePlaylistOnlyUrl(url)) {
-      setMediaUrlError("Playlist links aren't supported — paste a single video link.");
-      return;
-    }
-    const youtubeId = extractYouTubeId(url);
-    if (youtubeId) {
-      loadYouTubeIframeApi();
-      const track: Track = {
-        id: `youtube-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        kind: 'youtube',
-        title: `YouTube video ${youtubeId}`,
-        youtubeId,
-      };
-      addTracksToPlaylist(activePlaylistId, [track]);
-      if (!currentTrackId) playTrack(track.id);
-      setMediaUrlInput('');
-      setMediaUrlError(null);
-      return;
-    }
-    setMediaUrlError('Not a valid Spotify or YouTube link.');
+    setMediaUrlError(errors.length > 0 ? errors.join('; ') : null);
   }
 
-  function playTrack(id: string) {
+  const playTrack = useCallback((id: string) => {
     setCurrentTrackId(id);
     setIsPlaying(true);
-  }
+  }, []);
 
   function handlePlayPause() {
     if (!currentTrack) {
@@ -496,26 +614,29 @@ export function MusicPlayer() {
     setIsPlaying((p) => !p);
   }
 
-  function pickNextIndex(direction: 1 | -1): number | null {
-    if (tracks.length === 0) return null;
-    if (persisted.shuffle) {
-      if (tracks.length === 1) return 0;
-      let next = Math.floor(Math.random() * tracks.length);
-      while (next === currentIndex) next = Math.floor(Math.random() * tracks.length);
+  const pickNextIndex = useCallback((direction: 1 | -1): number | null => {
+    const list = tracksRef.current;
+    const idx = currentIndexRef.current;
+    if (list.length === 0) return null;
+    if (shuffleRef.current) {
+      if (list.length === 1) return 0;
+      let next = Math.floor(Math.random() * list.length);
+      while (next === idx) next = Math.floor(Math.random() * list.length);
       return next;
     }
-    const base = currentIndex < 0 ? (direction === 1 ? -1 : 0) : currentIndex;
+    const base = idx < 0 ? (direction === 1 ? -1 : 0) : idx;
     const next = base + direction;
-    if (next < 0) return persisted.repeat === 'all' ? tracks.length - 1 : null;
-    if (next >= tracks.length) return persisted.repeat === 'all' ? 0 : null;
+    if (next < 0) return repeatRef.current === 'all' ? list.length - 1 : null;
+    if (next >= list.length) return repeatRef.current === 'all' ? 0 : null;
     return next;
-  }
+  }, []);
 
-  function handleNext() {
+  const handleNext = useCallback(() => {
+    const list = tracksRef.current;
     const next = pickNextIndex(1);
-    if (next != null) playTrack(tracks[next].id);
+    if (next != null) playTrack(list[next].id);
     else setIsPlaying(false);
-  }
+  }, [pickNextIndex, playTrack]);
 
   function handlePrev() {
     if (currentTrack?.kind === 'youtube') {
@@ -529,9 +650,11 @@ export function MusicPlayer() {
     if (prev != null) playTrack(tracks[prev].id);
   }
 
-  function handleTrackEnded() {
-    if (persisted.repeat === 'one') {
-      if (currentTrack?.kind === 'youtube') {
+  const handleTrackEnded = useCallback(() => {
+    const list = tracksRef.current;
+    const current = list.find((t) => t.id === currentTrackIdRef.current) ?? null;
+    if (repeatRef.current === 'one') {
+      if (current?.kind === 'youtube') {
         const player = ytPlayerRef.current;
         if (player) { player.seekTo(0, true); player.playVideo(); }
         return;
@@ -541,13 +664,14 @@ export function MusicPlayer() {
       return;
     }
     handleNext();
-  }
+  }, [handleNext]);
 
   function handleDeleteTrack(id: string) {
     setTracksByPlaylist((prev) => {
       const list = prev[activePlaylistId] ?? [];
       const track = list.find((t) => t.id === id);
       if (track?.objectUrl) URL.revokeObjectURL(track.objectUrl);
+      if (track?.artwork) URL.revokeObjectURL(track.artwork);
       return { ...prev, [activePlaylistId]: list.filter((t) => t.id !== id) };
     });
     if (id === currentTrackId) { setCurrentTrackId(null); setIsPlaying(false); }
@@ -555,7 +679,10 @@ export function MusicPlayer() {
 
   function handleClearAll() {
     const list = tracksByPlaylist[activePlaylistId] ?? [];
-    list.forEach((t) => { if (t.objectUrl) URL.revokeObjectURL(t.objectUrl); });
+    list.forEach((t) => {
+      if (t.objectUrl) URL.revokeObjectURL(t.objectUrl);
+      if (t.artwork) URL.revokeObjectURL(t.artwork);
+    });
     setTracksByPlaylist((prev) => ({ ...prev, [activePlaylistId]: [] }));
     if (tracks.some((t) => t.id === currentTrackId)) { setCurrentTrackId(null); setIsPlaying(false); }
   }
@@ -698,10 +825,10 @@ export function MusicPlayer() {
       {!persisted.minimized && (
         <div className="p-3 flex flex-col gap-3">
           <div className="flex gap-3">
-            {/* Cover art: local files get a generic placeholder (real embedded-artwork extraction
-                is out of scope this pass) — YouTube tracks get their real video thumbnail, falling
-                back to the same placeholder if it fails to load; Spotify tracks show their own art
-                via the embed above, so no placeholder is drawn here for them. */}
+            {/* Cover art: local files show their embedded ID3 APIC art when extraction succeeded,
+                otherwise a generic placeholder — YouTube tracks get their real video thumbnail,
+                falling back to the same placeholder if it fails to load; Spotify tracks show their
+                own art via the embed above, so no placeholder is drawn here for them. */}
             {currentTrack?.kind === 'youtube' && currentTrack.youtubeId ? (
               <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 relative overflow-hidden">
                 <img
@@ -717,6 +844,10 @@ export function MusicPlayer() {
                 <div className="hidden absolute inset-0 items-center justify-center text-ink-faint">
                   <Music2 size={28} />
                 </div>
+              </div>
+            ) : currentTrack?.kind === 'local' && currentTrack.artwork ? (
+              <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 overflow-hidden">
+                <img src={currentTrack.artwork} alt="" className="w-full h-full object-cover" />
               </div>
             ) : currentTrack?.kind !== 'spotify' && (
               <div className="w-20 h-20 shrink-0 rounded-lg border border-hairline bg-ink/5 flex items-center justify-center text-ink-faint">
