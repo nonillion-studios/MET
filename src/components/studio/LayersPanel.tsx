@@ -80,6 +80,9 @@ interface LayersPanelProps {
   /** Right-click > Copy/Paste/Clear Layer Style — replaces this layer's whole `effects` object in
    *  one committed, undo-able step (unlike `onToggleLayerStyle`, which only flips one key). */
   onSetLayerEffects?: (id: string, effects: LayerEffects) => void;
+  /** Double-click (with confirmation) or right-click > "Layer from Background" — converts the
+   *  locked, restriction-bearing background row into a regular, fully editable layer. */
+  onConvertBackgroundToLayer?: () => void;
   /**
    * Which row has its properties (opacity/blend/actions) disclosed.
    *
@@ -103,6 +106,7 @@ export function LayersPanel({
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
+  onConvertBackgroundToLayer,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -136,6 +140,17 @@ export function LayersPanel({
     else onDelete(id);
   }
 
+  async function confirmConvertBackground() {
+    if (!onConvertBackgroundToLayer) return;
+    const result = await swal({
+      title: 'Convert to Normal Layer?',
+      text: 'The background will become a regular editable layer — you can paint on it, move it, and apply effects to it like any other layer.',
+      showCancelButton: true,
+      confirmButtonText: 'OK',
+    });
+    if (result.isConfirmed) onConvertBackgroundToLayer();
+  }
+
   async function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
     e.preventDefault();
     e.stopPropagation();
@@ -156,6 +171,7 @@ export function LayersPanel({
       ...(onSetLayerEffects ? { copyStyle: 'Copy Layer Style' } : {}),
       ...(onSetLayerEffects && getClipboardLayerStyle() ? { pasteStyle: 'Paste Layer Style' } : {}),
       ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? { clearStyle: 'Clear Layer Style' } : {}),
+      ...(layer.isBackground && onConvertBackgroundToLayer ? { layerFromBackground: 'Layer from Background' } : {}),
       ...(layer.isBackground ? {} : { delete: 'Delete' }),
     };
     const result = await swal({
@@ -196,6 +212,7 @@ export function LayersPanel({
         break;
       }
       case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
+      case 'layerFromBackground': onConvertBackgroundToLayer?.(); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }
@@ -437,6 +454,7 @@ export function LayersPanel({
                         className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (layer.isBackground) { void confirmConvertBackground(); return; }
                           setRenameValue(layer.name);
                           setRenamingId(layer.id);
                         }}

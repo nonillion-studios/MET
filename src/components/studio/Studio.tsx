@@ -42,6 +42,7 @@ import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { exportPsd } from '../../lib/exportPsd';
+import { parsePsdFile } from '../../lib/importPsd';
 import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
 import JSZip from 'jszip';
 import {
@@ -127,6 +128,8 @@ export function Studio(props: StudioProps) {
 
 function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession }: StudioProps) {
   const canvasRef = useRef<StudioCanvasHandle>(null);
+  const placeImageInputRef = useRef<HTMLInputElement>(null);
+  const placePsdInputRef = useRef<HTMLInputElement>(null);
 
   // Live collab (spectator mode) — a hosted session for this chapter, joined either as the host
   // (via "Go Live" below) or as a viewer (viewOnlySession, set by App.tsx when opened from a
@@ -1231,6 +1234,86 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveLayerId(layer.id);
   }
 
+  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file, adds a new
+   *  clean-patch layer named "Image: <filename>" above the current stack, and draws the image
+   *  centered on the page — scaled down to fit if it's larger than the page, never scaled up. The
+   *  new layer is immediately selected and the tool switches to Move so it's draggable right away;
+   *  this app has no resize/rotate "Free Transform" handles for raster layers to activate (only
+   *  text/path layers get the Transformer — see TextLayerNode/PathLayerNode), so drag-to-reposition
+   *  is the honest extent of "immediately adjustable" here. */
+  async function handlePlaceImageFiles(files: FileList | File[]) {
+    if (!activePage) return;
+    const source = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
+    const list = Array.from(files);
+    for (const file of list) {
+      const url = URL.createObjectURL(file);
+      try {
+        const img = await loadImageFromSrc(url);
+        const layer = createLayer('clean-patch', `Image: ${file.name}`);
+        updateLayers(current => [...current, layer], 'Place Image');
+        setActiveLayerId(layer.id);
+        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
+          const drawW = img.naturalWidth * scale;
+          const drawH = img.naturalHeight * scale;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, (source.width - drawW) / 2, (source.height - drawH) / 2, drawW, drawH);
+          canvasRef.current?.redrawLayer(layer.id);
+        }
+      } catch {
+        swalToast({ icon: 'error', title: `Couldn't place "${file.name}"`, text: 'Not a readable image file.' });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    setActiveTool('select');
+  }
+
+  /** Layers panel > double-click Background (with confirmation) or right-click > "Layer from
+   *  Background": promotes the special locked background row into a regular, fully editable
+   *  `clean-patch` layer. Flipping `isBackground`/`locked` alone isn't enough — `StudioCanvas`'s
+   *  render path draws a `type === 'background'` layer straight from the page image, never from a
+   *  raster canvas of its own, so the type has to change too. `seedLayerWithBackground` (already
+   *  used to give new layers real content for Clone/Heal/Liquify to work on) copies the current
+   *  page pixels into that same layer id's own raster canvas, so the visual result is identical to
+   *  what was on screen the moment before conversion. */
+  function handleConvertBackgroundToLayer() {
+    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false })), 'Convert Background to Layer');
+    canvasRef.current?.seedLayerWithBackground('background');
+  }
+
+  async function handlePlacePsdFile(file: File) {
+    try {
+      const source = activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original) : null;
+      const parsed = await parsePsdFile(file);
+      if (source && (parsed.width !== source.width || parsed.height !== source.height)) {
+        swalToast({
+          icon: 'warning', title: 'PSD size differs from this page',
+          text: `PSD is ${parsed.width}×${parsed.height}, page is ${source.width}×${source.height} — layers may be misaligned.`,
+        });
+      }
+      updateLayers(current => [...current, ...parsed.layers], 'Place PSD as Layers');
+      const flatImported = flattenTree(parsed.layers);
+      for (const layer of flatImported) {
+        const raster = parsed.rasters.get(layer.id);
+        if (!raster) continue;
+        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(raster.canvas, raster.left, raster.top);
+          canvasRef.current?.redrawLayer(layer.id);
+        }
+      }
+      if (flatImported.length > 0) setActiveLayerId(flatImported[flatImported.length - 1].id);
+      swalToast({ icon: 'success', title: `Imported ${flatImported.length} layer${flatImported.length === 1 ? '' : 's'} from PSD` });
+    } catch {
+      swalToast({ icon: 'error', title: `Couldn't open "${file.name}"`, text: 'Not a readable PSD file.' });
+    }
+  }
+
   async function handleCreateWhitedPatchLayer(page: Page, whited: ProcessedImage) {
     try {
       const [originalImg, whitedImg] = await Promise.all([
@@ -2205,6 +2288,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         handleUpdateLayerStyle(id, { effects: { ...currentEffects, [key]: { ...currentEffects[key], enabled } } }, true);
       }}
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
+      onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
       hideTitle
     />
   );
@@ -2409,6 +2493,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     hasSliceRects: sliceRects.length > 0,
     exportMsp: () => onExportMsp?.(),
     saveProjectNow: handleSaveProjectNow,
+    placeImage: () => placeImageInputRef.current?.click(),
+    placePsd: () => placePsdInputRef.current?.click(),
     undo: history.undo,
     redo: history.redo,
     canUndo: history.canUndo,
@@ -2786,8 +2872,34 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
 
-        <div className="flex-1 min-h-0 min-w-0 relative">
+        <div
+          className="flex-1 min-h-0 min-w-0 relative"
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+            if (files.length === 0) return;
+            e.preventDefault();
+            void handlePlaceImageFiles(files);
+          }}
+        >
           {canvasNode}
+          <input
+            ref={placeImageInputRef}
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => { if (e.target.files) void handlePlaceImageFiles(e.target.files); e.target.value = ''; }}
+          />
+          <input
+            ref={placePsdInputRef}
+            type="file"
+            accept=".psd"
+            className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void handlePlacePsdFile(f); e.target.value = ''; }}
+          />
           {collabCursorsOverlay}
           {(magicEraseBusy || magicEraseDetecting) && (
             <MagicEraseLoadingOverlay label={magicEraseDetecting ? 'Scanning for text…' : 'Erasing with AI…'} />

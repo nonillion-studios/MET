@@ -31,6 +31,12 @@ export interface MenuActions {
   exportMsp: () => void;
   /** Real: flushes the debounced studio-project autosave immediately. */
   saveProjectNow: () => void;
+  /** Opens a file picker (jpg/png/webp/gif/bmp) and adds each selection as a new raster layer,
+   *  centered on the page. Dropping an image file onto the canvas does the same thing. */
+  placeImage: () => void;
+  /** Opens a file picker for a single .psd and imports its layers (flattened to raster — see
+   *  importPsd.ts) into the current page's layer stack. */
+  placePsd: () => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -293,6 +299,9 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'image-size', label: 'Image Size…', disabled: true },
         { id: 'canvas-size', label: 'Canvas Size…', disabled: true },
         { id: 'sep1', label: '', separator: true },
+        { id: 'place-image', label: 'Place Image…', action: a.placeImage },
+        { id: 'place-psd', label: 'Place PSD as Layers…', action: a.placePsd },
+        { id: 'sep1b', label: '', separator: true },
         {
           id: 'rotate-canvas', label: 'Rotate Canvas', submenu: [
             { id: 'rotate-cw', label: '90° CW', action: () => a.rotateCanvas('cw') },
