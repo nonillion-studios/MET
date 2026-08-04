@@ -25,8 +25,16 @@ export function presetToSettings(
     tipMask,
     tipMaskId: preset.shape === 'image' ? preset.id : undefined,
     // Thumbnails only ever stroke brush/pencil/eraser (see strokeSegment below) — Clone/Heal's
-    // sample mode is irrelevant here, so a fixed default satisfies the type without a caller prop.
+    // sample mode, and the Background/Magic Eraser-only fields below, are irrelevant here, so fixed
+    // defaults satisfy the type without caller props for settings this preview never touches.
     sampleMode: 'all',
+    backgroundEraserSampling: 'continuous',
+    backgroundEraserLimits: 'contiguous',
+    backgroundEraserProtectForeground: false,
+    magicEraserAntiAlias: true,
+    magicEraserContiguous: true,
+    magicEraserSampleAllLayers: false,
+    magicEraserOpacity: 1,
     ...base,
   };
 }

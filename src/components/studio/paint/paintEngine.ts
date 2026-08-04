@@ -6,12 +6,21 @@ import type { ContentAwareMode } from './contentAwareAlgorithms';
 import type { SampleMode } from '../../../lib/sampleComposite';
 
 export type PaintTool =
-  | 'brush' | 'pencil' | 'eraser' | 'bucket' | 'gradient' | 'clone' | 'heal'
+  | 'brush' | 'pencil' | 'eraser' | 'background-eraser' | 'magic-eraser' | 'bucket' | 'gradient' | 'clone' | 'heal'
   | 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn' | 'sponge' | 'contentAware'
   | 'shape-rect' | 'shape-ellipse' | 'shape-line' | 'spot-heal' | 'liquify';
 
 /** Mirrors brush/pencil/eraser strokes across the canvas center — 'horizontal' flips left-right (mirror axis is the vertical centerline), 'vertical' flips top-bottom, 'both' does both (4-way). */
 export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'both';
+
+/** Background Eraser: where the "background color to erase" comes from — resampled at the brush's
+ *  hotspot on every stamp, fixed to whatever was under the first stamp of the stroke, or always the
+ *  current background swatch regardless of what's under the cursor. */
+export type BackgroundEraserSampling = 'continuous' | 'once' | 'swatch';
+/** Background Eraser: which pixels under the brush actually erase — every matching pixel
+ *  regardless of connectivity, only pixels connected to the hotspot itself, or the same
+ *  connectivity with erasure reduced near detected edges to protect sharp boundaries. */
+export type BackgroundEraserLimits = 'discontiguous' | 'contiguous' | 'findEdges';
 
 export interface PaintSettings {
   size: number;
@@ -45,11 +54,52 @@ export interface PaintSettings {
   /** Clone/Heal source and Eyedropper pick: which layers contribute to what gets sampled. See
    *  `sampleComposite.ts`'s `compositeLayersForSampling` for what each option actually composites. */
   sampleMode: SampleMode;
+  backgroundEraserSampling: BackgroundEraserSampling;
+  backgroundEraserLimits: BackgroundEraserLimits;
+  /** Pixels that read as close to the current foreground color are never erased, regardless of
+   *  tolerance — Background Eraser's "Protect Foreground Color". */
+  backgroundEraserProtectForeground: boolean;
+  /** Magic Eraser's own options — kept separate from the wand/bucket's shared `tolerance` field
+   *  above (which Magic Eraser also reuses) since these three have no equivalent on any other tool. */
+  magicEraserAntiAlias: boolean;
+  magicEraserContiguous: boolean;
+  /** Colors are matched against the full layer composite instead of just the active layer, but
+   *  erasure always still only ever touches the active layer's own pixels — matches Photoshop's
+   *  own "Sample All Layers" semantics for this tool. */
+  magicEraserSampleAllLayers: boolean;
+  magicEraserOpacity: number; // 0-1
 }
 
-function hexToRgb(hex: string): [number, number, number] {
+export function hexToRgb(hex: string): [number, number, number] {
   const n = parseInt(hex.replace('#', ''), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** HSL conversion + a hue/saturation/luminance-weighted distance (not raw RGB Euclidean) — hue
+ *  differences read as "different color" much more reliably than RGB distance does for the kind of
+ *  flat-color-background-vs-line-art discrimination the Background/Magic Eraser tools need. */
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+  else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+  else h = ((rn - gn) / d + 4) * 60;
+  return [h, s, l];
+}
+
+/** 0..1 — hue-weighted color distance used by both eraser tools' tolerance tests. */
+function hslColorDistance(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  const [h1, s1, l1] = rgbToHsl(r1, g1, b1);
+  const [h2, s2, l2] = rgbToHsl(r2, g2, b2);
+  const hueDiff = Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2)) / 180;
+  const satDiff = Math.abs(s1 - s2);
+  const lumDiff = Math.abs(l1 - l2);
+  return hueDiff * 0.6 + satDiff * 0.2 + lumDiff * 0.2;
 }
 
 /** Effective tip geometry for a tool, after its own overrides (Pencil is always small + hard). */
@@ -162,6 +212,191 @@ function selectionTester(sel: Selection): (x: number, y: number) => boolean {
   }
   if (sel.kind === 'mask') return (x, y) => x >= 0 && y >= 0 && x < sel.width && y < sel.height && sel.data[y * sel.width + x] > 127;
   return () => true; // polygon: approximated as unconstrained here; live clip already handled the vector case elsewhere
+}
+
+/** RGB at one pixel, clamped inside the canvas — the Background Eraser's "hotspot" sample. */
+export function sampleColorAt(ctx: CanvasRenderingContext2D, x: number, y: number): { r: number; g: number; b: number } {
+  const px = Math.max(0, Math.min(ctx.canvas.width - 1, Math.round(x)));
+  const py = Math.max(0, Math.min(ctx.canvas.height - 1, Math.round(y)));
+  const d = ctx.getImageData(px, py, 1, 1).data;
+  return { r: d[0], g: d[1], b: d[2] };
+}
+
+/**
+ * Background Eraser: for each stamp along the segment, samples (or reuses) a "hotspot" color and
+ * erases pixels under the brush tip whose color is within `settings.tolerance` of it — proportional
+ * to both the tip's own soft-edge alpha (hardness) and how close the color match is, not a hard
+ * cutoff. `fixedHotspot` is the "Once"/"Background Swatch" sampling modes' color, held constant for
+ * the whole stroke; pass `null` for "Continuous" sampling, which resamples fresh at every stamp's
+ * center instead (matching the tool's real Photoshop behavior of the hotspot tracking the cursor).
+ *
+ * Deliberately writes straight to `ctx` per stamp rather than going through the shared stroke-buffer
+ * + `compositeStroke` path the brush/pencil/eraser tools use — this tool's erase amount depends on
+ * live-sampling the layer's *current* pixels at each stamp, which a flow/opacity buffer composited
+ * only once at the end can't do (each stamp needs to see the previous stamp's own erasure).
+ */
+export function backgroundEraseSegment(
+  ctx: CanvasRenderingContext2D,
+  x0: number, y0: number, x1: number, y1: number,
+  settings: PaintSettings,
+  fixedHotspot: { r: number; g: number; b: number } | null,
+  selection: Selection,
+): void {
+  const geom = effectiveTip(settings, 'eraser');
+  const size = Math.max(2, geom.size);
+  const tip = getBrushTip({ ...geom, size });
+  const tipCtx = tip.getContext('2d');
+  const tipData = tipCtx ? tipCtx.getImageData(0, 0, tip.width, tip.height) : null;
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const step = Math.max(0.5, size * Math.max(0.01, Math.min(1, settings.spacing)));
+  const [fgR, fgG, fgB] = hexToRgb(settings.color);
+  const tolerance = Math.max(0, Math.min(1, settings.tolerance / 255));
+  const inSel = selectionTester(selection);
+  const radius = size / 2;
+  const canvasW = ctx.canvas.width, canvasH = ctx.canvas.height;
+  const findEdges = settings.backgroundEraserLimits === 'findEdges';
+  const limitToConnected = settings.backgroundEraserLimits !== 'discontiguous';
+
+  for (let d = 0; d <= dist || d === 0; d += step) {
+    const t = dist ? Math.min(1, d / dist) : 0;
+    const cx = x0 + (x1 - x0) * t;
+    const cy = y0 + (y1 - y0) * t;
+    const hotspot = fixedHotspot ?? sampleColorAt(ctx, cx, cy);
+
+    const left = Math.max(0, Math.floor(cx - radius - 1));
+    const top = Math.max(0, Math.floor(cy - radius - 1));
+    const right = Math.min(canvasW, Math.ceil(cx + radius + 1));
+    const bottom = Math.min(canvasH, Math.ceil(cy + radius + 1));
+    const w = right - left, h = bottom - top;
+    if (w <= 0 || h <= 0) { if (dist === 0) break; continue; }
+
+    const region = ctx.getImageData(left, top, w, h);
+    const tipOriginX = cx - tip.width / 2, tipOriginY = cy - tip.height / 2;
+    const tipAlphaAt = (gx: number, gy: number): number => {
+      if (!tipData) return 1;
+      const lx = Math.round(gx - tipOriginX), ly = Math.round(gy - tipOriginY);
+      if (lx < 0 || ly < 0 || lx >= tip.width || ly >= tip.height) return 0;
+      return tipData.data[(ly * tip.width + lx) * 4 + 3] / 255;
+    };
+
+    const matches = new Uint8Array(w * h);
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const gx = left + px, gy = top + py;
+        if (tipAlphaAt(gx, gy) <= 0 || !inSel(gx, gy)) continue;
+        const o = (py * w + px) * 4;
+        if (region.data[o + 3] === 0) continue;
+        const r = region.data[o], g = region.data[o + 1], b = region.data[o + 2];
+        if (hslColorDistance(r, g, b, hotspot.r, hotspot.g, hotspot.b) > tolerance) continue;
+        if (settings.backgroundEraserProtectForeground && hslColorDistance(r, g, b, fgR, fgG, fgB) < 0.12) continue;
+        matches[py * w + px] = 1;
+      }
+    }
+
+    let allowed = matches;
+    if (limitToConnected) {
+      allowed = new Uint8Array(w * h);
+      const startPx = Math.round(cx) - left, startPy = Math.round(cy) - top;
+      const startIdx = startPy * w + startPx;
+      if (startPx >= 0 && startPx < w && startPy >= 0 && startPy < h && matches[startIdx]) {
+        const seen = new Uint8Array(w * h);
+        const stack = [startIdx];
+        seen[startIdx] = 1;
+        while (stack.length) {
+          const p = stack.pop()!;
+          allowed[p] = 1;
+          const px = p % w, py = (p - px) / w;
+          if (px > 0 && !seen[p - 1] && matches[p - 1]) { seen[p - 1] = 1; stack.push(p - 1); }
+          if (px < w - 1 && !seen[p + 1] && matches[p + 1]) { seen[p + 1] = 1; stack.push(p + 1); }
+          if (py > 0 && !seen[p - w] && matches[p - w]) { seen[p - w] = 1; stack.push(p - w); }
+          if (py < h - 1 && !seen[p + w] && matches[p + w]) { seen[p + w] = 1; stack.push(p + w); }
+        }
+      }
+    }
+
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const idx = py * w + px;
+        if (!allowed[idx]) continue;
+        const gx = left + px, gy = top + py;
+        let eraseAmount = tipAlphaAt(gx, gy) * settings.opacity;
+        if (findEdges) {
+          // Cheap local-gradient estimate straight from the region buffer — reduces erasure near
+          // sharp brightness boundaries instead of running a separate edge-detection pass.
+          const o = idx * 4;
+          const rightO = (px < w - 1 ? idx + 1 : idx) * 4;
+          const downO = (py < h - 1 ? idx + w : idx) * 4;
+          const grad = Math.abs(region.data[o] - region.data[rightO]) + Math.abs(region.data[o] - region.data[downO]);
+          eraseAmount *= 1 - Math.min(1, grad / 80) * 0.85;
+        }
+        const o = idx * 4 + 3;
+        region.data[o] = Math.round(region.data[o] * (1 - eraseAmount));
+      }
+    }
+    ctx.putImageData(region, left, top);
+    if (dist === 0) break;
+  }
+}
+
+/** Same tolerance-squared-RGB-distance test `magicWandMask` uses, but scanning every pixel instead
+ *  of flood-filling from the click point — Magic Eraser's "Contiguous" unchecked. */
+function globalColorMask(source: CanvasRenderingContext2D, width: number, height: number, x: number, y: number, tolerance: number): Uint8ClampedArray | null {
+  const img = source.getImageData(0, 0, width, height);
+  const d = img.data;
+  const startIdx = (Math.floor(y) * width + Math.floor(x)) * 4;
+  if (startIdx < 0 || startIdx >= d.length) return null;
+  const sr = d[startIdx], sg = d[startIdx + 1], sb = d[startIdx + 2];
+  const tol = tolerance * tolerance * 3;
+  const mask = new Uint8ClampedArray(width * height);
+  for (let i = 0; i < width * height; i++) {
+    const o = i * 4;
+    if (d[o + 3] === 0) continue;
+    const dr = d[o] - sr, dg = d[o + 1] - sg, db = d[o + 2] - sb;
+    if (dr * dr + dg * dg + db * db <= tol) mask[i] = 255;
+  }
+  return mask;
+}
+
+/**
+ * Magic Eraser: single-click flood/global erase by color similarity — the Magic Wand's selection
+ * logic repurposed to erase alpha instead of producing a `Selection`. `sampleCtx` is what the color
+ * test reads from (the active layer's own canvas, or the full layer composite when "Sample All
+ * Layers" is on); erasure itself always writes to `ctx` — the active layer — only, matching
+ * Photoshop's own "samples all layers, erases just the active one" behavior for this tool.
+ */
+export function applyMagicErase(
+  ctx: CanvasRenderingContext2D,
+  sampleCtx: CanvasRenderingContext2D,
+  width: number, height: number,
+  x: number, y: number,
+  settings: PaintSettings,
+  selection: Selection,
+): void {
+  const wandMask = settings.magicEraserContiguous ? magicWandMask(sampleCtx, width, height, x, y, settings.tolerance) : null;
+  const maskData = wandMask && wandMask.kind === 'mask' ? wandMask.data : globalColorMask(sampleCtx, width, height, x, y, settings.tolerance);
+  if (!maskData) return;
+
+  const startIdx = (Math.floor(y) * width + Math.floor(x)) * 4;
+  const sampleImg = sampleCtx.getImageData(0, 0, width, height);
+  const sr = sampleImg.data[startIdx], sg = sampleImg.data[startIdx + 1], sb = sampleImg.data[startIdx + 2];
+  const spread = Math.max(1, settings.tolerance) * Math.sqrt(3);
+
+  const img = ctx.getImageData(0, 0, width, height);
+  const inSel = selectionTester(selection);
+  for (let i = 0; i < maskData.length; i++) {
+    if (maskData[i] < 128) continue;
+    const px = i % width, py = Math.floor(i / width);
+    if (!inSel(px, py)) continue;
+    const o = i * 4;
+    let eraseAmount = settings.magicEraserOpacity;
+    if (settings.magicEraserAntiAlias) {
+      const dr = sampleImg.data[o] - sr, dg = sampleImg.data[o + 1] - sg, db = sampleImg.data[o + 2] - sb;
+      const normalized = Math.sqrt(dr * dr + dg * dg + db * db) / spread;
+      eraseAmount *= Math.max(0, 1 - normalized * 0.7);
+    }
+    img.data[o + 3] = Math.round(img.data[o + 3] * (1 - eraseAmount));
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 /** Linear gradient fill (Gradient tool), constrained to the active selection if any. */

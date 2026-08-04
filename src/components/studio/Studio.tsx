@@ -28,7 +28,11 @@ import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSele
 import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
 import { StrokeSelectionDialog, type StrokeSelectionResult } from './StrokeSelectionDialog';
 import { WarpTextDialog } from './WarpTextDialog';
-import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
+import {
+  strokePathOntoCanvas, fillPathOntoCanvas,
+  type PaintSettings, type LiquifyMode, type SymmetryMode,
+  type BackgroundEraserSampling, type BackgroundEraserLimits,
+} from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
@@ -49,8 +53,9 @@ import { parsePsdFile } from '../../lib/importPsd';
 import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
 import JSZip from 'jszip';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, parseTyperScript,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, createPlacedImageLayer, parseTyperScript,
   createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
+  type PlacedImageLayerData,
   type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
 } from './studioTypes';
 import { applyCharPatch, resolveCharValue } from './textRuns';
@@ -58,6 +63,7 @@ import { getClipboardLayer, setClipboardLayer } from '../../lib/layerClipboard';
 import { layoutText, isArabicMajority } from './textLayout';
 import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
+import { BrushPickerPopover } from './BrushPickerPopover';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
 import { BlendingOptionsDialog } from './BlendingOptionsDialog';
@@ -367,15 +373,27 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
+  /** Floating brush picker (right-click on canvas while Brush/Eraser/Pencil is active), positioned
+   *  at the click's viewport coordinates. Null when closed. */
+  const [brushPickerPos, setBrushPickerPos] = useState<{ x: number; y: number } | null>(null);
   /** Clone/Heal source + Eyedropper pick: which layers they read from. Shared across both tools,
    *  matching Photoshop's own single "Sample" setting. */
   const [sampleMode, setSampleMode] = useState<SampleMode>('all');
+  const [backgroundEraserSampling, setBackgroundEraserSampling] = useState<BackgroundEraserSampling>('continuous');
+  const [backgroundEraserLimits, setBackgroundEraserLimits] = useState<BackgroundEraserLimits>('contiguous');
+  const [backgroundEraserProtectForeground, setBackgroundEraserProtectForeground] = useState(false);
+  const [magicEraserAntiAlias, setMagicEraserAntiAlias] = useState(true);
+  const [magicEraserContiguous, setMagicEraserContiguous] = useState(true);
+  const [magicEraserSampleAllLayers, setMagicEraserSampleAllLayers] = useState(false);
+  const [magicEraserOpacity, setMagicEraserOpacity] = useState(1);
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
     scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode, sampleMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
+    backgroundEraserSampling, backgroundEraserLimits, backgroundEraserProtectForeground,
+    magicEraserAntiAlias, magicEraserContiguous, magicEraserSampleAllLayers, magicEraserOpacity,
   };
 
   /** Applying a preset just writes the engine state — there's no separate "brush mode",
@@ -1329,32 +1347,34 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveLayerId(layer.id);
   }
 
-  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file, adds a new
-   *  clean-patch layer named "Image: <filename>" above the current stack, and draws the image
+  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file and adds a
+   *  new `placed-image` layer ("Smart Object") named "Image: <filename>" above the current stack,
    *  centered on the page — scaled down to fit if it's larger than the page, never scaled up. The
-   *  new layer is immediately selected and the tool switches to Move so it's draggable right away;
-   *  this app has no resize/rotate "Free Transform" handles for raster layers to activate (only
-   *  text/path layers get the Transformer — see TextLayerNode/PathLayerNode), so drag-to-reposition
-   *  is the honest extent of "immediately adjustable" here. */
+   *  source pixels are drawn once into a canvas at the image's own natural size (never resampled by
+   *  scaling — see PlacedImageLayerData's own doc comment) and positioned purely via transform data,
+   *  so repeated resizing never degrades quality the way baking a scale into pixels would. The new
+   *  layer is immediately selected with the Select tool active, so its Free Transform handles
+   *  (StudioCanvas.tsx's shared Transformer, now generalized beyond text) show right away — no
+   *  separate "enter transform mode" step, matching Photoshop's own behavior for a freshly placed
+   *  Smart Object. */
   async function handlePlaceImageFiles(files: FileList | File[]) {
     if (!activePage) return;
     const source = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
     const list = Array.from(files);
+    let lastLayerId: string | null = null;
     for (const file of list) {
       const url = URL.createObjectURL(file);
       try {
         const img = await loadImageFromSrc(url);
-        const layer = createLayer('clean-patch', `Image: ${file.name}`);
+        const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
+        const layer = createPlacedImageLayer(`Image: ${file.name}`, img.naturalWidth, img.naturalHeight, source.width / 2, source.height / 2, scale);
         updateLayers(current => [...current, layer], 'Place Image');
-        setActiveLayerId(layer.id);
-        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        lastLayerId = layer.id;
+        const canvas = canvasRef.current?.getOrCreatePlacedImageCanvas(layer.id, img.naturalWidth, img.naturalHeight);
         const ctx = canvas?.getContext('2d');
         if (canvas && ctx) {
-          const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
-          const drawW = img.naturalWidth * scale;
-          const drawH = img.naturalHeight * scale;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, (source.width - drawW) / 2, (source.height - drawH) / 2, drawW, drawH);
+          ctx.drawImage(img, 0, 0);
           canvasRef.current?.redrawLayer(layer.id);
         }
       } catch {
@@ -1363,7 +1383,39 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         URL.revokeObjectURL(url);
       }
     }
+    if (lastLayerId) {
+      setActiveLayerId(lastLayerId);
+      selectLayers([lastLayerId]);
+    }
     setActiveTool('select');
+  }
+
+  function handleUpdatePlacedImage(id: string, patch: Partial<PlacedImageLayerData>) {
+    updateLayers(current => updateLayer(current, id, l => (
+      l.type === 'placed-image' && l.placedImage ? { ...l, placedImage: { ...l.placedImage, ...patch } } : l
+    )));
+  }
+
+  /** Right-click a placed-image layer > "Rasterize Layer": bakes its current transform into a
+   *  fresh page-sized raster (StudioCanvas's rasterizePlacedImage) and converts it into a normal
+   *  clean-patch layer — after this it's a regular paint layer with no further Smart Object
+   *  behavior, matching Photoshop's one-way rasterize. */
+  function handleRasterizePlacedImage(id: string) {
+    const raster = canvasRef.current?.rasterizePlacedImage(id);
+    if (!raster) return;
+    const canvas = canvasRef.current?.getPaintCanvas(id);
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(raster, 0, 0);
+    }
+    updateLayers(current => updateLayer(current, id, l => {
+      if (l.type !== 'placed-image') return l;
+      const { placedImage, ...rest } = l;
+      void placedImage;
+      return { ...rest, type: 'clean-patch' };
+    }), 'Rasterize Layer');
+    canvasRef.current?.redrawLayer(id);
   }
 
   /** Layers panel > double-click Background (with confirmation) or right-click > "Layer from
@@ -1374,8 +1426,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *  used to give new layers real content for Clone/Heal/Liquify to work on) copies the current
    *  page pixels into that same layer id's own raster canvas, so the visual result is identical to
    *  what was on screen the moment before conversion. */
-  function handleConvertBackgroundToLayer() {
-    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false })), 'Convert Background to Layer');
+  function handleConvertBackgroundToLayer(name: string) {
+    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false, name })), 'Convert Background to Layer');
     canvasRef.current?.seedLayerWithBackground('background');
   }
 
@@ -1945,7 +1997,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
     updateLayers(current => [...current, layer], 'Add Text Layer');
     setActiveLayerId(layer.id);
-    setActiveTool('select');
+    // Deliberately does NOT switch to the select tool — the text tool stays armed through
+    // placement, editing, and repositioning, so the user can keep placing more text boxes without
+    // re-selecting the tool each time (see StudioCanvas.tsx's text-tool pointer handling, and the
+    // `selected`/`draggable` gating on TextLayerNode, both of which now also key off `activeTool
+    // === 'text'`, not just `'select'`).
     panelLayout.reveal('text');
   }
 
@@ -2425,6 +2481,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       }}
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
+      onRasterizePlacedImage={handleRasterizePlacedImage}
       onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
@@ -2452,27 +2509,30 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   ) : null;
 
+  const brushLiveSettings = { size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+    spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity };
+  function handleBrushLiveChange(patch: Partial<typeof brushLiveSettings>) {
+    if (patch.size !== undefined) setBrushSize(patch.size);
+    if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
+    if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
+    if (patch.flow !== undefined) setBrushFlow(patch.flow);
+    if (patch.spacing !== undefined) setSpacing(patch.spacing);
+    if (patch.angle !== undefined) setBrushAngle(patch.angle);
+    if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
+    if (patch.scatter !== undefined) setScatter(patch.scatter);
+    if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
+    if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
+    if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
+  }
+
   const brushesPanel = (
     <BrushesPanel
       color={foreground}
       activeBrushId={activeBrushId}
       onSelectBrush={handleSelectBrush}
       hideTitle
-      live={{ size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
-        spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity }}
-      onLiveChange={(patch) => {
-        if (patch.size !== undefined) setBrushSize(patch.size);
-        if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
-        if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
-        if (patch.flow !== undefined) setBrushFlow(patch.flow);
-        if (patch.spacing !== undefined) setSpacing(patch.spacing);
-        if (patch.angle !== undefined) setBrushAngle(patch.angle);
-        if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
-        if (patch.scatter !== undefined) setScatter(patch.scatter);
-        if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
-        if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
-        if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
-      }}
+      live={brushLiveSettings}
+      onLiveChange={handleBrushLiveChange}
     />
   );
 
@@ -2825,8 +2885,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onAutoFitTextHeight={handleAutoFitTextHeight}
       onUpdatePathLayer={handleUpdatePathLayer}
       onAddPathLayer={handleAddPathLayer}
+      onUpdatePlacedImage={handleUpdatePlacedImage}
       onTextSelectionChange={setTextSelection}
       onTextLineSelectionChange={setTextLineSelection}
+      onOpenBrushPicker={(x, y) => setBrushPickerPos({ x, y })}
       paintSettings={paintSettings}
       selection={selection}
       onSelectionChange={setSelection}
@@ -3007,6 +3069,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onContentAwareModeChange={setContentAwareMode}
           sampleMode={sampleMode}
           onSampleModeChange={setSampleMode}
+          backgroundEraserSampling={backgroundEraserSampling}
+          onBackgroundEraserSamplingChange={setBackgroundEraserSampling}
+          backgroundEraserLimits={backgroundEraserLimits}
+          onBackgroundEraserLimitsChange={setBackgroundEraserLimits}
+          backgroundEraserProtectForeground={backgroundEraserProtectForeground}
+          onBackgroundEraserProtectForegroundChange={setBackgroundEraserProtectForeground}
+          magicEraserAntiAlias={magicEraserAntiAlias}
+          onMagicEraserAntiAliasChange={setMagicEraserAntiAlias}
+          magicEraserContiguous={magicEraserContiguous}
+          onMagicEraserContiguousChange={setMagicEraserContiguous}
+          magicEraserSampleAllLayers={magicEraserSampleAllLayers}
+          onMagicEraserSampleAllLayersChange={setMagicEraserSampleAllLayers}
+          magicEraserOpacity={magicEraserOpacity}
+          onMagicEraserOpacityChange={setMagicEraserOpacity}
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}
@@ -3245,6 +3321,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           />
         );
       })()}
+      {brushPickerPos && (
+        <BrushPickerPopover
+          position={brushPickerPos}
+          onClose={() => setBrushPickerPos(null)}
+          color={foreground}
+          activeBrushId={activeBrushId}
+          onSelectBrush={handleSelectBrush}
+          live={brushLiveSettings}
+          onLiveChange={handleBrushLiveChange}
+        />
+      )}
     </div>
   );
 }

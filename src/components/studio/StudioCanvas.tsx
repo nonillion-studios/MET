@@ -3,11 +3,12 @@ import { Image as ImageIcon } from 'lucide-react';
 import { Stage, Layer, Group, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer, Shape, Arrow } from 'react-konva';
 import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
-import { compositeOperationFor, hasAnyEnabledStyle, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type LayerSelectMode } from './studioTypes';
+import { compositeOperationFor, hasAnyEnabledStyle, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type PlacedImageLayerData, type LayerSelectMode } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
 import { PathLayerNode } from './PathLayerNode';
+import { PlacedImageLayerNode, PLACED_IMAGE_HIT_NAME } from './PlacedImageLayerNode';
 import { traceAnchors, applyCurvatureSmoothing } from './pathGeometry';
 import { genId } from '../../lib/id';
 import {
@@ -63,10 +64,13 @@ const RULER_SIZE = 20;
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop', 'slice']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
+/** Tools whose right-click opens the floating brush picker instead of the browser's native menu —
+ *  the same three tools that share the stamp engine (see usePaintLayer.ts). */
+const BRUSH_PICKER_TOOLS = new Set(['brush', 'eraser', 'pencil']);
 /** Tools that get ToolCursorOverlay's live SVG chrome (and have the OS cursor hidden in favor of
  *  it) rather than a plain CSS cursor class — see `cursorClass` below for the CSS-only tools. */
 const SVG_OVERLAY_TOOLS = new Set([
-  'brush', 'pencil', 'eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge',
+  'brush', 'pencil', 'eraser', 'background-eraser', 'magic-eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge',
   'dodge', 'burn', 'sponge', 'spot-heal', 'liquify', 'contentAware', 'wand', 'eyedropper',
   'pen', 'curvature-pen',
 ]);
@@ -108,12 +112,18 @@ interface StudioCanvasProps {
   onUpdatePathLayer: (id: string, patch: Partial<PathLayerData>) => void;
   /** Commits the Pen/Curvature Pen tool's in-progress anchors as a new persisted path layer. */
   onAddPathLayer: (anchors: PathAnchor[], closed: boolean) => void;
+  /** Persists a placed-image layer's transform after a drag or Free Transform handle drag. */
+  onUpdatePlacedImage?: (id: string, patch: Partial<PlacedImageLayerData>) => void;
   /**
    * The character range selected inside the text layer being edited, or null when nothing is being
    * edited. Lifted out of the canvas so TextPanel can apply character styling to the selection —
    * the editing overlay is a plain textarea, so its selectionStart/End *is* the selection model.
    */
   onTextSelectionChange?: (selection: TextSelection | null) => void;
+  /** Right-click while Brush/Eraser/Pencil is active — opens the floating brush picker at the
+   *  given viewport (clientX/clientY) coordinates. Rendered by Studio.tsx (which owns the brush
+   *  preset/live-settings state the picker needs), not here. */
+  onOpenBrushPicker?: (x: number, y: number) => void;
   /** A wrapped line clicked inside a selected (not editing) text layer — lifted the same way as
    *  onTextSelectionChange, so TextPanel can apply per-line overrides to it. */
   onTextLineSelectionChange?: (selection: TextLineSelection | null) => void;
@@ -221,6 +231,13 @@ export interface StudioCanvasHandle {
   detectBubbleBounds: (x: number, y: number) => { centerX: number; centerY: number; width: number; height: number } | null;
   /** Returns the raster canvas for a layer id, creating it if the layer has no backing yet. */
   getPaintCanvas: (layerId: string) => HTMLCanvasElement | null;
+  /** Same registry `getPaintCanvas` uses, but sized to the given natural width/height instead of
+   *  the page — Place Image's placed-image source canvas, which is never resampled by scaling. */
+  getOrCreatePlacedImageCanvas: (layerId: string, width: number, height: number) => HTMLCanvasElement;
+  /** Bakes a placed-image layer's current transform into a fresh page-sized raster canvas — the
+   *  pixel side of "Rasterize Layer". Draws the source canvas through the given transform onto a
+   *  page-sized canvas and returns it (caller still owns turning the layer itself into clean-patch). */
+  rasterizePlacedImage: (layerId: string) => HTMLCanvasElement | null;
   /** Frees a raster layer's canvas when its layer is deleted. */
   deletePaintCanvas: (layerId: string) => void;
   /**
@@ -316,7 +333,7 @@ export interface StudioCanvasHandle {
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
-  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
+  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
@@ -333,6 +350,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    *  participate in the Transformer (Path Selection is a plain whole-path drag, no resize handles,
    *  matching real Photoshop), so there's no shared-map generalization to keep in sync here. */
   const pathNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  /** Placed-image layers DO participate in the shared Transformer (unlike path layers above) — a
+   *  placed image's whole point is Free Transform (scale/rotate), so it joins the same node-binding
+   *  effect as text, just via its own ref map since it's a Konva.Image, not a Group. */
+  const placedImageNodeRefs = useRef<Record<string, Konva.Image | null>>({});
   /**
    * One Konva `Group` per StudioLayer. These used to be Konva `Layer`s — one canvas each — which
    * is why blend modes silently did nothing: `Container.drawScene` applies the composite op while
@@ -623,6 +644,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, []);
 
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
+  const selectionIsPlacedImage = selectionIds.length > 0 && selectionIds.every(id => findLayer(layers, id)?.type === 'placed-image');
   const isPaintTool = (PAINT_TOOLS as readonly string[]).includes(activeTool);
   const paintLayerIdRef = useRef<string | null>(null);
   paintLayerIdRef.current = activeLayer?.type === 'clean-patch' && canPaintLayer(activeLayer) ? activeLayer.id : null;
@@ -761,6 +783,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (!img) return null;
       return getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
     },
+    getOrCreatePlacedImageCanvas(layerId: string, width: number, height: number) {
+      return getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, width, height);
+    },
+    rasterizePlacedImage(layerId: string) {
+      const img = imageRef.current;
+      const layer = findLayer(layersRef.current, layerId);
+      const source = paintCanvasRegistry.current[layerId];
+      if (!img || !layer?.placedImage || !source) return null;
+      const { x, y, scaleX, scaleY, rotation, naturalWidth, naturalHeight } = layer.placedImage;
+      const out = document.createElement('canvas');
+      out.width = img.width;
+      out.height = img.height;
+      const ctx = out.getContext('2d')!;
+      ctx.translate(x, y);
+      ctx.rotate((rotation * Math.PI) / 180);
+      ctx.scale(scaleX, scaleY);
+      ctx.drawImage(source, -naturalWidth / 2, -naturalHeight / 2, naturalWidth, naturalHeight);
+      return out;
+    },
     redrawLayer(layerId: string) {
       redrawLayerNode(layerId);
     },
@@ -797,7 +838,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         source.onerror = () => reject(new Error(`Failed to decode raster layer ${layerId}`));
         source.src = dataUrl;
       });
-      const canvas = getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, img.width, img.height);
+      // Sized to the decoded image's own dimensions, not the page's — identical for every ordinary
+      // raster layer (their raster is always saved at exactly page size already) but load-bearing
+      // for a placed-image layer's natural-size source canvas, which must round-trip through
+      // save/reload without being resized to the page (that would silently bake a destructive
+      // resample into what's supposed to be a non-destructive transform).
+      const canvas = getOrCreateCanvasFor(paintCanvasRegistry.current, layerId, source.naturalWidth || img.width, source.naturalHeight || img.height);
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1372,13 +1418,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
   }, [activeLayerId]);
 
-  // Keep the Transformer bound to every selected text node. Konva derives the combined bounding box
-  // from the node list itself, so a multi-selection needs no separate box maths.
+  // Keep the Transformer bound to every selected text/placed-image node. Konva derives the combined
+  // bounding box from the node list itself, so a multi-selection needs no separate box maths.
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
-    const nodes = activeTool === 'select' && !editingLayerId
-      ? selectionIds.map(id => textNodeRefs.current[id]).filter((n): n is Konva.Group => !!n)
+    const nodes: Konva.Node[] = activeTool === 'select' && !editingLayerId
+      ? selectionIds.flatMap((id): Konva.Node[] => {
+          const textNode = textNodeRefs.current[id];
+          const placedImageNode = placedImageNodeRefs.current[id];
+          return textNode ? [textNode] : placedImageNode ? [placedImageNode] : [];
+        })
       : [];
     transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
@@ -1447,8 +1497,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const handleStageClick = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     const targetClass = e.target.getClassName?.();
     // A text layer's hit area is a Rect too, so it must be excluded by name — otherwise clicking
-    // text counts as clicking background and clears the selection the click just made.
-    const clickedBackground = e.target === e.target.getStage() || targetClass === 'Image'
+    // text counts as clicking background and clears the selection the click just made. A placed
+    // image is a real Konva.Image too (every *other* Image on the stage is inert background/raster
+    // fill), so it needs the same name-based exclusion — see PLACED_IMAGE_HIT_NAME's own doc comment.
+    const clickedBackground = e.target === e.target.getStage()
+      || (targetClass === 'Image' && !e.target.hasName(PLACED_IMAGE_HIT_NAME))
       || (targetClass === 'Rect' && !e.target.hasName(TEXT_HIT_NAME));
 
     if (activeTool === 'zoom') {
@@ -1509,18 +1562,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
   };
 
-  /** Right-click handler for the whole Stage — only ever opens the selection context menu (never
-   *  the browser's native one) when a selection tool is active, a selection exists, and the click
-   *  landed inside its own shape; otherwise falls through to whatever the browser/other handlers
-   *  would normally do (e.g. a right-click with the brush tool active does nothing special here). */
+  /** Right-click handler for the whole Stage — opens the selection context menu when a selection
+   *  tool is active, a selection exists, and the click landed inside its own shape; opens the
+   *  floating brush picker when Brush/Eraser/Pencil is active; otherwise falls through to whatever
+   *  the browser/other handlers would normally do. */
   const handleStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
     const isSelectionTool = MARQUEE_TOOLS.has(activeTool) || LASSO_TOOLS.has(activeTool) || activeTool === 'wand';
-    if (!isSelectionTool || !hasSelection(selection)) return;
-    const p = imageSpacePointer();
-    if (!p || !selectionContainsPoint(selection, p.x, p.y)) return;
-    e.evt.preventDefault();
-    const rect = containerRef.current?.getBoundingClientRect();
-    setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
+    if (isSelectionTool && hasSelection(selection)) {
+      const p = imageSpacePointer();
+      if (p && selectionContainsPoint(selection, p.x, p.y)) {
+        e.evt.preventDefault();
+        const rect = containerRef.current?.getBoundingClientRect();
+        setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
+        return;
+      }
+    }
+    if (BRUSH_PICKER_TOOLS.has(activeTool) && onOpenBrushPicker) {
+      e.evt.preventDefault();
+      onOpenBrushPicker(e.evt.clientX, e.evt.clientY);
+    }
   };
 
   const handlePaintPointerDown = (e: Konva.KonvaEventObject<PointerEvent>) => {
@@ -1601,9 +1661,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           return;
         }
       }
-      // Only a drag starting on empty canvas marquees; starting on a layer means move it.
+      // Only a drag starting on empty canvas marquees; starting on a layer means move it. A placed
+      // image is a real Konva.Image (see PLACED_IMAGE_HIT_NAME's doc comment), so it's excluded
+      // from "empty" the same way — otherwise this object-marquee logic double-handles the same
+      // drag Konva's own native node-drag is already moving the image with.
       const targetClass = e.target.getClassName?.();
-      const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
+      const onEmpty = e.target === e.target.getStage() || (targetClass === 'Image' && !e.target.hasName(PLACED_IMAGE_HIT_NAME));
       if (!onEmpty) return;
       const p = imageSpacePointer();
       if (!p) return;
@@ -1647,6 +1710,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return;
     }
     if (activeTool === 'text') {
+      // A pointerdown that lands on an existing text item's own Konva node must let that node's
+      // own click/drag handling win (select it, or start moving it) — only a press on truly empty
+      // canvas starts a new text-box drag. Mirrors the identical `onEmpty` check the Select tool's
+      // branch above uses for the same reason.
+      const targetClass = e.target.getClassName?.();
+      const onEmpty = e.target === e.target.getStage() || (targetClass === 'Image' && !e.target.hasName(PLACED_IMAGE_HIT_NAME));
+      if (!onEmpty) return;
       const p = imageSpacePointer();
       if (p) textDragRef.current = p;
       setTextDragPreview(null);
@@ -2216,8 +2286,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const showToolOverlay = !panning && SVG_OVERLAY_TOOLS.has(activeTool) && brushCursorPos !== null;
   // Move cursor over a text box's own body, away from its Transformer handles (which sit on top
   // and win the hit-test first, so hoveringTextBody never fires for those) — only meaningful with
-  // the Select tool actually able to drag it right now.
-  const showMoveCursor = !panning && activeTool === 'select' && hoveringTextBody;
+  // the Select or Text tool actually able to drag it right now (both gate TextLayerNode's
+  // `draggable` the same way — see the renderLeaf text branch).
+  const showMoveCursor = !panning && (activeTool === 'select' || activeTool === 'text') && hoveringTextBody;
   // Not gated on activeTool: the ⊞ indicator's click/dblclick handlers aren't tool-gated either
   // (it's visible/interactive regardless of selection or active tool), so the cursor matches.
   const showOverflowCursor = !panning && hoveringOverflowIndicator;
@@ -2412,8 +2483,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             layer={layer}
             groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
             editing={layer.id === editingLayerId}
-            selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-            draggable={activeTool === 'select' && canMoveLayer(layer) && !spaceDown}
+            selected={selectionIds.includes(layer.id) && (activeTool === 'select' || activeTool === 'text')}
+            draggable={(activeTool === 'select' || activeTool === 'text') && canMoveLayer(layer) && !spaceDown}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}
@@ -2422,6 +2493,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             onHoverChange={setHoveringTextBody}
             onAutoFitHeight={() => onAutoFitTextHeight(layer.id)}
             onOverflowHoverChange={setHoveringOverflowIndicator}
+          />
+        )}
+
+        {layer.type === 'placed-image' && layer.placedImage && (
+          <PlacedImageLayerNode
+            data={layer.placedImage}
+            canvas={getOrCreateCanvasFor(paintCanvasRegistry.current, layer.id, layer.placedImage.naturalWidth, layer.placedImage.naturalHeight)}
+            nodeRef={(node) => { placedImageNodeRefs.current[layer.id] = node; }}
+            draggable={activeTool === 'select' && canMoveLayer(layer) && !spaceDown}
+            onSelect={(mode) => onSelectLayer(layer.id, mode)}
+            onUpdate={(patch) => onUpdatePlacedImage?.(layer.id, patch)}
           />
         )}
 
@@ -2558,7 +2640,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           x={pos.x}
           y={pos.y}
           draggable={draggable && touchCount < 2}
-          onDragEnd={(e) => setPos({ x: e.target.x(), y: e.target.y() })}
+          // Konva's drag events bubble like pointer events do — a child layer's own drag (a placed
+          // image, text) fires 'dragend' on itself first, then bubbles up through every ancestor
+          // including the Stage. Without the target check, that bubbled event's `e.target` is the
+          // CHILD node, so `e.target.x()/y()` read the child's own local position (its position
+          // *within* the stage) and get misapplied as the stage's pan offset — a real bug this
+          // caught: dragging a placed image snapped the whole canvas view to a seemingly random
+          // spot the instant the drag ended. Only the Stage's own drag (e.target === the stage
+          // itself) should ever update the pan position here.
+          onDragEnd={(e) => { if (e.target === e.target.getStage()) setPos({ x: e.target.x(), y: e.target.y() }); }}
           onWheel={handleWheel}
           onTouchMove={handleTouchMove}
           onTouchStart={(e) => setTouchCount(e.evt.touches.length)}
@@ -2894,7 +2984,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               ref={transformerRef}
               rotateEnabled
               listening={!spaceDown}
-              keepRatio={shiftHeld}
+              // Placed images keep proportions by default (Shift frees them) — the opposite of
+              // text's Shift-to-constrain, matching Photoshop's own Free Transform convention for
+              // actual images vs. type.
+              keepRatio={selectionIsPlacedImage ? !shiftHeld : shiftHeld}
               centeredScaling={altHeld}
               // Dashed, not Konva's default solid border — matches the dashed-outline convention
               // every other selection/preview overlay in this file already uses (marching ants,

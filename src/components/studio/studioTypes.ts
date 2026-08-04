@@ -92,7 +92,7 @@ export function compositeOperationFor(mode: BlendMode): GlobalCompositeOperation
   return BLEND_TO_COMPOSITE[mode] ?? 'source-over';
 }
 
-export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group' | 'path';
+export type StudioLayerType = 'background' | 'clean-patch' | 'text' | 'adjustment' | 'group' | 'path' | 'placed-image';
 
 /** How a click changes the canvas selection: plain click replaces it, Shift/Ctrl-click toggles. */
 export type LayerSelectMode = 'replace' | 'toggle';
@@ -104,6 +104,7 @@ export const LAYER_TYPE_ICON: Record<StudioLayerType, LucideIcon> = {
   adjustment: SlidersHorizontal,
   group: Folder,
   path: PenTool,
+  'placed-image': ImageIcon,
 };
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
@@ -646,6 +647,25 @@ export interface PathLayerData {
   fillRule: PathFillRule;
 }
 
+/**
+ * Placed Image ("Smart Object") data — a raster canvas at the *source image's own natural size*
+ * (never the page size, and never resampled by scaling), positioned/scaled/rotated purely via these
+ * transform fields. This is what makes the tool non-destructive: repeatedly resizing a placed image
+ * up and down never degrades quality, because the underlying pixels are untouched — only the Konva
+ * node's own x/y/scaleX/scaleY/rotation change, the same way any vector shape's transform would.
+ * "Rasterize Layer" is the one-way conversion out of this into a normal page-sized `clean-patch`
+ * layer, baking the current transform into real pixels at last.
+ */
+export interface PlacedImageLayerData {
+  naturalWidth: number;
+  naturalHeight: number;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  rotation: number; // degrees
+}
+
 /** Shadow/Glow's own blend mode + opacity + color, shared shape for all 4 (Drop Shadow, Inner
  *  Shadow, Outer Glow, Inner Glow) since they're all "a blurred/offset copy of this layer's own
  *  silhouette, drawn behind or clipped inside it". */
@@ -890,6 +910,8 @@ export interface StudioLayer {
   adjustment?: AdjustmentLayerData;
   /** Only present when type === 'path'. */
   path?: PathLayerData;
+  /** Only present when type === 'placed-image'. */
+  placedImage?: PlacedImageLayerData;
 }
 
 export function createBackgroundLayer(): StudioLayer {
@@ -945,6 +967,23 @@ export function createGroupLayer(name = 'Group', children: StudioLayer[] = []): 
     blendMode: 'normal',
     children,
     collapsed: false,
+  };
+}
+
+/** Image > Place Image…: `x`/`y` are the *center* of the placed image (matches Konva's own
+ *  offset-centered convention for draggable/rotatable nodes — rotation around a corner reads as
+ *  orbiting instead of spinning in place, which center-anchoring avoids). */
+export function createPlacedImageLayer(name: string, naturalWidth: number, naturalHeight: number, centerX: number, centerY: number, scale = 1): StudioLayer {
+  layerCounter += 1;
+  return {
+    id: `layer-${Date.now()}-${layerCounter}`,
+    type: 'placed-image',
+    name,
+    visible: true,
+    locked: false,
+    opacity: 1,
+    blendMode: 'normal',
+    placedImage: { naturalWidth, naturalHeight, x: centerX, y: centerY, scaleX: scale, scaleY: scale, rotation: 0 },
   };
 }
 

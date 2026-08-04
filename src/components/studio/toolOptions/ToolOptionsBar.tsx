@@ -1,6 +1,6 @@
 import { AlignLeft, AlignCenter, AlignRight, AlignJustify, Check, X, Wand2 } from 'lucide-react';
 import { findTool } from '../toolGroups';
-import type { LiquifyMode, SymmetryMode } from '../paint/paintEngine';
+import type { LiquifyMode, SymmetryMode, BackgroundEraserSampling, BackgroundEraserLimits } from '../paint/paintEngine';
 import type { BrushShape } from '../paint/brushTip';
 import type { ContentAwareMode } from '../paint/contentAwareAlgorithms';
 import { PAINT_TOOLS } from '../paint/usePaintLayer';
@@ -54,6 +54,20 @@ interface ToolOptionsBarProps {
   onContentAwareModeChange: (v: ContentAwareMode) => void;
   sampleMode: SampleMode;
   onSampleModeChange: (v: SampleMode) => void;
+  backgroundEraserSampling: BackgroundEraserSampling;
+  onBackgroundEraserSamplingChange: (v: BackgroundEraserSampling) => void;
+  backgroundEraserLimits: BackgroundEraserLimits;
+  onBackgroundEraserLimitsChange: (v: BackgroundEraserLimits) => void;
+  backgroundEraserProtectForeground: boolean;
+  onBackgroundEraserProtectForegroundChange: (v: boolean) => void;
+  magicEraserAntiAlias: boolean;
+  onMagicEraserAntiAliasChange: (v: boolean) => void;
+  magicEraserContiguous: boolean;
+  onMagicEraserContiguousChange: (v: boolean) => void;
+  magicEraserSampleAllLayers: boolean;
+  onMagicEraserSampleAllLayersChange: (v: boolean) => void;
+  magicEraserOpacity: number;
+  onMagicEraserOpacityChange: (v: number) => void;
   sliceRectCount: number;
   onAddSliceRect: () => void;
   onExportSlices: () => void;
@@ -87,11 +101,14 @@ const FONT_STYLE_OPTIONS: { id: string; label: string; bold: boolean; italic: bo
   { id: 'bold-italic', label: 'Bold Italic', bold: true, italic: true },
 ];
 
-const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
-const HARDNESS_TOOLS = new Set(['brush', 'clone', 'heal']);
+const SIZE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'background-eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'shape-rect', 'shape-ellipse', 'shape-line', 'liquify']);
+const HARDNESS_TOOLS = new Set(['brush', 'clone', 'heal', 'background-eraser']);
 const FLOW_TOOLS = new Set(['brush', 'pencil', 'eraser', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'liquify']);
-const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'bucket', 'gradient']);
-const TOLERANCE_TOOLS = new Set(['wand', 'bucket']);
+// Background Eraser's own "how completely matched pixels erase" reuses this exact shared field —
+// see backgroundEraseSegment's `eraseAmount = tipAlpha * settings.opacity`.
+const OPACITY_TOOLS = new Set(['brush', 'pencil', 'eraser', 'background-eraser', 'bucket', 'gradient']);
+// Background Eraser and Magic Eraser both reuse the same shared Tolerance field the Wand/Bucket use.
+const TOLERANCE_TOOLS = new Set(['wand', 'bucket', 'background-eraser', 'magic-eraser']);
 const SYMMETRY_TOOLS = new Set(['brush', 'pencil', 'eraser']);
 const SELECTION_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'lasso-freehand', 'lasso-polygon', 'lasso-magnetic', 'wand']);
 const CONTENT_AWARE_TOOLS = new Set(['spot-heal', 'contentAware']);
@@ -161,6 +178,13 @@ export function ToolOptionsBar({
   smoothing, onSmoothingChange,
   contentAwareMode, onContentAwareModeChange,
   sampleMode, onSampleModeChange,
+  backgroundEraserSampling, onBackgroundEraserSamplingChange,
+  backgroundEraserLimits, onBackgroundEraserLimitsChange,
+  backgroundEraserProtectForeground, onBackgroundEraserProtectForegroundChange,
+  magicEraserAntiAlias, onMagicEraserAntiAliasChange,
+  magicEraserContiguous, onMagicEraserContiguousChange,
+  magicEraserSampleAllLayers, onMagicEraserSampleAllLayersChange,
+  magicEraserOpacity, onMagicEraserOpacityChange,
   sliceRectCount, onAddSliceRect, onExportSlices,
   hasSelection, onDeselect,
   activeText = null, activeTextLayerId = null, textSelection = null, onUpdateText,
@@ -181,6 +205,8 @@ export function ToolOptionsBar({
   const showDeselect = SELECTION_TOOLS.has(activeTool) && hasSelection;
   const showSelectionHint = (PAINT_TOOLS as readonly string[]).includes(activeTool) && hasSelection;
   const showSample = SAMPLE_TOOLS.has(activeTool);
+  const showBackgroundEraser = activeTool === 'background-eraser';
+  const showMagicEraser = activeTool === 'magic-eraser';
   // Placing a text layer immediately switches the active tool back to 'select' while the layer
   // stays selected (see Studio.tsx's handleAddTextLayer) — so the bar has to stay up whenever the
   // *active layer* is text, not just while the Text tool itself is armed. Deliberately NOT keyed on
@@ -190,7 +216,7 @@ export function ToolOptionsBar({
   // handler ever runs — a real bug this exact shape caught in testing, not a hypothetical.
   const showText = activeTool === 'text' || activeText != null;
 
-  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showContentAwareMode && !showSlice && !showDeselect && !showSelectionHint && !showSample && !showText)) return null;
+  if (!tool || (!showSize && !showHardness && !showFlow && !showOpacity && !showTolerance && !showLiquifyMode && !showSymmetry && !showContentAwareMode && !showSlice && !showDeselect && !showSelectionHint && !showSample && !showText && !showBackgroundEraser && !showMagicEraser)) return null;
 
   // Range-aware character controls when a real text layer is active (mirrors TextPanel.tsx exactly,
   // so the two can't disagree about what a selected range's "shared value" is) — falls back to the
@@ -286,6 +312,75 @@ export function ToolOptionsBar({
             {SAMPLE_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         </label>
+      )}
+      {showBackgroundEraser && (
+        <>
+          <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <span className="uppercase tracking-wide text-[10px] opacity-70">Sampling</span>
+            <select
+              value={backgroundEraserSampling}
+              onChange={(e) => onBackgroundEraserSamplingChange(e.target.value as BackgroundEraserSampling)}
+              className={`studio-interactive studio-focusable ${selectClass}`}
+            >
+              <option value="continuous">Continuous</option>
+              <option value="once">Once</option>
+              <option value="swatch">Background Swatch</option>
+            </select>
+          </label>
+          <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <span className="uppercase tracking-wide text-[10px] opacity-70">Limits</span>
+            <select
+              value={backgroundEraserLimits}
+              onChange={(e) => onBackgroundEraserLimitsChange(e.target.value as BackgroundEraserLimits)}
+              className={`studio-interactive studio-focusable ${selectClass}`}
+            >
+              <option value="discontiguous">Discontiguous</option>
+              <option value="contiguous">Contiguous</option>
+              <option value="findEdges">Find Edges</option>
+            </select>
+          </label>
+          <label className={`flex items-center gap-1.5 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <input
+              type="checkbox"
+              checked={backgroundEraserProtectForeground}
+              onChange={(e) => onBackgroundEraserProtectForegroundChange(e.target.checked)}
+              className="studio-focusable"
+            />
+            Protect Foreground Color
+          </label>
+        </>
+      )}
+      {showMagicEraser && (
+        <>
+          <label className={`flex items-center gap-1.5 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <input
+              type="checkbox"
+              checked={magicEraserAntiAlias}
+              onChange={(e) => onMagicEraserAntiAliasChange(e.target.checked)}
+              className="studio-focusable"
+            />
+            Anti-alias
+          </label>
+          <label className={`flex items-center gap-1.5 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <input
+              type="checkbox"
+              checked={magicEraserContiguous}
+              onChange={(e) => onMagicEraserContiguousChange(e.target.checked)}
+              className="studio-focusable"
+            />
+            Contiguous
+          </label>
+          <label className={`flex items-center gap-1.5 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
+            <input
+              type="checkbox"
+              checked={magicEraserSampleAllLayers}
+              onChange={(e) => onMagicEraserSampleAllLayersChange(e.target.checked)}
+              className="studio-focusable"
+            />
+            Sample All Layers
+          </label>
+          <Slider label="Opacity" value={magicEraserOpacity * 100} min={0} max={100} step={1} onChange={(v) => onMagicEraserOpacityChange(v / 100)} format={(v) => `${Math.round(v)}%`} phone={phone} />
+        </>
       )}
       {showSlice && (
         <>
