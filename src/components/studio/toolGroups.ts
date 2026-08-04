@@ -71,8 +71,14 @@ export const STUDIO_TOOL_GROUPS: StudioToolGroup[] = [
   { id: 'clone', tools: [{ id: 'clone', label: 'Clone Stamp', icon: Stamp, enabled: true, shortcut: 's' }] },
 
   // Eraser gets its own permanent rail slot, matching Photoshop — not folded into the brush flyout
-  // group, so it's always a single click away rather than a long-press/right-click away.
-  { id: 'eraser', groupStart: true, tools: [{ id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' }] },
+  // group, so it's always a single click away rather than a long-press/right-click away. Its two
+  // color-sampling variants (Background Eraser, Magic Eraser) live as siblings in this SAME group
+  // instead, reachable via the group's own right-click/long-press flyout.
+  { id: 'eraser', groupStart: true, tools: [
+    { id: 'eraser', label: 'Eraser', icon: Eraser, enabled: true, shortcut: 'e' },
+    { id: 'background-eraser', label: 'Background Eraser', icon: Eraser, enabled: true },
+    { id: 'magic-eraser', label: 'Magic Eraser', icon: Eraser, enabled: true },
+  ] },
 
   {
     id: 'brush',

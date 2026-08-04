@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import {
   applyFilterBrush, applyGradient, cloneSegment, healSegment, drawShape, floodFillAt, strokeSegment, liquify,
+  backgroundEraseSegment, applyMagicErase, sampleColorAt, hexToRgb,
   type PaintSettings, type PaintTool,
 } from './paintEngine';
 import { magicWandMask, refineMaskedRegion, combineSelections, NO_SELECTION, type Selection, type SelectionCombineMode } from './selection';
@@ -8,7 +9,7 @@ import { extractSubRegion, type PixelBuffer } from './contentAwareAlgorithms';
 import { useContentAwareWorker } from './useContentAwareWorker';
 
 export const PAINT_TOOLS: PaintTool[] = [
-  'brush', 'pencil', 'eraser', 'bucket', 'gradient', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
+  'brush', 'pencil', 'eraser', 'background-eraser', 'magic-eraser', 'bucket', 'gradient', 'clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'contentAware',
   'shape-rect', 'shape-ellipse', 'shape-line', 'spot-heal', 'liquify',
 ];
 
@@ -82,6 +83,10 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
   const shapeStartRef = useRef<{ x: number; y: number } | null>(null);
   const sourceSnapshotRef = useRef<HTMLCanvasElement | null>(null);
   const strokeBeforeRef = useRef<ImageData | null>(null);
+  /** Background Eraser's "Once"/"Background Swatch" sampling — held constant for a whole stroke.
+   *  Null under "Continuous" sampling, which resamples fresh at every stamp instead (see
+   *  backgroundEraseSegment's own `fixedHotspot` param). */
+  const backgroundEraserHotspotRef = useRef<{ r: number; g: number; b: number } | null>(null);
   const contentAwareWorker = useContentAwareWorker();
   // Spot Healing Brush: a page-sized binary mask canvas accumulates the stroke's repair region
   // (filled circles stamped along the drag) so the *full* stroke shape is known at pointerUp,
@@ -337,6 +342,17 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       onStrokeEnd(before);
       return;
     }
+    if (tool === 'magic-eraser') {
+      const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const sampleCanvas = settings.magicEraserSampleAllLayers ? (getSampleCanvas?.() ?? canvas) : canvas;
+      const sampleCtx = sampleCanvas.getContext('2d');
+      if (sampleCtx) {
+        applyMagicErase(ctx, sampleCtx, canvas.width, canvas.height, x, y, settings, selection);
+        if (selection.kind === 'mask') refineMaskedRegion(ctx, selection, before);
+        onStrokeEnd(before);
+      }
+      return;
+    }
     if ((tool === 'clone' || tool === 'heal') && cloneSourceRef.current) {
       cloneOffsetRef.current = { x: x - cloneSourceRef.current.x, y: y - cloneSourceRef.current.y };
       const sampleSource = getSampleCanvas?.() ?? canvas;
@@ -354,12 +370,26 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       }
     }
 
+    if (tool === 'background-eraser') {
+      if (settings.backgroundEraserSampling === 'swatch') {
+        const [r, g, b] = hexToRgb(settings.bgColor);
+        backgroundEraserHotspotRef.current = { r, g, b };
+      } else if (settings.backgroundEraserSampling === 'once') {
+        backgroundEraserHotspotRef.current = sampleColorAt(ctx, x, y);
+      } else {
+        backgroundEraserHotspotRef.current = null; // continuous: resampled fresh per stamp
+      }
+    }
+
     strokeBeforeRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
     drawingRef.current = true;
     lastRef.current = { x, y };
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
       getStrokeBuffer(canvas.width, canvas.height);
       strokeBoxRef.current = null;
+      smoothRef.current = { x, y };
+    }
+    if (tool === 'background-eraser') {
       smoothRef.current = { x, y };
     }
     if (tool === 'spot-heal') {
@@ -393,6 +423,9 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
         growBox(strokeSegment(bufCtx, w - lastX, h - lastY, w - x, h - y, settings, tool, selection, pressure));
       }
       compositeStroke(ctx, tool);
+    } else if (tool === 'background-eraser') {
+      const hotspot = settings.backgroundEraserSampling === 'continuous' ? null : backgroundEraserHotspotRef.current;
+      backgroundEraseSegment(ctx, lastX, lastY, x, y, settings, hotspot, selection);
     } else if ((tool === 'clone' || tool === 'heal') && cloneOffsetRef.current && sourceSnapshotRef.current) {
       if (tool === 'clone') {
         cloneSegment(ctx, sourceSnapshotRef.current, lastX, lastY, x, y, settings.size, cloneOffsetRef.current.x, cloneOffsetRef.current.y, selection);
@@ -438,7 +471,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     // tracking it exactly, which damps hand jitter. smoothing=0 paints the raw
     // pointer (identical to the old behaviour); higher values lag further behind.
     let tx = x, ty = y;
-    const isStrokeTool = tool === 'brush' || tool === 'pencil' || tool === 'eraser';
+    const isStrokeTool = tool === 'brush' || tool === 'pencil' || tool === 'eraser' || tool === 'background-eraser';
     if (isStrokeTool && settings.smoothing > 0 && smoothRef.current) {
       const follow = 1 - Math.min(0.95, settings.smoothing * 0.9);
       tx = smoothRef.current.x + (x - smoothRef.current.x) * follow;

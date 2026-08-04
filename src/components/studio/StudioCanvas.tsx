@@ -69,7 +69,7 @@ const BRUSH_PICKER_TOOLS = new Set(['brush', 'eraser', 'pencil']);
 /** Tools that get ToolCursorOverlay's live SVG chrome (and have the OS cursor hidden in favor of
  *  it) rather than a plain CSS cursor class — see `cursorClass` below for the CSS-only tools. */
 const SVG_OVERLAY_TOOLS = new Set([
-  'brush', 'pencil', 'eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge',
+  'brush', 'pencil', 'eraser', 'background-eraser', 'magic-eraser', 'clone', 'heal', 'blur', 'sharpen', 'smudge',
   'dodge', 'burn', 'sponge', 'spot-heal', 'liquify', 'contentAware', 'wand', 'eyedropper',
   'pen', 'curvature-pen',
 ]);

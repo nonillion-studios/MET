@@ -13,7 +13,7 @@ interface ToolCursorOverlayProps {
   cloneSource: { x: number; y: number } | null;
 }
 
-const STROKE_TOOLS = new Set(['brush', 'pencil', 'eraser']);
+const STROKE_TOOLS = new Set(['brush', 'pencil', 'eraser', 'background-eraser']);
 /** Tools that are brush-sized but don't use the brush tip geometry (no angle/roundness). */
 const ROUND_SIZED_TOOLS = new Set(['clone', 'heal', 'blur', 'sharpen', 'smudge', 'dodge', 'burn', 'sponge', 'spot-heal', 'contentAware', 'liquify']);
 const SOURCE_CROSSHAIR_TOOLS = new Set(['clone', 'heal']);
@@ -32,7 +32,7 @@ const PATCH_ICON_TOOLS = new Set(['spot-heal', 'contentAware']);
 export function ToolCursorOverlay({ pos, scale, settings, tool, eyedropperColor, cloneSource }: ToolCursorOverlayProps) {
   if (!pos) return null;
 
-  if (tool === 'wand') {
+  if (tool === 'wand' || tool === 'magic-eraser') {
     return (
       <svg className="pointer-events-none absolute inset-0 w-full h-full z-10" aria-hidden>
         <g transform={`translate(${pos.x} ${pos.y})`}>
@@ -41,6 +41,10 @@ export function ToolCursorOverlay({ pos, scale, settings, tool, eyedropperColor,
           {[[3, -8], [8, -3], [1, -12]].map(([dx, dy], i) => (
             <line key={i} x1={dx - 2} y1={dy} x2={dx + 2} y2={dy} stroke="#fbbf24" strokeWidth={1.5} strokeLinecap="round" />
           ))}
+          {/* Small eraser badge, distinguishing this from the plain Magic Wand cursor above. */}
+          {tool === 'magic-eraser' && (
+            <rect x={5} y={4} width={9} height={6} rx={1.5} transform="rotate(-30 9.5 7)" fill="#fca5a5" stroke="#000" strokeWidth={0.75} />
+          )}
         </g>
       </svg>
     );
@@ -79,7 +83,7 @@ export function ToolCursorOverlay({ pos, scale, settings, tool, eyedropperColor,
   if (!isStroke && !ROUND_SIZED_TOOLS.has(tool)) return null;
 
   const geom = isStroke
-    ? effectiveTip(settings, tool as 'brush' | 'pencil' | 'eraser')
+    ? effectiveTip(settings, (tool === 'background-eraser' ? 'eraser' : tool) as 'brush' | 'pencil' | 'eraser')
     : { size: settings.size, hardness: 1, angle: 0, roundness: 1 };
 
   const screenSize = geom.size * scale;

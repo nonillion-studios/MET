@@ -28,7 +28,11 @@ import { NO_SELECTION, hasSelection, featherSelection, growSelection, pathToSele
 import { fillSelectionOntoCanvas, strokeSelectionOntoCanvas } from './paint/selectionFill';
 import { StrokeSelectionDialog, type StrokeSelectionResult } from './StrokeSelectionDialog';
 import { WarpTextDialog } from './WarpTextDialog';
-import { strokePathOntoCanvas, fillPathOntoCanvas, type PaintSettings, type LiquifyMode, type SymmetryMode } from './paint/paintEngine';
+import {
+  strokePathOntoCanvas, fillPathOntoCanvas,
+  type PaintSettings, type LiquifyMode, type SymmetryMode,
+  type BackgroundEraserSampling, type BackgroundEraserLimits,
+} from './paint/paintEngine';
 import type { ContentAwareMode } from './paint/contentAwareAlgorithms';
 import type { SampleMode } from '../../lib/sampleComposite';
 import type { BrushShape } from './paint/brushTip';
@@ -374,12 +378,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   /** Clone/Heal source + Eyedropper pick: which layers they read from. Shared across both tools,
    *  matching Photoshop's own single "Sample" setting. */
   const [sampleMode, setSampleMode] = useState<SampleMode>('all');
+  const [backgroundEraserSampling, setBackgroundEraserSampling] = useState<BackgroundEraserSampling>('continuous');
+  const [backgroundEraserLimits, setBackgroundEraserLimits] = useState<BackgroundEraserLimits>('contiguous');
+  const [backgroundEraserProtectForeground, setBackgroundEraserProtectForeground] = useState(false);
+  const [magicEraserAntiAlias, setMagicEraserAntiAlias] = useState(true);
+  const [magicEraserContiguous, setMagicEraserContiguous] = useState(true);
+  const [magicEraserSampleAllLayers, setMagicEraserSampleAllLayers] = useState(false);
+  const [magicEraserOpacity, setMagicEraserOpacity] = useState(1);
   const paintSettings: PaintSettings = {
     size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     color: foreground, bgColor: background, tolerance, liquifyMode, symmetry,
     spacing, brushShape, angle: brushAngle, roundness: brushRoundness,
     scatter, smoothing, pressureSize, pressureOpacity, contentAwareMode, sampleMode,
     tipMask, tipMaskId: brushShape === 'image' ? activeBrushId ?? undefined : undefined,
+    backgroundEraserSampling, backgroundEraserLimits, backgroundEraserProtectForeground,
+    magicEraserAntiAlias, magicEraserContiguous, magicEraserSampleAllLayers, magicEraserOpacity,
   };
 
   /** Applying a preset just writes the engine state — there's no separate "brush mode",
@@ -3019,6 +3032,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onContentAwareModeChange={setContentAwareMode}
           sampleMode={sampleMode}
           onSampleModeChange={setSampleMode}
+          backgroundEraserSampling={backgroundEraserSampling}
+          onBackgroundEraserSamplingChange={setBackgroundEraserSampling}
+          backgroundEraserLimits={backgroundEraserLimits}
+          onBackgroundEraserLimitsChange={setBackgroundEraserLimits}
+          backgroundEraserProtectForeground={backgroundEraserProtectForeground}
+          onBackgroundEraserProtectForegroundChange={setBackgroundEraserProtectForeground}
+          magicEraserAntiAlias={magicEraserAntiAlias}
+          onMagicEraserAntiAliasChange={setMagicEraserAntiAlias}
+          magicEraserContiguous={magicEraserContiguous}
+          onMagicEraserContiguousChange={setMagicEraserContiguous}
+          magicEraserSampleAllLayers={magicEraserSampleAllLayers}
+          onMagicEraserSampleAllLayersChange={setMagicEraserSampleAllLayers}
+          magicEraserOpacity={magicEraserOpacity}
+          onMagicEraserOpacityChange={setMagicEraserOpacity}
           sliceRectCount={sliceRects.length}
           onAddSliceRect={handleAddSliceRect}
           onExportSlices={handleExportSlices}
