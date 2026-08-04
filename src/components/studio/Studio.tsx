@@ -1391,8 +1391,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *  used to give new layers real content for Clone/Heal/Liquify to work on) copies the current
    *  page pixels into that same layer id's own raster canvas, so the visual result is identical to
    *  what was on screen the moment before conversion. */
-  function handleConvertBackgroundToLayer() {
-    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false })), 'Convert Background to Layer');
+  function handleConvertBackgroundToLayer(name: string) {
+    updateLayers(current => updateLayer(current, 'background', l => ({ ...l, type: 'clean-patch', isBackground: false, locked: false, name })), 'Convert Background to Layer');
     canvasRef.current?.seedLayerWithBackground('background');
   }
 

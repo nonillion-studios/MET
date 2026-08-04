@@ -85,7 +85,7 @@ interface LayersPanelProps {
   onSetLayerEffects?: (id: string, effects: LayerEffects) => void;
   /** Double-click (with confirmation) or right-click > "Layer from Background" — converts the
    *  locked, restriction-bearing background row into a regular, fully editable layer. */
-  onConvertBackgroundToLayer?: () => void;
+  onConvertBackgroundToLayer?: (name: string) => void;
   /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
    *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
    *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
@@ -150,12 +150,15 @@ export function LayersPanel({
   async function confirmConvertBackground() {
     if (!onConvertBackgroundToLayer) return;
     const result = await swal({
-      title: 'Convert to Normal Layer?',
+      title: 'New Layer',
       text: 'The background will become a regular editable layer — you can paint on it, move it, and apply effects to it like any other layer.',
+      input: 'text',
+      inputValue: 'Layer 0',
+      inputAttributes: { autocapitalize: 'off' },
       showCancelButton: true,
       confirmButtonText: 'OK',
     });
-    if (result.isConfirmed) onConvertBackgroundToLayer();
+    if (result.isConfirmed) onConvertBackgroundToLayer((result.value as string | undefined)?.trim() || 'Layer 0');
   }
 
   async function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
@@ -221,7 +224,7 @@ export function LayersPanel({
         break;
       }
       case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
-      case 'layerFromBackground': onConvertBackgroundToLayer?.(); break;
+      case 'layerFromBackground': void confirmConvertBackground(); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }
