@@ -1647,6 +1647,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return;
     }
     if (activeTool === 'text') {
+      // A pointerdown that lands on an existing text item's own Konva node must let that node's
+      // own click/drag handling win (select it, or start moving it) — only a press on truly empty
+      // canvas starts a new text-box drag. Mirrors the identical `onEmpty` check the Select tool's
+      // branch above uses for the same reason.
+      const targetClass = e.target.getClassName?.();
+      const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
+      if (!onEmpty) return;
       const p = imageSpacePointer();
       if (p) textDragRef.current = p;
       setTextDragPreview(null);
@@ -2216,8 +2223,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const showToolOverlay = !panning && SVG_OVERLAY_TOOLS.has(activeTool) && brushCursorPos !== null;
   // Move cursor over a text box's own body, away from its Transformer handles (which sit on top
   // and win the hit-test first, so hoveringTextBody never fires for those) — only meaningful with
-  // the Select tool actually able to drag it right now.
-  const showMoveCursor = !panning && activeTool === 'select' && hoveringTextBody;
+  // the Select or Text tool actually able to drag it right now (both gate TextLayerNode's
+  // `draggable` the same way — see the renderLeaf text branch).
+  const showMoveCursor = !panning && (activeTool === 'select' || activeTool === 'text') && hoveringTextBody;
   // Not gated on activeTool: the ⊞ indicator's click/dblclick handlers aren't tool-gated either
   // (it's visible/interactive regardless of selection or active tool), so the cursor matches.
   const showOverflowCursor = !panning && hoveringOverflowIndicator;
@@ -2412,8 +2420,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             layer={layer}
             groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
             editing={layer.id === editingLayerId}
-            selected={selectionIds.includes(layer.id) && activeTool === 'select'}
-            draggable={activeTool === 'select' && canMoveLayer(layer) && !spaceDown}
+            selected={selectionIds.includes(layer.id) && (activeTool === 'select' || activeTool === 'text')}
+            draggable={(activeTool === 'select' || activeTool === 'text') && canMoveLayer(layer) && !spaceDown}
             onSelect={(mode) => onSelectLayer(layer.id, mode)}
             onEdit={() => { onSelectLayer(layer.id); setEditingLayerId(layer.id); }}
             onUpdate={(patch) => onUpdateTextLayer(layer.id, patch)}

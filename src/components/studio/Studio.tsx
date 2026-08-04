@@ -1945,7 +1945,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
     updateLayers(current => [...current, layer], 'Add Text Layer');
     setActiveLayerId(layer.id);
-    setActiveTool('select');
+    // Deliberately does NOT switch to the select tool — the text tool stays armed through
+    // placement, editing, and repositioning, so the user can keep placing more text boxes without
+    // re-selecting the tool each time (see StudioCanvas.tsx's text-tool pointer handling, and the
+    // `selected`/`draggable` gating on TextLayerNode, both of which now also key off `activeTool
+    // === 'text'`, not just `'select'`).
     panelLayout.reveal('text');
   }
 
