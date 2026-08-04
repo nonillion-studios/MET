@@ -254,6 +254,20 @@ async function drawLeafContent(
       await compositeLayers(gctx, layer.children ?? [], width, height, background);
       ctx.drawImage(group, 0, 0);
     }
+  } else if (layer.type === 'placed-image' && layer.placedImage && layer.raster) {
+    // Checked before the generic `layer.raster` branch below: a placed-image's raster is the
+    // *source* canvas at its own natural size, not a page-sized image — drawing it at (0,0)/full
+    // page size like every other raster layer would stretch/mis-position it. Draw through the
+    // stored transform instead, matching StudioCanvas.tsx's rasterizePlacedImage exactly so the
+    // exported pixels match what's on screen.
+    const { x, y, scaleX, scaleY, rotation, naturalWidth, naturalHeight } = layer.placedImage;
+    const img = await loadImage(layer.raster);
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.scale(scaleX, scaleY);
+    ctx.drawImage(img, -naturalWidth / 2, -naturalHeight / 2, naturalWidth, naturalHeight);
+    ctx.restore();
   } else if (layer.raster) {
     const img = await loadImage(layer.raster);
     ctx.drawImage(img, 0, 0, width, height);

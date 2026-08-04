@@ -86,6 +86,9 @@ interface LayersPanelProps {
   /** Double-click (with confirmation) or right-click > "Layer from Background" — converts the
    *  locked, restriction-bearing background row into a regular, fully editable layer. */
   onConvertBackgroundToLayer?: (name: string) => void;
+  /** Right-click a placed-image (Smart Object) layer > "Rasterize Layer" — bakes its current
+   *  transform into pixels and converts it into a normal, no-longer-transformable clean-patch layer. */
+  onRasterizePlacedImage?: (id: string) => void;
   /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
    *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
    *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
@@ -113,7 +116,7 @@ export function LayersPanel({
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
-  onConvertBackgroundToLayer, onOpenWarpText, onToggleLayerLockFlag,
+  onConvertBackgroundToLayer, onRasterizePlacedImage, onOpenWarpText, onToggleLayerLockFlag,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -183,6 +186,7 @@ export function LayersPanel({
       ...(onSetLayerEffects && getClipboardLayerStyle() ? { pasteStyle: 'Paste Layer Style' } : {}),
       ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? { clearStyle: 'Clear Layer Style' } : {}),
       ...(layer.isBackground && onConvertBackgroundToLayer ? { layerFromBackground: 'Layer from Background' } : {}),
+      ...(layer.type === 'placed-image' && onRasterizePlacedImage ? { rasterize: 'Rasterize Layer' } : {}),
       ...(layer.isBackground ? {} : { delete: 'Delete' }),
     };
     const result = await swal({
@@ -225,6 +229,7 @@ export function LayersPanel({
       }
       case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
       case 'layerFromBackground': void confirmConvertBackground(); break;
+      case 'rasterize': onRasterizePlacedImage?.(layer.id); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
   }

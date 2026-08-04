@@ -371,6 +371,23 @@ async function buildPsdLayer(layer: SerializedStudioLayer, width: number, height
     // Adjustment layers used to fall through every branch here and emit an empty named layer —
     // the adjustment silently vanished from the PSD and nobody was told.
     base.adjustment = psdAdjustment(layer.adjustment);
+  } else if (layer.type === 'placed-image' && layer.placedImage && layer.raster) {
+    // PSD has no non-destructive "smart object with a live transform" concept this app can write
+    // to, so — same as flattened PNG/JPG export (exportImage.ts) — bake the current transform into
+    // a page-sized canvas at export time. `layer.raster` here is the *source* image at its own
+    // natural size, not page-sized, so the generic `layer.raster` branch below (which draws at
+    // (0,0)/full page size) would stretch it — this branch is checked first.
+    const { x, y, scaleX, scaleY, rotation, naturalWidth, naturalHeight } = layer.placedImage;
+    const img = await loadImage(layer.raster);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.translate(x, y);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.scale(scaleX, scaleY);
+    ctx.drawImage(img, -naturalWidth / 2, -naturalHeight / 2, naturalWidth, naturalHeight);
+    base.canvas = canvas;
   } else if (layer.raster) {
     base.canvas = await dataUrlToCanvas(layer.raster, width, height);
   } else if (layer.type === 'text' && layer.text) {

@@ -53,8 +53,9 @@ import { parsePsdFile } from '../../lib/importPsd';
 import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
 import JSZip from 'jszip';
 import {
-  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, parseTyperScript,
+  createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, createPlacedImageLayer, parseTyperScript,
   createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
+  type PlacedImageLayerData,
   type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
 } from './studioTypes';
 import { applyCharPatch, resolveCharValue } from './textRuns';
@@ -1346,32 +1347,34 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     setActiveLayerId(layer.id);
   }
 
-  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file, adds a new
-   *  clean-patch layer named "Image: <filename>" above the current stack, and draws the image
+  /** Image > Place Image… (and dropping an image file onto the canvas): loads the file and adds a
+   *  new `placed-image` layer ("Smart Object") named "Image: <filename>" above the current stack,
    *  centered on the page — scaled down to fit if it's larger than the page, never scaled up. The
-   *  new layer is immediately selected and the tool switches to Move so it's draggable right away;
-   *  this app has no resize/rotate "Free Transform" handles for raster layers to activate (only
-   *  text/path layers get the Transformer — see TextLayerNode/PathLayerNode), so drag-to-reposition
-   *  is the honest extent of "immediately adjustable" here. */
+   *  source pixels are drawn once into a canvas at the image's own natural size (never resampled by
+   *  scaling — see PlacedImageLayerData's own doc comment) and positioned purely via transform data,
+   *  so repeated resizing never degrades quality the way baking a scale into pixels would. The new
+   *  layer is immediately selected with the Select tool active, so its Free Transform handles
+   *  (StudioCanvas.tsx's shared Transformer, now generalized beyond text) show right away — no
+   *  separate "enter transform mode" step, matching Photoshop's own behavior for a freshly placed
+   *  Smart Object. */
   async function handlePlaceImageFiles(files: FileList | File[]) {
     if (!activePage) return;
     const source = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
     const list = Array.from(files);
+    let lastLayerId: string | null = null;
     for (const file of list) {
       const url = URL.createObjectURL(file);
       try {
         const img = await loadImageFromSrc(url);
-        const layer = createLayer('clean-patch', `Image: ${file.name}`);
+        const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
+        const layer = createPlacedImageLayer(`Image: ${file.name}`, img.naturalWidth, img.naturalHeight, source.width / 2, source.height / 2, scale);
         updateLayers(current => [...current, layer], 'Place Image');
-        setActiveLayerId(layer.id);
-        const canvas = canvasRef.current?.getPaintCanvas(layer.id);
+        lastLayerId = layer.id;
+        const canvas = canvasRef.current?.getOrCreatePlacedImageCanvas(layer.id, img.naturalWidth, img.naturalHeight);
         const ctx = canvas?.getContext('2d');
         if (canvas && ctx) {
-          const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
-          const drawW = img.naturalWidth * scale;
-          const drawH = img.naturalHeight * scale;
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, (source.width - drawW) / 2, (source.height - drawH) / 2, drawW, drawH);
+          ctx.drawImage(img, 0, 0);
           canvasRef.current?.redrawLayer(layer.id);
         }
       } catch {
@@ -1380,7 +1383,39 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         URL.revokeObjectURL(url);
       }
     }
+    if (lastLayerId) {
+      setActiveLayerId(lastLayerId);
+      selectLayers([lastLayerId]);
+    }
     setActiveTool('select');
+  }
+
+  function handleUpdatePlacedImage(id: string, patch: Partial<PlacedImageLayerData>) {
+    updateLayers(current => updateLayer(current, id, l => (
+      l.type === 'placed-image' && l.placedImage ? { ...l, placedImage: { ...l.placedImage, ...patch } } : l
+    )));
+  }
+
+  /** Right-click a placed-image layer > "Rasterize Layer": bakes its current transform into a
+   *  fresh page-sized raster (StudioCanvas's rasterizePlacedImage) and converts it into a normal
+   *  clean-patch layer — after this it's a regular paint layer with no further Smart Object
+   *  behavior, matching Photoshop's one-way rasterize. */
+  function handleRasterizePlacedImage(id: string) {
+    const raster = canvasRef.current?.rasterizePlacedImage(id);
+    if (!raster) return;
+    const canvas = canvasRef.current?.getPaintCanvas(id);
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(raster, 0, 0);
+    }
+    updateLayers(current => updateLayer(current, id, l => {
+      if (l.type !== 'placed-image') return l;
+      const { placedImage, ...rest } = l;
+      void placedImage;
+      return { ...rest, type: 'clean-patch' };
+    }), 'Rasterize Layer');
+    canvasRef.current?.redrawLayer(id);
   }
 
   /** Layers panel > double-click Background (with confirmation) or right-click > "Layer from
@@ -2446,6 +2481,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       }}
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
+      onRasterizePlacedImage={handleRasterizePlacedImage}
       onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
@@ -2849,6 +2885,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onAutoFitTextHeight={handleAutoFitTextHeight}
       onUpdatePathLayer={handleUpdatePathLayer}
       onAddPathLayer={handleAddPathLayer}
+      onUpdatePlacedImage={handleUpdatePlacedImage}
       onTextSelectionChange={setTextSelection}
       onTextLineSelectionChange={setTextLineSelection}
       onOpenBrushPicker={(x, y) => setBrushPickerPos({ x, y })}
