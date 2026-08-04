@@ -63,6 +63,9 @@ const RULER_SIZE = 20;
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop', 'slice']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
+/** Tools whose right-click opens the floating brush picker instead of the browser's native menu —
+ *  the same three tools that share the stamp engine (see usePaintLayer.ts). */
+const BRUSH_PICKER_TOOLS = new Set(['brush', 'eraser', 'pencil']);
 /** Tools that get ToolCursorOverlay's live SVG chrome (and have the OS cursor hidden in favor of
  *  it) rather than a plain CSS cursor class — see `cursorClass` below for the CSS-only tools. */
 const SVG_OVERLAY_TOOLS = new Set([
@@ -114,6 +117,10 @@ interface StudioCanvasProps {
    * the editing overlay is a plain textarea, so its selectionStart/End *is* the selection model.
    */
   onTextSelectionChange?: (selection: TextSelection | null) => void;
+  /** Right-click while Brush/Eraser/Pencil is active — opens the floating brush picker at the
+   *  given viewport (clientX/clientY) coordinates. Rendered by Studio.tsx (which owns the brush
+   *  preset/live-settings state the picker needs), not here. */
+  onOpenBrushPicker?: (x: number, y: number) => void;
   /** A wrapped line clicked inside a selected (not editing) text layer — lifted the same way as
    *  onTextSelectionChange, so TextPanel can apply per-line overrides to it. */
   onTextLineSelectionChange?: (selection: TextLineSelection | null) => void;
@@ -316,7 +323,7 @@ export interface StudioCanvasHandle {
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
-  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange,
+  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
@@ -1509,18 +1516,25 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
   };
 
-  /** Right-click handler for the whole Stage — only ever opens the selection context menu (never
-   *  the browser's native one) when a selection tool is active, a selection exists, and the click
-   *  landed inside its own shape; otherwise falls through to whatever the browser/other handlers
-   *  would normally do (e.g. a right-click with the brush tool active does nothing special here). */
+  /** Right-click handler for the whole Stage — opens the selection context menu when a selection
+   *  tool is active, a selection exists, and the click landed inside its own shape; opens the
+   *  floating brush picker when Brush/Eraser/Pencil is active; otherwise falls through to whatever
+   *  the browser/other handlers would normally do. */
   const handleStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
     const isSelectionTool = MARQUEE_TOOLS.has(activeTool) || LASSO_TOOLS.has(activeTool) || activeTool === 'wand';
-    if (!isSelectionTool || !hasSelection(selection)) return;
-    const p = imageSpacePointer();
-    if (!p || !selectionContainsPoint(selection, p.x, p.y)) return;
-    e.evt.preventDefault();
-    const rect = containerRef.current?.getBoundingClientRect();
-    setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
+    if (isSelectionTool && hasSelection(selection)) {
+      const p = imageSpacePointer();
+      if (p && selectionContainsPoint(selection, p.x, p.y)) {
+        e.evt.preventDefault();
+        const rect = containerRef.current?.getBoundingClientRect();
+        setSelectionContextMenu({ x: e.evt.clientX - (rect?.left ?? 0), y: e.evt.clientY - (rect?.top ?? 0) });
+        return;
+      }
+    }
+    if (BRUSH_PICKER_TOOLS.has(activeTool) && onOpenBrushPicker) {
+      e.evt.preventDefault();
+      onOpenBrushPicker(e.evt.clientX, e.evt.clientY);
+    }
   };
 
   const handlePaintPointerDown = (e: Konva.KonvaEventObject<PointerEvent>) => {

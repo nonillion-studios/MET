@@ -58,6 +58,7 @@ import { getClipboardLayer, setClipboardLayer } from '../../lib/layerClipboard';
 import { layoutText, isArabicMajority } from './textLayout';
 import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
+import { BrushPickerPopover } from './BrushPickerPopover';
 import type { BrushPreset } from '../../lib/brushStore';
 import { AdjustmentPanel } from './AdjustmentPanel';
 import { BlendingOptionsDialog } from './BlendingOptionsDialog';
@@ -367,6 +368,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [activeBrushId, setActiveBrushId] = useState<string | null>(null);
   /** Decoded tip mask for the active image brush; undefined for procedural shapes. */
   const [tipMask, setTipMask] = useState<HTMLCanvasElement | undefined>(undefined);
+  /** Floating brush picker (right-click on canvas while Brush/Eraser/Pencil is active), positioned
+   *  at the click's viewport coordinates. Null when closed. */
+  const [brushPickerPos, setBrushPickerPos] = useState<{ x: number; y: number } | null>(null);
   /** Clone/Heal source + Eyedropper pick: which layers they read from. Shared across both tools,
    *  matching Photoshop's own single "Sample" setting. */
   const [sampleMode, setSampleMode] = useState<SampleMode>('all');
@@ -2456,27 +2460,30 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   ) : null;
 
+  const brushLiveSettings = { size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+    spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity };
+  function handleBrushLiveChange(patch: Partial<typeof brushLiveSettings>) {
+    if (patch.size !== undefined) setBrushSize(patch.size);
+    if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
+    if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
+    if (patch.flow !== undefined) setBrushFlow(patch.flow);
+    if (patch.spacing !== undefined) setSpacing(patch.spacing);
+    if (patch.angle !== undefined) setBrushAngle(patch.angle);
+    if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
+    if (patch.scatter !== undefined) setScatter(patch.scatter);
+    if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
+    if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
+    if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
+  }
+
   const brushesPanel = (
     <BrushesPanel
       color={foreground}
       activeBrushId={activeBrushId}
       onSelectBrush={handleSelectBrush}
       hideTitle
-      live={{ size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
-        spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity }}
-      onLiveChange={(patch) => {
-        if (patch.size !== undefined) setBrushSize(patch.size);
-        if (patch.hardness !== undefined) setBrushHardness(patch.hardness);
-        if (patch.opacity !== undefined) setBrushOpacity(patch.opacity);
-        if (patch.flow !== undefined) setBrushFlow(patch.flow);
-        if (patch.spacing !== undefined) setSpacing(patch.spacing);
-        if (patch.angle !== undefined) setBrushAngle(patch.angle);
-        if (patch.roundness !== undefined) setBrushRoundness(patch.roundness);
-        if (patch.scatter !== undefined) setScatter(patch.scatter);
-        if (patch.smoothing !== undefined) setSmoothing(patch.smoothing);
-        if (patch.pressureSize !== undefined) setPressureSize(patch.pressureSize);
-        if (patch.pressureOpacity !== undefined) setPressureOpacity(patch.pressureOpacity);
-      }}
+      live={brushLiveSettings}
+      onLiveChange={handleBrushLiveChange}
     />
   );
 
@@ -2831,6 +2838,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onAddPathLayer={handleAddPathLayer}
       onTextSelectionChange={setTextSelection}
       onTextLineSelectionChange={setTextLineSelection}
+      onOpenBrushPicker={(x, y) => setBrushPickerPos({ x, y })}
       paintSettings={paintSettings}
       selection={selection}
       onSelectionChange={setSelection}
@@ -3249,6 +3257,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           />
         );
       })()}
+      {brushPickerPos && (
+        <BrushPickerPopover
+          position={brushPickerPos}
+          onClose={() => setBrushPickerPos(null)}
+          color={foreground}
+          activeBrushId={activeBrushId}
+          onSelectBrush={handleSelectBrush}
+          live={brushLiveSettings}
+          onLiveChange={handleBrushLiveChange}
+        />
+      )}
     </div>
   );
 }
