@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { flushSync } from 'react-dom';
 import { Group, Rect, Line, Ellipse, Text as KonvaText, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes';
@@ -147,11 +148,17 @@ export function TextLayerNode({
         const scaleY = node.scaleY();
         node.scaleX(1);
         node.scaleY(1);
-        onUpdate(
+        // flushSync forces the resulting width/fontSize/fixedHeight state update (and the re-layout
+        // + Konva.Text attr changes it produces) to land before this handler returns, i.e. before
+        // Konva's own Transformer schedules its next redraw. Without it, the scale-zero above can
+        // get painted on its own first (old layout, scale already 1) — a visible snap/jump each
+        // frame — because the state update would otherwise land on React's next batched flush,
+        // racing Konva's own redraw scheduling instead of preceding it.
+        flushSync(() => onUpdate(
           text.autoWidth
             ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
             : { width: Math.max(20, layout.width * scaleX), fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
-        );
+        ));
       }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
@@ -181,7 +188,7 @@ export function TextLayerNode({
         if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
           throw new Error('REGRESSION: area text resize must never modify fontSize');
         }
-        onUpdate(patch);
+        flushSync(() => onUpdate(patch));
       }}
     >
       {/* Hit area + the Group's bounds, so clicking gaps between glyphs still selects the layer and

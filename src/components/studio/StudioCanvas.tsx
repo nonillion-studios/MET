@@ -344,6 +344,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  /** Coalesces onLiveCursorMove/onCursorImagePosChange to at most once per animation frame. Both
+   *  callbacks land on plain useState setters upstream (Studio.tsx), so calling them on every native
+   *  pointermove — which can fire far more often than the display refresh rate — forces a full,
+   *  unmemoized re-render of this whole component in lockstep with any drag/transform gesture,
+   *  competing with Konva's own redraw scheduling for the same frame. See TextLayerNode.tsx's
+   *  onTransform for the race this contention can expose. */
+  const cursorRafRef = useRef<number | null>(null);
+  const pendingCursorPosRef = useRef<{ x: number; y: number } | null>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const textNodeRefs = useRef<Record<string, Konva.Group | null>>({});
   /** Path layers keep their own ref map, separate from textNodeRefs — they deliberately don't
@@ -2623,12 +2631,28 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         if (!rect) return;
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
-        onLiveCursorMove?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
-        onCursorImagePosChange?.({ x: (cx - pos.x) / scale, y: (cy - pos.y) / scale });
+        pendingCursorPosRef.current = { x: (cx - pos.x) / scale, y: (cy - pos.y) / scale };
+        if (cursorRafRef.current === null) {
+          cursorRafRef.current = requestAnimationFrame(() => {
+            cursorRafRef.current = null;
+            onLiveCursorMove?.(pendingCursorPosRef.current);
+            onCursorImagePosChange?.(pendingCursorPosRef.current);
+          });
+        }
         if (!SVG_OVERLAY_TOOLS.has(activeTool)) return;
         setBrushCursorPos({ x: cx, y: cy });
       }}
-      onPointerLeave={() => { setBrushCursorPos(null); setEyedropperColor(null); onLiveCursorMove?.(null); onCursorImagePosChange?.(null); }}
+      onPointerLeave={() => {
+        setBrushCursorPos(null);
+        setEyedropperColor(null);
+        if (cursorRafRef.current !== null) {
+          cancelAnimationFrame(cursorRafRef.current);
+          cursorRafRef.current = null;
+        }
+        pendingCursorPosRef.current = null;
+        onLiveCursorMove?.(null);
+        onCursorImagePosChange?.(null);
+      }}
     >
       {containerSize.width > 0 && (
         <Stage
