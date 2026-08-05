@@ -17,6 +17,7 @@ import {
   type RenderNode, type ClipRun,
 } from './layerTree';
 import { layoutText } from './textLayout';
+import { screenToImage, imageToScreen } from './canvasCoords';
 import { reflowRunsForContent } from './textRuns';
 import { swalToast } from '../../lib/swalTheme';
 import { getOrCreateCanvasFor, deleteCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
@@ -886,7 +887,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     zoomTo(nextScale: number) {
       const clamped = clampScale(nextScale);
       const cx = containerSize.width / 2, cy = containerSize.height / 2;
-      const pointTo = { x: (cx - pos.x) / scale, y: (cy - pos.y) / scale };
+      const pointTo = screenToImage(cx, cy, { scale, pos });
       setScale(clamped);
       setPos({ x: cx - pointTo.x * clamped, y: cy - pointTo.y * clamped });
     },
@@ -1108,8 +1109,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const el = stageRef.current?.container();
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const clientX = rect.left + pagePos.x * scale + pos.x;
-      const clientY = rect.top + pagePos.y * scale + pos.y;
+      const screenPoint = imageToScreen(pagePos.x, pagePos.y, { scale, pos });
+      const clientX = rect.left + screenPoint.x;
+      const clientY = rect.top + screenPoint.y;
       const type = kind === 'down' ? 'pointerdown' : kind === 'up' ? 'pointerup' : 'pointermove';
       el.dispatchEvent(new PointerEvent(type, {
         clientX, clientY, button, buttons: kind === 'up' ? 0 : 1,
@@ -1560,14 +1562,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return;
-    onAddTextLayer((pointer.x - pos.x) / scale, (pointer.y - pos.y) / scale);
+    const imagePoint = screenToImage(pointer.x, pointer.y, { scale, pos });
+    onAddTextLayer(imagePoint.x, imagePoint.y);
   };
 
   const imageSpacePointer = (): { x: number; y: number } | null => {
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
     if (!stage || !pointer) return null;
-    return { x: (pointer.x - pos.x) / scale, y: (pointer.y - pos.y) / scale };
+    return screenToImage(pointer.x, pointer.y, { scale, pos });
   };
 
   /** Right-click handler for the whole Stage — opens the selection context menu when a selection
@@ -2145,6 +2148,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   };
 
   const editingLayer = editingLayerId ? findLayer(layers, editingLayerId) ?? null : null;
+  const editingTextScreenPos = editingLayer?.text
+    ? imageToScreen(editingLayer.text.x, editingLayer.text.y, { scale, pos })
+    : null;
 
   /**
    * The Select tool's drag-a-box-over-empty-canvas object marquee. Distinct from `selection`, which
@@ -2220,10 +2226,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const zoomFactor = 1.08;
     const newScale = clampScale(direction > 0 ? oldScale * zoomFactor : oldScale / zoomFactor);
 
-    const mousePointTo = {
-      x: (pointer.x - pos.x) / oldScale,
-      y: (pointer.y - pos.y) / oldScale,
-    };
+    const mousePointTo = screenToImage(pointer.x, pointer.y, { scale: oldScale, pos });
 
     setScale(newScale);
     setPos({
@@ -2262,10 +2265,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // two-finger drag — no distance change — pans by the center's movement instead of no-op'ing.
     const prevCenter = prevPinchCenterRef.current;
     prevPinchCenterRef.current = stagePoint;
-    const anchorWorld = {
-      x: (prevCenter.x - pos.x) / oldScale,
-      y: (prevCenter.y - pos.y) / oldScale,
-    };
+    const anchorWorld = screenToImage(prevCenter.x, prevCenter.y, { scale: oldScale, pos });
     setScale(newScale);
     setPos({
       x: stagePoint.x - anchorWorld.x * newScale,
@@ -2316,7 +2316,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // Clone/Heal's sample source, converted from image space to container px the same way
   // imageSpacePointer's own inverse would — kept as a plain derived value (not state) so it always
   // reflects the current pos/scale even if either changes without a new alt-click.
-  const cloneSourceContainerPos = cloneSourceImg ? { x: cloneSourceImg.x * scale + pos.x, y: cloneSourceImg.y * scale + pos.y } : null;
+  const cloneSourceContainerPos = cloneSourceImg ? imageToScreen(cloneSourceImg.x, cloneSourceImg.y, { scale, pos }) : null;
 
   /**
    * Renders a layer list (bottom-to-top) as nested Konva Groups.
@@ -2631,7 +2631,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         if (!rect) return;
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
-        pendingCursorPosRef.current = { x: (cx - pos.x) / scale, y: (cy - pos.y) / scale };
+        pendingCursorPosRef.current = screenToImage(cx, cy, { scale, pos });
         if (cursorRafRef.current === null) {
           cursorRafRef.current = requestAnimationFrame(() => {
             cursorRafRef.current = null;
@@ -3131,8 +3131,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             // changes only the rendered size, not the computed font-size the browser's heuristic
             // reads, so tapping into a small bubble at a zoomed-out view no longer yanks the whole
             // page's viewport zoom to somewhere else on screen.
-            top: pos.y + editingLayer.text.y * scale,
-            left: pos.x + editingLayer.text.x * scale,
+            top: editingTextScreenPos!.y,
+            left: editingTextScreenPos!.x,
             width: editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width,
             fontSize: editingLayer.text.fontSize,
             fontFamily: editingLayer.text.fontFamily,
@@ -3151,10 +3151,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         const t = editingLayer.text!;
         const w = t.autoWidth ? layoutText(t).width : t.width;
         const h = t.autoWidth ? layoutText(t).height : (t.fixedHeight ?? layoutText(t).height);
+        const boxScreenPos = imageToScreen(t.x, t.y, { scale, pos });
         return (
           <FloatingTextToolbar
             text={t}
-            boxScreenRect={{ left: pos.x + t.x * scale, top: pos.y + t.y * scale, width: w * scale, height: h * scale }}
+            boxScreenRect={{ left: boxScreenPos.x, top: boxScreenPos.y, width: w * scale, height: h * scale }}
             containerHeight={containerSize.height}
             fontFamilies={fontFamilies}
             onUpdate={(patch) => onUpdateTextLayer(editingLayer.id, patch)}
