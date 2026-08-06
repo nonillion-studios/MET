@@ -9,6 +9,7 @@ import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
 import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
 import { exportDesignImage } from './exportDesignImage';
+import { useDesignHistory } from './useDesignHistory';
 import { swalToast } from '../lib/swalTheme';
 
 /**
@@ -21,6 +22,7 @@ import { swalToast } from '../lib/swalTheme';
  */
 export function DesignMode() {
   const store = useDesignModeStore();
+  const history = useDesignHistory();
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasHandleRef = useRef<DesignCanvasHandle | null>(null);
   const addImageInputRef = useRef<HTMLInputElement>(null);
@@ -76,9 +78,29 @@ export function DesignMode() {
     if (id && store.activeImageId) store.setActiveLayerId(store.activeImageId, id);
   }, [store]);
 
+  // The single choke point every layer mutation flows through — from LayersPanel's discrete
+  // handlers below and from DesignCanvas's paint/text/drag/transform/place-image/duplicate calls
+  // alike — so snapshotting for undo here covers all of them at once. pushHistory's own coalescing
+  // window (see useDesignHistory.ts) collapses a paint stroke's or a typing burst's many rapid calls
+  // into one undo step without needing separate gesture-start/end signals threaded through the
+  // canvas.
   const handleUpdateLayers = useCallback((updater: Parameters<typeof store.updateImageLayers>[1]) => {
-    if (store.activeImageId) store.updateImageLayers(store.activeImageId, updater);
-  }, [store]);
+    if (!store.activeImageId) return;
+    if (store.activeImage) history.pushHistory(store.activeImageId, store.activeImage.layers);
+    store.updateImageLayers(store.activeImageId, updater);
+  }, [store, history]);
+
+  const handleUndo = useCallback(() => {
+    if (!store.activeImageId || !store.activeImage) return;
+    const restored = history.undo(store.activeImageId, store.activeImage.layers);
+    if (restored) store.updateImageLayers(store.activeImageId, () => restored);
+  }, [store, history]);
+
+  const handleRedo = useCallback(() => {
+    if (!store.activeImageId || !store.activeImage) return;
+    const restored = history.redo(store.activeImageId, store.activeImage.layers);
+    if (restored) store.updateImageLayers(store.activeImageId, () => restored);
+  }, [store, history]);
 
   const addLayer = useCallback((layer: StudioLayer) => {
     handleUpdateLayers(layers => [...layers, layer]);
@@ -150,10 +172,10 @@ export function DesignMode() {
         onNewCanvas={store.openNewCanvasDialog}
         onAddImage={() => addImageInputRef.current?.click()}
         onExport={handleExport}
-        canUndo={false}
-        canRedo={false}
-        onUndo={() => {}}
-        onRedo={() => {}}
+        canUndo={history.canUndo(store.activeImageId)}
+        canRedo={history.canRedo(store.activeImageId)}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
         zoomPercent={zoomPercent}
         onFitZoom={() => canvasHandleRef.current?.fit()}
         isFullscreen={isFullscreen}
