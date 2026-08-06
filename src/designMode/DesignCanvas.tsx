@@ -6,7 +6,8 @@ import { createTextLayer } from '../components/studio/studioTypes';
 import { TextLayerNode } from '../components/studio/TextLayerNode';
 import { PlacedImageLayerNode } from '../components/studio/PlacedImageLayerNode';
 import { layoutText } from '../components/studio/textLayout';
-import { getOrCreateCanvasFor, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
+import { getOrCreateCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
+import { cloneSubtree } from '../components/studio/layerTree';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
 import type { DesignImage } from './designModeStore';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
@@ -23,6 +24,7 @@ export interface DesignCanvasHandle {
   fit: () => void;
   getZoom: () => number;
   placeImageFile: (file: File) => Promise<void>;
+  duplicateLayer: (layerId: string) => void;
 }
 
 interface DesignCanvasProps {
@@ -210,6 +212,22 @@ export function DesignCanvas({
     onRequestToolChange?.('select');
   }, [image, onUpdateLayers, onSelectLayer, onRequestToolChange]);
 
+  // ── Duplicate ───────────────────────────────────────────────────────────────────────────────
+  // Layer array mutation alone (cloneSubtree) isn't enough — pixel-backed layers (paint/placed-image)
+  // need their registry canvas cloned too, via clonePaintCanvas, or the copy starts out blank.
+  const duplicateLayer = useCallback((layerId: string) => {
+    if (!image) return;
+    const source = image.layers.find(l => l.id === layerId);
+    if (!source) return;
+    const { copy, idMap } = cloneSubtree(source);
+    for (const [fromId, toId] of idMap) clonePaintCanvas(paintRegistry.current, fromId, toId);
+    onUpdateLayers(prev => {
+      const i = prev.findIndex(l => l.id === layerId);
+      return i === -1 ? [...prev, copy] : [...prev.slice(0, i + 1), copy, ...prev.slice(i + 1)];
+    });
+    onSelectLayer(copy.id, 'replace');
+  }, [image, onUpdateLayers, onSelectLayer]);
+
   useEffect(() => {
     if (!canvasHandleRef) return;
     canvasHandleRef.current = {
@@ -218,8 +236,9 @@ export function DesignCanvas({
       fit,
       getZoom: () => scale,
       placeImageFile: handlePlaceImageFile,
+      duplicateLayer,
     };
-  }, [canvasHandleRef, fit, scale, handlePlaceImageFile]);
+  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();

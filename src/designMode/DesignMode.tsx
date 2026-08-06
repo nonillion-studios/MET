@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ToolRail } from '../components/studio/ToolRail';
+import { LayersPanel } from '../components/studio/LayersPanel';
+import { createLayer, createAdjustmentLayer, type LayerSelectMode, type AdjustmentKind, type StudioLayer } from '../components/studio/studioTypes';
+import { moveWithinParent } from '../components/studio/layerTree';
 import { useDesignModeStore } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
 import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
-import type { LayerSelectMode } from '../components/studio/studioTypes';
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -24,6 +26,7 @@ export function DesignMode() {
   const [activeTool, setActiveTool] = useState('select');
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [zoomPercent, setZoomPercent] = useState(100);
+  const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
 
   useEffect(() => {
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
@@ -69,6 +72,67 @@ export function DesignMode() {
     if (store.activeImageId) store.updateImageLayers(store.activeImageId, updater);
   }, [store]);
 
+  const addLayer = useCallback((layer: StudioLayer) => {
+    handleUpdateLayers(layers => [...layers, layer]);
+    handleSelectLayer(layer.id, 'replace');
+  }, [handleUpdateLayers, handleSelectLayer]);
+
+  const handleAdd = useCallback(() => {
+    addLayer(createLayer('clean-patch', `Layer ${(store.activeImage?.layers.length ?? 0) + 1}`));
+  }, [addLayer, store.activeImage]);
+
+  // Design Mode has no background-copy seeding step to skip (unlike Studio's handleAddLayer, which
+  // copies the page image into new layers by default) — a plain new layer is already blank, so
+  // Add and Alt-click-Add are the same action here.
+  const handleAddBlank = handleAdd;
+
+  const handleAddAdjustmentOfKind = useCallback((kind: AdjustmentKind) => {
+    addLayer(createAdjustmentLayer(kind));
+  }, [addLayer]);
+
+  const handleToggleVisible = useCallback((id: string) => {
+    handleUpdateLayers(layers => layers.map(l => (l.id === id ? { ...l, visible: !l.visible } : l)));
+  }, [handleUpdateLayers]);
+
+  const handleToggleLocked = useCallback((id: string) => {
+    handleUpdateLayers(layers => layers.map(l => (l.id === id ? { ...l, locked: !l.locked } : l)));
+  }, [handleUpdateLayers]);
+
+  const handleOpacityChange = useCallback((id: string, opacity: number) => {
+    handleUpdateLayers(layers => layers.map(l => (l.id === id ? { ...l, opacity } : l)));
+  }, [handleUpdateLayers]);
+
+  const handleBlendChange = useCallback((id: string, blendMode: StudioLayer['blendMode']) => {
+    handleUpdateLayers(layers => layers.map(l => (l.id === id ? { ...l, blendMode } : l)));
+  }, [handleUpdateLayers]);
+
+  const handleRename = useCallback((id: string, name: string) => {
+    handleUpdateLayers(layers => layers.map(l => (l.id === id ? { ...l, name } : l)));
+  }, [handleUpdateLayers]);
+
+  const handleDelete = useCallback((id: string) => {
+    handleUpdateLayers(layers => layers.filter(l => l.id !== id));
+    setSelectedLayerIds(prev => prev.filter(x => x !== id));
+  }, [handleUpdateLayers]);
+
+  const handleDeleteMany = useCallback((ids: string[]) => {
+    const idSet = new Set(ids);
+    handleUpdateLayers(layers => layers.filter(l => !idSet.has(l.id)));
+    setSelectedLayerIds(prev => prev.filter(x => !idSet.has(x)));
+  }, [handleUpdateLayers]);
+
+  const handleMove = useCallback((id: string, direction: 'up' | 'down') => {
+    handleUpdateLayers(layers => moveWithinParent(layers, id, direction));
+  }, [handleUpdateLayers]);
+
+  const handleDuplicate = useCallback((id: string) => {
+    canvasHandleRef.current?.duplicateLayer(id);
+  }, []);
+
+  const handleConvertBackgroundToLayer = useCallback((name: string) => {
+    handleUpdateLayers(layers => layers.map(l => (l.isBackground ? { ...l, isBackground: false, locked: false, name } : l)));
+  }, [handleUpdateLayers]);
+
   return (
     <div ref={rootRef} className="flex flex-col w-full h-full overflow-hidden bg-[var(--color-surface)]">
       <DesignModeTopBar
@@ -109,6 +173,31 @@ export function DesignMode() {
           onRequestToolChange={setActiveTool}
           canvasHandleRef={canvasHandleRef}
         />
+        {store.activeImage && (
+          <div className="w-72 shrink-0 border-l border-hairline overflow-y-auto">
+            <LayersPanel
+              layers={store.activeImage.layers}
+              activeLayerId={store.activeImage.activeLayerId}
+              selectedLayerIds={selectedLayerIds}
+              onSelect={handleSelectLayer}
+              onToggleVisible={handleToggleVisible}
+              onToggleLocked={handleToggleLocked}
+              onOpacityChange={handleOpacityChange}
+              onBlendChange={handleBlendChange}
+              onAdd={handleAdd}
+              onAddBlank={handleAddBlank}
+              onAddAdjustmentOfKind={handleAddAdjustmentOfKind}
+              onDuplicate={handleDuplicate}
+              onDelete={handleDelete}
+              onDeleteMany={handleDeleteMany}
+              onRename={handleRename}
+              onMove={handleMove}
+              onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
+              expandedLayerId={expandedLayerId}
+              onToggleExpanded={(id) => setExpandedLayerId(prev => (prev === id ? null : id))}
+            />
+          </div>
+        )}
       </div>
 
       <input
