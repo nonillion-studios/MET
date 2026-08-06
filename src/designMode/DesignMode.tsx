@@ -19,6 +19,7 @@ export function DesignMode() {
   const store = useDesignModeStore();
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasHandleRef = useRef<DesignCanvasHandle | null>(null);
+  const addImageInputRef = useRef<HTMLInputElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeTool, setActiveTool] = useState('select');
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
@@ -75,7 +76,7 @@ export function DesignMode() {
         hasUnsavedChanges={false}
         onRenameActiveImage={(name) => { if (store.activeImageId) store.renameImage(store.activeImageId, name); }}
         onNewCanvas={store.openNewCanvasDialog}
-        onAddImage={() => {}}
+        onAddImage={() => addImageInputRef.current?.click()}
         onExport={handleExport}
         canUndo={false}
         canRedo={false}
@@ -105,9 +106,22 @@ export function DesignMode() {
           onUpdateLayers={handleUpdateLayers}
           onZoomChange={setZoomPercent}
           onFillBackgroundConsumed={() => { if (store.activeImageId) store.clearPendingBackgroundFill(store.activeImageId); }}
+          onRequestToolChange={setActiveTool}
           canvasHandleRef={canvasHandleRef}
         />
       </div>
+
+      <input
+        ref={addImageInputRef}
+        type="file"
+        accept=".jpg,.jpeg,.png,.webp,.gif,.svg,.psd,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void canvasHandleRef.current?.placeImageFile(file);
+          e.target.value = '';
+        }}
+      />
 
       <NewCanvasDialog
         open={store.showNewCanvasDialog}

@@ -9,6 +9,7 @@ import { layoutText } from '../components/studio/textLayout';
 import { getOrCreateCanvasFor, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
 import type { DesignImage } from './designModeStore';
+import { placeRasterImageFile, placePsdFile } from './placeImage';
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 8;
@@ -21,6 +22,7 @@ export interface DesignCanvasHandle {
   zoomOut: () => void;
   fit: () => void;
   getZoom: () => number;
+  placeImageFile: (file: File) => Promise<void>;
 }
 
 interface DesignCanvasProps {
@@ -31,6 +33,7 @@ interface DesignCanvasProps {
   onUpdateLayers: (updater: (layers: StudioLayer[]) => StudioLayer[]) => void;
   onZoomChange?: (percent: number) => void;
   onFillBackgroundConsumed?: () => void;
+  onRequestToolChange?: (tool: string) => void;
   canvasHandleRef?: React.MutableRefObject<DesignCanvasHandle | null>;
 }
 
@@ -49,7 +52,7 @@ interface DesignCanvasProps {
  */
 export function DesignCanvas({
   image, activeTool, selectedLayerIds, onSelectLayer, onUpdateLayers, onZoomChange,
-  onFillBackgroundConsumed, canvasHandleRef,
+  onFillBackgroundConsumed, onRequestToolChange, canvasHandleRef,
 }: DesignCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -100,16 +103,6 @@ export function DesignCanvas({
   useEffect(() => { fit(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [image?.id, containerSize.width, containerSize.height]);
 
   useEffect(() => { onZoomChange?.(scale * 100); }, [scale, onZoomChange]);
-
-  useEffect(() => {
-    if (!canvasHandleRef) return;
-    canvasHandleRef.current = {
-      zoomIn: () => setScale(s => clampScale(s * 1.25)),
-      zoomOut: () => setScale(s => clampScale(s / 1.25)),
-      fit,
-      getZoom: () => scale,
-    };
-  }, [canvasHandleRef, fit, scale]);
 
   // ── Space+drag pan ──────────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -193,6 +186,50 @@ export function DesignCanvas({
     lastPaintPointRef.current = { x: imgX, y: imgY };
     paintNodeRefs.current[layer.id]?.getLayer()?.batchDraw();
   }, [image, activeTool]);
+
+  // ── Add Image (placed-image Smart Object, or PSD-as-layers) ────────────────────────────────────
+  const handlePlaceImageFile = useCallback(async (file: File) => {
+    if (!image) return;
+    if (file.name.toLowerCase().endsWith('.psd')) {
+      const { layers, rasters } = await placePsdFile(file, image.width, image.height);
+      for (const r of rasters) {
+        const canvas = getOrCreateCanvasFor(paintRegistry.current, r.layerId, image.width, image.height);
+        canvas.getContext('2d')!.drawImage(r.canvas, r.left, r.top);
+      }
+      onUpdateLayers(prev => [...prev, ...layers]);
+      const last = layers[layers.length - 1];
+      if (last) { onSelectLayer(last.id, 'replace'); }
+      onRequestToolChange?.('select');
+      return;
+    }
+    const { layer, image: img } = await placeRasterImageFile(file, image.width, image.height);
+    const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, layer.placedImage!.naturalWidth, layer.placedImage!.naturalHeight);
+    canvas.getContext('2d')!.drawImage(img, 0, 0);
+    onUpdateLayers(prev => [...prev, layer]);
+    onSelectLayer(layer.id, 'replace');
+    onRequestToolChange?.('select');
+  }, [image, onUpdateLayers, onSelectLayer, onRequestToolChange]);
+
+  useEffect(() => {
+    if (!canvasHandleRef) return;
+    canvasHandleRef.current = {
+      zoomIn: () => setScale(s => clampScale(s * 1.25)),
+      zoomOut: () => setScale(s => clampScale(s / 1.25)),
+      fit,
+      getZoom: () => scale,
+      placeImageFile: handlePlaceImageFile,
+    };
+  }, [canvasHandleRef, fit, scale, handlePlaceImageFile]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/') || f.name.toLowerCase().endsWith('.psd'));
+    for (const file of files) void handlePlaceImageFile(file);
+  }, [handlePlaceImageFile]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+  }, []);
 
   const isPaintTool = activeTool === 'brush' || activeTool === 'eraser';
 
@@ -283,7 +320,12 @@ export function DesignCanvas({
   const cursorClass = spaceDown ? 'cursor-grab' : activeTool === 'text' ? 'cursor-text' : isPaintTool ? 'cursor-crosshair' : 'cursor-default';
 
   return (
-    <div ref={containerRef} className={`relative flex-1 min-w-0 min-h-0 overflow-hidden bg-[#e5e7eb] dark:bg-[#151515] ${cursorClass}`}>
+    <div
+      ref={containerRef}
+      className={`relative flex-1 min-w-0 min-h-0 overflow-hidden bg-[#e5e7eb] dark:bg-[#151515] ${cursorClass}`}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+    >
       {image && containerSize.width > 0 && (
         <>
           <div
