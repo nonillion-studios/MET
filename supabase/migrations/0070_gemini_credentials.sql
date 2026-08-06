@@ -10,6 +10,11 @@
 -- sensitive and are stored as plain columns, like telegram_credentials'
 -- api_id/phone/etc.
 
+-- pgcrypto is already installed into the `extensions` schema on this project (Supabase's
+-- default), so this `create extension if not exists` is a no-op rather than putting it in
+-- `public` — every pgcrypto function call below is schema-qualified (or runs under a
+-- `search_path` that includes `extensions`) to actually resolve against it. Confirmed live via
+-- `select extnamespace::regnamespace from pg_extension where extname = 'pgcrypto'` -> extensions.
 create extension if not exists pgcrypto;
 
 create table if not exists public.ai_credentials (
@@ -51,7 +56,7 @@ alter table public.app_secrets enable row level security;
 revoke all on public.app_secrets from public, anon, authenticated;
 
 insert into public.app_secrets (key, value)
-select 'gemini_enc_key', encode(gen_random_bytes(32), 'base64')
+select 'gemini_enc_key', encode(extensions.gen_random_bytes(32), 'base64')
 where not exists (select 1 from public.app_secrets where key = 'gemini_enc_key');
 
 create or replace function public._gemini_enc_key()
@@ -72,7 +77,7 @@ create or replace function public._gemini_session_key(p_user_id uuid)
 returns text
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_email text;
@@ -92,7 +97,7 @@ create or replace function public.rpc_set_gemini_key(p_key text)
 returns void
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_key text;
@@ -119,7 +124,7 @@ create or replace function public.rpc_get_gemini_key()
 returns text
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_enc bytea;
