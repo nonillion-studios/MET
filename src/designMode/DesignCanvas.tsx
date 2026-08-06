@@ -1,0 +1,402 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Stage, Layer as KonvaLayer, Image as KonvaImage, Transformer } from 'react-konva';
+import type Konva from 'konva';
+import type { StudioLayer, LayerSelectMode, TextLayerData } from '../components/studio/studioTypes';
+import { createTextLayer } from '../components/studio/studioTypes';
+import { TextLayerNode } from '../components/studio/TextLayerNode';
+import { PlacedImageLayerNode } from '../components/studio/PlacedImageLayerNode';
+import { layoutText } from '../components/studio/textLayout';
+import { getOrCreateCanvasFor, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
+import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
+import type { DesignImage } from './designModeStore';
+
+const MIN_SCALE = 0.05;
+const MAX_SCALE = 8;
+const clampScale = (s: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
+const BRUSH_COLOR = '#000000';
+const BRUSH_SIZE = 14;
+
+export interface DesignCanvasHandle {
+  zoomIn: () => void;
+  zoomOut: () => void;
+  fit: () => void;
+  getZoom: () => number;
+}
+
+interface DesignCanvasProps {
+  image: DesignImage | null;
+  activeTool: string;
+  selectedLayerIds: string[];
+  onSelectLayer: (id: string | null, mode?: LayerSelectMode) => void;
+  onUpdateLayers: (updater: (layers: StudioLayer[]) => StudioLayer[]) => void;
+  onZoomChange?: (percent: number) => void;
+  onFillBackgroundConsumed?: () => void;
+  canvasHandleRef?: React.MutableRefObject<DesignCanvasHandle | null>;
+}
+
+/**
+ * Design Mode's own Konva Stage. Reuses TextLayerNode/PlacedImageLayerNode as-is (both are already
+ * fully generic, no Studio-specific coupling) for rendering + the shared Transformer pattern for
+ * Free Transform, and Studio's own canvasCoords.ts (screenToImage/imageToScreen) for pan/zoom pointer
+ * math. Owns its own paint-canvas registry (paint layer + placed-image pixels live out-of-band, via
+ * Studio's own generic paintCanvasRegistry.ts helpers) since that registry doesn't exist anywhere
+ * else for Design Mode to share.
+ *
+ * Implements the "focused subset" of tools this pass: Select/Move, Free Transform (automatic on
+ * selecting text/placed-image, matching Studio), Text, and a minimal Brush/Eraser. Marquee/lasso/
+ * gradient/crop/eyedropper/clone/healing are not implemented — selecting one of those tools from the
+ * (reused, unforked) ToolRail simply has no effect on this canvas.
+ */
+export function DesignCanvas({
+  image, activeTool, selectedLayerIds, onSelectLayer, onUpdateLayers, onZoomChange,
+  onFillBackgroundConsumed, canvasHandleRef,
+}: DesignCanvasProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<Konva.Stage>(null);
+  const transformerRef = useRef<Konva.Transformer>(null);
+  const textNodeRefs = useRef<Record<string, Konva.Group | null>>({});
+  const placedImageNodeRefs = useRef<Record<string, Konva.Image | null>>({});
+  const paintNodeRefs = useRef<Record<string, Konva.Image | null>>({});
+  const paintRegistry = useRef<PaintCanvasRegistry>({});
+
+  const [scale, setScale] = useState(1);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [spaceDown, setSpaceDown] = useState(false);
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const isPaintingRef = useRef(false);
+  const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
+  const textClickPendingRef = useRef(false);
+
+  const viewport: CanvasViewport = { scale, pos };
+
+  // ── Container sizing ────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      setContainerSize({ width: el.clientWidth, height: el.clientHeight });
+    });
+    observer.observe(el);
+    setContainerSize({ width: el.clientWidth, height: el.clientHeight });
+    return () => observer.disconnect();
+  }, []);
+
+  // ── Fit-to-screen whenever the active image changes ────────────────────────────────────────────
+  const fit = useCallback(() => {
+    if (!image || containerSize.width === 0 || containerSize.height === 0) return;
+    const pad = 40;
+    const s = clampScale(Math.min(
+      (containerSize.width - pad * 2) / image.width,
+      (containerSize.height - pad * 2) / image.height,
+    ));
+    setScale(s);
+    setPos({
+      x: (containerSize.width - image.width * s) / 2,
+      y: (containerSize.height - image.height * s) / 2,
+    });
+  }, [image, containerSize]);
+
+  useEffect(() => { fit(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [image?.id, containerSize.width, containerSize.height]);
+
+  useEffect(() => { onZoomChange?.(scale * 100); }, [scale, onZoomChange]);
+
+  useEffect(() => {
+    if (!canvasHandleRef) return;
+    canvasHandleRef.current = {
+      zoomIn: () => setScale(s => clampScale(s * 1.25)),
+      zoomOut: () => setScale(s => clampScale(s / 1.25)),
+      fit,
+      getZoom: () => scale,
+    };
+  }, [canvasHandleRef, fit, scale]);
+
+  // ── Space+drag pan ──────────────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) setSpaceDown(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceDown(false); };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
+  }, []);
+
+  const panStateRef = useRef<{ startClientX: number; startClientY: number; startPos: { x: number; y: number } } | null>(null);
+
+  // ── Wheel zoom ──────────────────────────────────────────────────────────────────────────────
+  const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
+    e.evt.preventDefault();
+    const stage = stageRef.current;
+    const pointer = stage?.getPointerPosition();
+    if (!stage || !pointer) return;
+    const oldScale = scale;
+    const direction = e.evt.deltaY > 0 ? -1 : 1;
+    const zoomFactor = 1.08;
+    const newScale = clampScale(direction > 0 ? oldScale * zoomFactor : oldScale / zoomFactor);
+    const pointTo = screenToImage(pointer.x, pointer.y, { scale: oldScale, pos });
+    setScale(newScale);
+    setPos({ x: pointer.x - pointTo.x * newScale, y: pointer.y - pointTo.y * newScale });
+  }, [scale, pos]);
+
+  // ── Free Transform: bind the shared Transformer to selected text/placed-image nodes ───────────
+  useEffect(() => {
+    const transformer = transformerRef.current;
+    if (!transformer) return;
+    const nodes: Konva.Node[] = activeTool === 'select' && !editingLayerId
+      ? selectedLayerIds.flatMap((id): Konva.Node[] => {
+          const textNode = textNodeRefs.current[id];
+          const placedImageNode = placedImageNodeRefs.current[id];
+          return textNode ? [textNode] : placedImageNode ? [placedImageNode] : [];
+        })
+      : [];
+    transformer.nodes(nodes);
+    transformer.getLayer()?.batchDraw();
+  }, [selectedLayerIds, activeTool, editingLayerId, image?.layers]);
+
+  // ── Background fill (from the New Canvas dialog's white/black choice) ─────────────────────────
+  useEffect(() => {
+    if (!image?.pendingBackgroundFill) return;
+    const bgLayer = image.layers.find(l => l.isBackground);
+    if (!bgLayer) { onFillBackgroundConsumed?.(); return; }
+    const canvas = getOrCreateCanvasFor(paintRegistry.current, bgLayer.id, image.width, image.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = image.pendingBackgroundFill === 'white' ? '#ffffff' : '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    paintNodeRefs.current[bgLayer.id]?.getLayer()?.batchDraw();
+    onFillBackgroundConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [image?.id, image?.pendingBackgroundFill]);
+
+  // ── Brush / Eraser ──────────────────────────────────────────────────────────────────────────
+  const paintAt = useCallback((imgX: number, imgY: number) => {
+    if (!image?.activeLayerId) return;
+    const layer = image.layers.find(l => l.id === image.activeLayerId);
+    if (!layer || layer.type !== 'clean-patch' || layer.locked) return;
+    const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, image.width, image.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = BRUSH_SIZE;
+    if (activeTool === 'eraser') {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = BRUSH_COLOR;
+    }
+    const last = lastPaintPointRef.current;
+    ctx.beginPath();
+    if (last) { ctx.moveTo(last.x, last.y); ctx.lineTo(imgX, imgY); }
+    else { ctx.moveTo(imgX, imgY); ctx.lineTo(imgX, imgY); }
+    ctx.stroke();
+    lastPaintPointRef.current = { x: imgX, y: imgY };
+    paintNodeRefs.current[layer.id]?.getLayer()?.batchDraw();
+  }, [image, activeTool]);
+
+  const isPaintTool = activeTool === 'brush' || activeTool === 'eraser';
+
+  const handleStagePointerDown = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
+    if (spaceDown) {
+      panStateRef.current = { startClientX: e.evt.clientX, startClientY: e.evt.clientY, startPos: pos };
+      return;
+    }
+    if (activeTool === 'text') {
+      // Text layer creation itself happens on pointerUP, not here — creating it (and focusing its
+      // editing textarea) on pointerDOWN loses the race against the browser's own native default
+      // action for mousedown, which blurs whatever's focused when the pressed target isn't
+      // focusable (the Konva canvas isn't). Studio's own StudioCanvas.tsx text tool has the exact
+      // same split for the exact same reason (stash on down, create on up) — mirrored here.
+      const targetClass = e.target.getClassName?.();
+      const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
+      if (!onEmpty || !image) return;
+      textClickPendingRef.current = true;
+      return;
+    }
+    if (isPaintTool && image) {
+      const targetClass = e.target.getClassName?.();
+      const onImage = e.target === e.target.getStage() || targetClass === 'Image';
+      if (!onImage) return;
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      isPaintingRef.current = true;
+      lastPaintPointRef.current = null;
+      const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
+      paintAt(imgPoint.x, imgPoint.y);
+      return;
+    }
+    if (activeTool === 'select') {
+      const targetClass = e.target.getClassName?.();
+      const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
+      if (onEmpty) onSelectLayer(null);
+    }
+  }, [spaceDown, pos, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paintAt]);
+
+  const handleStagePointerMove = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
+    if (panStateRef.current) {
+      const dx = e.evt.clientX - panStateRef.current.startClientX;
+      const dy = e.evt.clientY - panStateRef.current.startClientY;
+      setPos({ x: panStateRef.current.startPos.x + dx, y: panStateRef.current.startPos.y + dy });
+      return;
+    }
+    if (isPaintingRef.current && isPaintTool) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
+      paintAt(imgPoint.x, imgPoint.y);
+    }
+  }, [viewport, isPaintTool, paintAt]);
+
+  const handleStagePointerUp = useCallback(() => {
+    panStateRef.current = null;
+    isPaintingRef.current = false;
+    lastPaintPointRef.current = null;
+    if (textClickPendingRef.current) {
+      textClickPendingRef.current = false;
+      if (image) {
+        const stage = stageRef.current;
+        const pointer = stage?.getPointerPosition();
+        if (pointer) {
+          const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
+          const layer = createTextLayer(imgPoint.x, imgPoint.y);
+          onUpdateLayers(layers => [...layers, layer]);
+          onSelectLayer(layer.id, 'replace');
+          setEditingLayerId(layer.id);
+        }
+      }
+    }
+  }, [image, viewport, onUpdateLayers, onSelectLayer]);
+
+  const updateLayerPatch = useCallback((layerId: string, patch: Partial<StudioLayer>) => {
+    onUpdateLayers(layers => layers.map(l => (l.id === layerId ? { ...l, ...patch } : l)));
+  }, [onUpdateLayers]);
+
+  const updateTextLayer = useCallback((layerId: string, patch: Partial<TextLayerData>) => {
+    onUpdateLayers(layers => layers.map(l => (l.id === layerId && l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l)));
+  }, [onUpdateLayers]);
+
+  const editingLayer = editingLayerId ? image?.layers.find(l => l.id === editingLayerId) ?? null : null;
+  const editingTextScreenPos = editingLayer?.text ? imageToScreen(editingLayer.text.x, editingLayer.text.y, viewport) : null;
+
+  const cursorClass = spaceDown ? 'cursor-grab' : activeTool === 'text' ? 'cursor-text' : isPaintTool ? 'cursor-crosshair' : 'cursor-default';
+
+  return (
+    <div ref={containerRef} className={`relative flex-1 min-w-0 min-h-0 overflow-hidden bg-[#e5e7eb] dark:bg-[#151515] ${cursorClass}`}>
+      {image && containerSize.width > 0 && (
+        <>
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              left: pos.x, top: pos.y, width: image.width * scale, height: image.height * scale,
+              backgroundImage: 'linear-gradient(45deg, #9ca3af 25%, transparent 25%), linear-gradient(-45deg, #9ca3af 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #9ca3af 75%), linear-gradient(-45deg, transparent 75%, #9ca3af 75%)',
+              backgroundSize: '16px 16px',
+              backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0',
+              boxShadow: '0 4px 24px rgba(0,0,0,0.25)',
+            }}
+          />
+          <Stage
+            ref={stageRef}
+            width={containerSize.width}
+            height={containerSize.height}
+            scaleX={scale}
+            scaleY={scale}
+            x={pos.x}
+            y={pos.y}
+            onWheel={handleWheel}
+            onPointerDown={handleStagePointerDown}
+            onPointerMove={handleStagePointerMove}
+            onPointerUp={handleStagePointerUp}
+          >
+            <KonvaLayer>
+              {image.layers.map(layer => {
+                if (!layer.visible) return null;
+                if (layer.type === 'text' && layer.text) {
+                  return (
+                    <TextLayerNode
+                      key={layer.id}
+                      layer={layer}
+                      groupRef={(node) => { textNodeRefs.current[layer.id] = node; }}
+                      editing={layer.id === editingLayerId}
+                      selected={selectedLayerIds.includes(layer.id)}
+                      draggable={activeTool === 'select' && !layer.locked}
+                      onSelect={(mode) => onSelectLayer(layer.id, mode)}
+                      onEdit={() => setEditingLayerId(layer.id)}
+                      onUpdate={(patch) => updateTextLayer(layer.id, patch)}
+                      scale={scale}
+                    />
+                  );
+                }
+                if (layer.type === 'placed-image' && layer.placedImage) {
+                  const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, layer.placedImage.naturalWidth, layer.placedImage.naturalHeight);
+                  return (
+                    <PlacedImageLayerNode
+                      key={layer.id}
+                      data={layer.placedImage}
+                      canvas={canvas}
+                      nodeRef={(node) => { placedImageNodeRefs.current[layer.id] = node; }}
+                      draggable={activeTool === 'select' && !layer.locked}
+                      onSelect={(mode) => onSelectLayer(layer.id, mode)}
+                      onUpdate={(patch) => updateLayerPatch(layer.id, { placedImage: { ...layer.placedImage!, ...patch } })}
+                    />
+                  );
+                }
+                if (layer.type === 'clean-patch') {
+                  const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, image.width, image.height);
+                  return (
+                    <KonvaImage
+                      key={layer.id}
+                      ref={(node) => { paintNodeRefs.current[layer.id] = node; }}
+                      image={canvas}
+                      width={image.width}
+                      height={image.height}
+                      opacity={layer.opacity}
+                      listening={false}
+                    />
+                  );
+                }
+                return null;
+              })}
+              <Transformer
+                ref={transformerRef}
+                keepRatio={false}
+                rotateEnabled
+                anchorSize={9}
+                borderStroke="#38bdf8"
+                anchorStroke="#38bdf8"
+                anchorFill="#ffffff"
+              />
+            </KonvaLayer>
+          </Stage>
+
+          {editingLayer?.text && editingTextScreenPos && (
+            <textarea
+              autoFocus
+              value={editingLayer.text.content}
+              onChange={(e) => updateTextLayer(editingLayer.id, { content: e.target.value })}
+              onBlur={() => setEditingLayerId(null)}
+              onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
+              className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
+              style={{
+                top: editingTextScreenPos.y,
+                left: editingTextScreenPos.x,
+                width: editingLayer.text.autoWidth ? Math.max(40, layoutText(editingLayer.text).width) : editingLayer.text.width,
+                fontSize: editingLayer.text.fontSize,
+                fontFamily: editingLayer.text.fontFamily,
+                fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
+                fontStyle: editingLayer.text.italic ? 'italic' : 'normal',
+                lineHeight: editingLayer.text.lineHeight,
+                color: editingLayer.text.color,
+                textAlign: editingLayer.text.align,
+                transform: `scale(${scale})`,
+                transformOrigin: 'top left',
+                zIndex: 20,
+              }}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}

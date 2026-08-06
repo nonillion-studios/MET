@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ToolRail } from '../components/studio/ToolRail';
 import { useDesignModeStore } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
+import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
+import type { LayerSelectMode } from '../components/studio/studioTypes';
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -15,7 +18,11 @@ import { DesignImageTabs } from './DesignImageTabs';
 export function DesignMode() {
   const store = useDesignModeStore();
   const rootRef = useRef<HTMLDivElement>(null);
+  const canvasHandleRef = useRef<DesignCanvasHandle | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [activeTool, setActiveTool] = useState('select');
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
+  const [zoomPercent, setZoomPercent] = useState(100);
 
   useEffect(() => {
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
@@ -44,6 +51,23 @@ export function DesignMode() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Clear stale selection when the active image changes — a layer id from a different image's tree
+  // must never leak into the new image's selection/Transformer binding.
+  useEffect(() => { setSelectedLayerIds([]); }, [store.activeImageId]);
+
+  const handleSelectLayer = useCallback((id: string | null, mode: LayerSelectMode = 'replace') => {
+    setSelectedLayerIds(prev => {
+      if (id === null) return [];
+      if (mode === 'toggle') return prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      return [id];
+    });
+    if (id && store.activeImageId) store.setActiveLayerId(store.activeImageId, id);
+  }, [store]);
+
+  const handleUpdateLayers = useCallback((updater: Parameters<typeof store.updateImageLayers>[1]) => {
+    if (store.activeImageId) store.updateImageLayers(store.activeImageId, updater);
+  }, [store]);
+
   return (
     <div ref={rootRef} className="flex flex-col w-full h-full overflow-hidden bg-[var(--color-surface)]">
       <DesignModeTopBar
@@ -57,8 +81,8 @@ export function DesignMode() {
         canRedo={false}
         onUndo={() => {}}
         onRedo={() => {}}
-        zoomPercent={100}
-        onFitZoom={() => {}}
+        zoomPercent={zoomPercent}
+        onFitZoom={() => canvasHandleRef.current?.fit()}
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
       />
@@ -71,8 +95,18 @@ export function DesignMode() {
         onNewCanvas={store.openNewCanvasDialog}
       />
 
-      <div className="flex-1 flex items-center justify-center text-ink-muted text-sm" data-testid="design-mode-placeholder">
-        Design Mode {store.images.length > 0 ? `— ${store.images.length} image(s)` : '(no images yet)'}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
+        <DesignCanvas
+          image={store.activeImage}
+          activeTool={activeTool}
+          selectedLayerIds={selectedLayerIds}
+          onSelectLayer={handleSelectLayer}
+          onUpdateLayers={handleUpdateLayers}
+          onZoomChange={setZoomPercent}
+          onFillBackgroundConsumed={() => { if (store.activeImageId) store.clearPendingBackgroundFill(store.activeImageId); }}
+          canvasHandleRef={canvasHandleRef}
+        />
       </div>
 
       <NewCanvasDialog
