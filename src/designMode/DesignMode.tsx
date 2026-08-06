@@ -3,7 +3,8 @@ import { ToolRail } from '../components/studio/ToolRail';
 import { LayersPanel } from '../components/studio/LayersPanel';
 import { createLayer, createAdjustmentLayer, type LayerSelectMode, type AdjustmentKind, type StudioLayer } from '../components/studio/studioTypes';
 import { moveWithinParent } from '../components/studio/layerTree';
-import { useDesignModeStore } from './designModeStore';
+import type { SerializedStudioLayer } from '../lib/studioProjectStore';
+import { useDesignModeStore, type DesignImage } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
@@ -11,7 +12,27 @@ import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
 import { exportDesignImage } from './exportDesignImage';
 import { useDesignHistory } from './useDesignHistory';
 import { useDesignShortcuts } from './useDesignShortcuts';
+import { loadAllDesignImageIds, loadDesignImage, saveDesignImage, deleteDesignImage } from './designModePersistence';
 import { swalToast } from '../lib/swalTheme';
+
+const SAVE_DEBOUNCE_MS = 1000;
+
+/** Strips `raster`/`maskRaster` back off a loaded SerializedStudioLayer tree — the live `StudioLayer`
+ *  the store holds carries no pixels of its own (those live in DesignCanvas's registry, restored
+ *  separately via loadSerializedCanvases). Recurses into `children` since a placed PSD can produce
+ *  real groups. */
+function stripRaster(layers: SerializedStudioLayer[]): StudioLayer[] {
+  return layers.map((l): StudioLayer => {
+    const { raster: _r, maskRaster: _m, children, ...rest } = l;
+    return { ...rest, ...(children ? { children: stripRaster(children) } : {}) } as StudioLayer;
+  });
+}
+
+/** Flattens a layer tree for the raster-restore pass (loadSerializedCanvases doesn't need tree
+ *  structure, just every layer that might carry a `raster`). */
+function flattenForRaster(layers: SerializedStudioLayer[]): SerializedStudioLayer[] {
+  return layers.flatMap(l => (l.children ? [l, ...flattenForRaster(l.children)] : [l]));
+}
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -57,14 +78,90 @@ export function DesignMode() {
     }
   }, [store.activeImage]);
 
-  // No persisted-image restore yet (that lands in Section 6, alongside the paint-canvas registry
-  // needed to redraw raster content) — so "zero images" is true on every fresh mount for now, and
-  // this fires every visit until then. Matches the spec literally either way: "Enter Design Mode
-  // with no existing images. New Canvas dialog appears automatically."
+  // ── Persistence ─────────────────────────────────────────────────────────────────────────────
+  const [loadAttempted, setLoadAttempted] = useState(false);
+  // Serialized (with raster) layers for each loaded image, consumed once that image first becomes
+  // active — DesignCanvas can only draw pixels into a layer's registry canvas once it's rendered
+  // that layer at least once (which happens when it's the active image), so this can't happen at
+  // load time for every image up front.
+  const pendingRasterRef = useRef<Map<string, SerializedStudioLayer[]>>(new Map());
+  const pendingSaveFlushRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
-    if (store.images.length === 0 && !store.showNewCanvasDialog) store.openNewCanvasDialog();
+    let cancelled = false;
+    (async () => {
+      const ids = await loadAllDesignImageIds();
+      const loaded: DesignImage[] = [];
+      for (const id of ids) {
+        const data = await loadDesignImage(id);
+        if (!data) continue;
+        pendingRasterRef.current.set(id, flattenForRaster(data.layers));
+        loaded.push({
+          id: data.id, name: data.name, width: data.width, height: data.height,
+          layers: stripRaster(data.layers), activeLayerId: null, thumbnail: data.thumbnail,
+        });
+      }
+      if (cancelled) return;
+      if (loaded.length > 0) {
+        store.setImages(() => loaded);
+        store.setActiveImageId(loaded[0].id);
+      }
+      setLoadAttempted(true);
+    })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-open New Canvas only once the load attempt above has actually run — otherwise every visit
+  // would show the dialog for a flash before persisted images arrive, or (worse, before load ever
+  // finishes) prompt to create a new canvas the user already has several of.
+  useEffect(() => {
+    if (loadAttempted && store.images.length === 0 && !store.showNewCanvasDialog) store.openNewCanvasDialog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadAttempted]);
+
+  // Restore a freshly-loaded image's pixel content the first time it becomes active (i.e. once
+  // DesignCanvas has actually rendered its layers and created their registry canvases to draw into).
+  useEffect(() => {
+    if (!store.activeImageId) return;
+    const pending = pendingRasterRef.current.get(store.activeImageId);
+    if (!pending) return;
+    pendingRasterRef.current.delete(store.activeImageId);
+    canvasHandleRef.current?.loadSerializedCanvases(pending);
+  }, [store.activeImageId, store.activeImage]);
+
+  // Debounced auto-save of the active image whenever it changes — mirrors the coalescing idea in
+  // useDesignHistory.ts (many rapid edits settle into one save), and reuses the exact same
+  // serializeForSave the export/undo paths already exercise.
+  //
+  // Split into two effects deliberately: this one re-runs (and its cleanup clears the *previous*
+  // timer) on every edit, which is exactly the debounce behavior wanted — but if its cleanup also
+  // flushed a save, that flush would fire on every single edit too (canvasHandleRef always reflects
+  // the *latest* state regardless of which effect instance's closure calls it), defeating debouncing
+  // entirely. The mount-only effect below is what actually guards against losing the last edit when
+  // the user navigates away inside the debounce window.
+  useEffect(() => {
+    if (!store.activeImageId || !loadAttempted) return;
+    const imageId = store.activeImageId;
+    const flush = () => {
+      const data = canvasHandleRef.current?.serializeForSave();
+      if (data && data.id === imageId) void saveDesignImage(data);
+    };
+    pendingSaveFlushRef.current = flush;
+    const timer = setTimeout(() => { flush(); pendingSaveFlushRef.current = null; }, SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [store.activeImage, store.activeImageId, loadAttempted]);
+
+  // Fires exactly once, when DesignMode itself unmounts (nav away from the Design tab) — flushes
+  // whatever save was still pending rather than silently dropping it.
+  useEffect(() => {
+    return () => { pendingSaveFlushRef.current?.(); };
+  }, []);
+
+  const handleCloseImage = useCallback((imageId: string) => {
+    store.removeImage(imageId);
+    void deleteDesignImage(imageId);
+  }, [store]);
 
   // Clear stale selection when the active image changes — a layer id from a different image's tree
   // must never leak into the new image's selection/Transformer binding.
@@ -211,7 +308,7 @@ export function DesignMode() {
         activeImageId={store.activeImageId}
         onSelect={store.setActiveImageId}
         onRename={store.renameImage}
-        onClose={store.removeImage}
+        onClose={handleCloseImage}
         onNewCanvas={store.openNewCanvasDialog}
       />
 

@@ -13,6 +13,7 @@ import type { SerializedStudioLayer } from '../lib/studioProjectStore';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
 import type { CanvasSnapshots } from './useDesignHistory';
+import { DESIGN_SCHEMA_VERSION, type DesignImageData } from './designModePersistence';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
 
 const MIN_SCALE = 0.05;
@@ -37,6 +38,12 @@ export interface DesignCanvasHandle {
   snapshotCanvases: () => CanvasSnapshots;
   /** Redraws each layer's registry canvas from a previously-captured snapshot and repaints it. */
   restoreCanvases: (snapshots: CanvasSnapshots) => void;
+  /** Builds the persisted-to-IndexedDB shape (designModePersistence.ts's DesignImageData) for the
+   *  active image, rasters included. */
+  serializeForSave: () => DesignImageData | null;
+  /** Draws a loaded image's `raster` fields into fresh registry canvases — the load-time
+   *  counterpart, called once when a persisted image first becomes active. */
+  loadSerializedCanvases: (layers: SerializedStudioLayer[]) => void;
 }
 
 interface DesignCanvasProps {
@@ -246,21 +253,62 @@ export function DesignCanvas({
   // rasterizes them itself via drawTextLayer/layoutText), paint + placed-image layers get their
   // registry canvas serialized to a data URL, matching exactly how StudioCanvas.tsx's own
   // getSnapshot builds the same shape for Studio's export.
-  const exportSnapshot = useCallback((): ExportSnapshot | null => {
-    if (!image) return null;
-    const layers: SerializedStudioLayer[] = image.layers.map((layer): SerializedStudioLayer => {
+  // Shared by exportSnapshot and serializeForSave: attaches each layer's registry canvas (if any)
+  // as a data URL, matching StudioCanvas.tsx's own getSnapshot serialization exactly.
+  const serializeLayers = useCallback((): SerializedStudioLayer[] => {
+    if (!image) return [];
+    return image.layers.map((layer): SerializedStudioLayer => {
       const canvas = paintRegistry.current[layer.id];
       return canvas ? { ...layer, raster: canvas.toDataURL('image/png') } : layer;
     });
+  }, [image]);
+
+  const exportSnapshot = useCallback((): ExportSnapshot | null => {
+    if (!image) return null;
     // No separate "page background image" concept in Design Mode (unlike Studio, whose background
     // is always a real imported page) — a transparent 1x1 stand-in satisfies the required field
     // without visually contributing anything; it's only ever drawn for a leaf of type 'background',
     // which Design Mode's layer set never contains (its own background is a locked clean-patch
-    // layer, already included in `layers` above).
+    // layer, already included in `layers` below).
     const transparent = document.createElement('canvas');
     transparent.width = 1;
     transparent.height = 1;
-    return { width: image.width, height: image.height, backgroundDataUrl: transparent.toDataURL('image/png'), layers };
+    return { width: image.width, height: image.height, backgroundDataUrl: transparent.toDataURL('image/png'), layers: serializeLayers() };
+  }, [image, serializeLayers]);
+
+  const serializeForSave = useCallback((): DesignImageData | null => {
+    if (!image) return null;
+    return {
+      schemaVersion: DESIGN_SCHEMA_VERSION,
+      id: image.id,
+      name: image.name,
+      width: image.width,
+      height: image.height,
+      layers: serializeLayers(),
+      thumbnail: image.thumbnail,
+      updatedAt: new Date().toISOString(),
+    };
+  }, [image, serializeLayers]);
+
+  /** Draws every layer's `raster` data URL (from a loaded DesignImageData) into a fresh registry
+   *  canvas — the load-time counterpart to serializeForSave, used once on mount to restore a
+   *  persisted image's pixel content before it's ever shown. */
+  const loadSerializedCanvases = useCallback((layers: SerializedStudioLayer[]) => {
+    for (const layer of layers) {
+      if (!layer.raster) continue;
+      const dims = layer.type === 'placed-image' && layer.placedImage
+        ? { w: layer.placedImage.naturalWidth, h: layer.placedImage.naturalHeight }
+        : image ? { w: image.width, h: image.height } : null;
+      if (!dims) continue;
+      const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, dims.w, dims.h);
+      const img = new Image();
+      img.onload = () => {
+        canvas.getContext('2d')!.drawImage(img, 0, 0);
+        paintNodeRefs.current[layer.id]?.getLayer()?.batchDraw();
+        placedImageNodeRefs.current[layer.id]?.getLayer()?.batchDraw();
+      };
+      img.src = layer.raster;
+    }
   }, [image]);
 
   // ── Canvas snapshot/restore (for undo/redo of pixel content — see useDesignHistory.ts) ─────────
@@ -301,8 +349,13 @@ export function DesignCanvas({
       exportSnapshot,
       snapshotCanvases,
       restoreCanvases,
+      serializeForSave,
+      loadSerializedCanvases,
     };
-  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot, snapshotCanvases, restoreCanvases]);
+  }, [
+    canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot, snapshotCanvases,
+    restoreCanvases, serializeForSave, loadSerializedCanvases,
+  ]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
