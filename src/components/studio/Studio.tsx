@@ -312,6 +312,21 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onConsumeAutoStartLiveSession?.();
   }, [autoStartLiveSession, collabSelf, liveSession, startHostingForTeam, onConsumeAutoStartLiveSession]);
 
+  // Auto-starts real tab screen-share the instant hosting begins, instead of leaving viewers on
+  // the flattened-canvas-only snapshot until the host separately clicks "Share This Tab" — a
+  // viewer should see the host's actual Studio (toolbars/panels included), not just the artwork,
+  // from the first moment of a session. The browser's own screen-share picker still can't be
+  // skipped (screen capture can never be silently granted, by design) — a host who dismisses it
+  // just stays on the snapshot fallback, exactly as if they'd never turned it on manually; nothing
+  // about that fallback path changes here.
+  const autoStartedScreenShareRef = useRef(false);
+  useEffect(() => {
+    if (!isHostingLive) { autoStartedScreenShareRef.current = false; return; }
+    if (autoStartedScreenShareRef.current || screenShare.sharing) return;
+    autoStartedScreenShareRef.current = true;
+    void screenShare.toggleSharing();
+  }, [isHostingLive, screenShare]);
+
   const handleEndLive = useCallback(() => {
     if (!liveSession) return;
     collabHandleRef.current?.announceEnded();
