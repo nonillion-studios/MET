@@ -9,6 +9,8 @@ import { layoutText } from '../components/studio/textLayout';
 import { getOrCreateCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
 import { cloneSubtree } from '../components/studio/layerTree';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
+import type { SerializedStudioLayer } from '../lib/studioProjectStore';
+import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
 
@@ -25,6 +27,7 @@ export interface DesignCanvasHandle {
   getZoom: () => number;
   placeImageFile: (file: File) => Promise<void>;
   duplicateLayer: (layerId: string) => void;
+  exportSnapshot: () => ExportSnapshot | null;
 }
 
 interface DesignCanvasProps {
@@ -228,6 +231,29 @@ export function DesignCanvas({
     onSelectLayer(copy.id, 'replace');
   }, [image, onUpdateLayers, onSelectLayer]);
 
+  // ── Export ──────────────────────────────────────────────────────────────────────────────────
+  // Builds an ExportSnapshot the existing compositeFlattenedImage/exportPsd (lib/exportImage.ts,
+  // lib/exportPsd.ts) can consume directly — text layers pass through untouched (the exporter
+  // rasterizes them itself via drawTextLayer/layoutText), paint + placed-image layers get their
+  // registry canvas serialized to a data URL, matching exactly how StudioCanvas.tsx's own
+  // getSnapshot builds the same shape for Studio's export.
+  const exportSnapshot = useCallback((): ExportSnapshot | null => {
+    if (!image) return null;
+    const layers: SerializedStudioLayer[] = image.layers.map((layer): SerializedStudioLayer => {
+      const canvas = paintRegistry.current[layer.id];
+      return canvas ? { ...layer, raster: canvas.toDataURL('image/png') } : layer;
+    });
+    // No separate "page background image" concept in Design Mode (unlike Studio, whose background
+    // is always a real imported page) — a transparent 1x1 stand-in satisfies the required field
+    // without visually contributing anything; it's only ever drawn for a leaf of type 'background',
+    // which Design Mode's layer set never contains (its own background is a locked clean-patch
+    // layer, already included in `layers` above).
+    const transparent = document.createElement('canvas');
+    transparent.width = 1;
+    transparent.height = 1;
+    return { width: image.width, height: image.height, backgroundDataUrl: transparent.toDataURL('image/png'), layers };
+  }, [image]);
+
   useEffect(() => {
     if (!canvasHandleRef) return;
     canvasHandleRef.current = {
@@ -237,8 +263,9 @@ export function DesignCanvas({
       getZoom: () => scale,
       placeImageFile: handlePlaceImageFile,
       duplicateLayer,
+      exportSnapshot,
     };
-  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer]);
+  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();

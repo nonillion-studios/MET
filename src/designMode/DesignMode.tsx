@@ -8,6 +8,8 @@ import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
 import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
+import { exportDesignImage } from './exportDesignImage';
+import { swalToast } from '../lib/swalTheme';
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -42,9 +44,15 @@ export function DesignMode() {
     }
   }, []);
 
-  const handleExport = useCallback((_format: DesignExportFormat) => {
-    // Wired in Section 9 (exportDesignImage.ts) — no-op until then.
-  }, []);
+  const handleExport = useCallback(async (format: DesignExportFormat) => {
+    const snapshot = canvasHandleRef.current?.exportSnapshot();
+    if (!snapshot || !store.activeImage) return;
+    try {
+      await exportDesignImage(snapshot, store.activeImage.name, format);
+    } catch {
+      swalToast({ icon: 'error', title: 'Export failed' });
+    }
+  }, [store.activeImage]);
 
   // No persisted-image restore yet (that lands in Section 6, alongside the paint-canvas registry
   // needed to redraw raster content) — so "zero images" is true on every fresh mount for now, and
