@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDesignModeStore } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
+import { NewCanvasDialog } from './NewCanvasDialog';
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -33,6 +34,15 @@ export function DesignMode() {
     // Wired in Section 9 (exportDesignImage.ts) — no-op until then.
   }, []);
 
+  // No persisted-image restore yet (that lands in Section 6, alongside the paint-canvas registry
+  // needed to redraw raster content) — so "zero images" is true on every fresh mount for now, and
+  // this fires every visit until then. Matches the spec literally either way: "Enter Design Mode
+  // with no existing images. New Canvas dialog appears automatically."
+  useEffect(() => {
+    if (store.images.length === 0 && !store.showNewCanvasDialog) store.openNewCanvasDialog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div ref={rootRef} className="flex flex-col w-full h-full overflow-hidden bg-[var(--color-surface)]">
       <DesignModeTopBar
@@ -54,6 +64,13 @@ export function DesignMode() {
       <div className="flex-1 flex items-center justify-center text-ink-muted text-sm" data-testid="design-mode-placeholder">
         Design Mode {store.images.length > 0 ? `— ${store.images.length} image(s)` : '(no images yet)'}
       </div>
+
+      <NewCanvasDialog
+        open={store.showNewCanvasDialog}
+        dismissible={store.images.length > 0}
+        onCancel={store.closeNewCanvasDialog}
+        onCreate={store.addImage}
+      />
     </div>
   );
 }

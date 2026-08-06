@@ -16,6 +16,12 @@ export interface DesignImage {
   activeLayerId: string | null;
   /** Data URL, refreshed after canvas changes — drives the image tab's own thumbnail (Section 5). */
   thumbnail: string;
+  /** Set only right when New Canvas creates a white/black background layer — the layer object itself
+   *  carries no pixels (paint/placed-image layers are backed by an out-of-band canvas registry, same
+   *  as Studio's), so DesignCanvas (Section 6) reads this once on mount to actually fill that layer's
+   *  canvas, then clears it. Absent for a transparent background (no layer created at all) or once
+   *  the fill has already happened. */
+  pendingBackgroundFill?: 'white' | 'black';
 }
 
 export interface DesignModeState {
@@ -37,6 +43,7 @@ export interface UseDesignModeStore {
   updateImageLayers: (imageId: string, updater: (layers: StudioLayer[]) => StudioLayer[]) => void;
   setActiveLayerId: (imageId: string, layerId: string | null) => void;
   setThumbnail: (imageId: string, thumbnail: string) => void;
+  clearPendingBackgroundFill: (imageId: string) => void;
   openNewCanvasDialog: () => void;
   closeNewCanvasDialog: () => void;
 }
@@ -96,6 +103,14 @@ export function useDesignModeStore(): UseDesignModeStore {
     setImages(images => images.map(img => (img.id === imageId ? { ...img, thumbnail } : img)));
   }, [setImages]);
 
+  const clearPendingBackgroundFill = useCallback((imageId: string) => {
+    setImages(images => images.map(img => {
+      if (img.id !== imageId || !img.pendingBackgroundFill) return img;
+      const { pendingBackgroundFill: _drop, ...rest } = img;
+      return rest as DesignImage;
+    }));
+  }, [setImages]);
+
   const openNewCanvasDialog = useCallback(() => setState(prev => ({ ...prev, showNewCanvasDialog: true })), []);
   const closeNewCanvasDialog = useCallback(() => setState(prev => ({ ...prev, showNewCanvasDialog: false })), []);
 
@@ -114,6 +129,7 @@ export function useDesignModeStore(): UseDesignModeStore {
     updateImageLayers,
     setActiveLayerId,
     setThumbnail,
+    clearPendingBackgroundFill,
     openNewCanvasDialog,
     closeNewCanvasDialog,
   };
