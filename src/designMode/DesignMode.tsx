@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDesignModeStore } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
+import { DesignImageTabs } from './DesignImageTabs';
 
 /**
  * Design Mode — a free-form, multi-canvas graphics view alongside the comic/manga Studio. Own state
@@ -61,6 +62,15 @@ export function DesignMode() {
         isFullscreen={isFullscreen}
         onToggleFullscreen={toggleFullscreen}
       />
+      <DesignImageTabs
+        images={store.images}
+        activeImageId={store.activeImageId}
+        onSelect={store.setActiveImageId}
+        onRename={store.renameImage}
+        onClose={store.removeImage}
+        onNewCanvas={store.openNewCanvasDialog}
+      />
+
       <div className="flex-1 flex items-center justify-center text-ink-muted text-sm" data-testid="design-mode-placeholder">
         Design Mode {store.images.length > 0 ? `— ${store.images.length} image(s)` : '(no images yet)'}
       </div>
