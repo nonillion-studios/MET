@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Home, Radio } from 'lucide-react';
 import { cn, IconButton, Modal } from '../ui';
-import type { Page, ProcessedImage } from '../../types';
+import type { Page, ProcessedImage, Workspace } from '../../types';
 import { StudioToolbar } from './StudioToolbar';
 import { StudioCanvas, loadImageFromSrc, type StudioCanvasHandle, type TextSelection, type TextLineSelection, type TyperPreviewLine } from './StudioCanvas';
 import { StudioPagesPanel } from './StudioPagesPanel';
@@ -83,6 +83,10 @@ import {
 } from '../../lib/studioCollab';
 import { useStudioVoiceChat } from './useStudioVoiceChat';
 import { useStudioScreenShare } from './useStudioScreenShare';
+import { StudioTeamChatModal } from '../StudioTeamChatModal';
+import { StudioCloudStorageModal } from '../StudioCloudStorageModal';
+import type { CloudClient } from '../../lib/cloudClient';
+import type { AutomationEngine } from '../../lib/automationEngine';
 import { CollabCursors } from './CollabCursors';
 import { CollabViewerCanvas } from './CollabViewerCanvas';
 import { CollabSessionPanel, type CollabChatMessage } from './CollabSessionPanel';
@@ -113,6 +117,9 @@ interface StudioProps {
    *  "Live" badge) rather than a normal editing session — renders a read-only viewer shell instead
    *  of the full edit UI, and never mounts the real Konva StudioCanvas at all. */
   viewOnlySession?: { sessionId: string; teamId: string } | null;
+  /** The mic/cursor choice made in App.tsx's pre-join modal before this viewer mount happened —
+   *  only meaningful alongside viewOnlySession. */
+  viewerPrefs?: { micOn: boolean; cursorColor: string } | null;
   /** Set when this mount was opened via Teams' "Go Live" button (which already picked the team and
    *  chapter) — Studio starts hosting automatically instead of the user needing a second click. */
   autoStartLiveSession?: { teamId: string } | null;
@@ -121,6 +128,13 @@ interface StudioProps {
    *  split-screen page preview follow along live even though it's a completely separate top-level
    *  tab with no other visibility into Studio's internal state. */
   onActivePageChange?: (pageId: string | null) => void;
+  /** In-Studio mini modals for Team Chat / Cloud Storage — undefined (and their toolbar buttons
+   *  hidden) whenever the caller doesn't have a CloudClient ready yet, same gating App.tsx already
+   *  applies to the top-level Cloud tab. */
+  cc?: CloudClient;
+  workspaces?: Workspace[];
+  onImportWorkspace?: (workspace: Workspace) => void;
+  automationEngine?: AutomationEngine;
 }
 
 export function Studio(props: StudioProps) {
@@ -135,7 +149,9 @@ export function Studio(props: StudioProps) {
   );
 }
 
-function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession }: StudioProps) {
+function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, viewerPrefs, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession, cc, workspaces, onImportWorkspace, automationEngine }: StudioProps) {
+  const [teamChatOpen, setTeamChatOpen] = useState(false);
+  const [cloudStorageOpen, setCloudStorageOpen] = useState(false);
   const canvasRef = useRef<StudioCanvasHandle>(null);
   const placeImageInputRef = useRef<HTMLInputElement>(null);
   const placePsdInputRef = useRef<HTMLInputElement>(null);
@@ -148,7 +164,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [collabSelf, setCollabSelf] = useState<{ id: string; name: string } | null>(null);
   const [collabPeers, setCollabPeers] = useState<StudioCollabPeer[]>([]);
   const [collabMessages, setCollabMessages] = useState<CollabChatMessage[]>([]);
-  const [collabCursors, setCollabCursors] = useState<Record<string, { name: string; x: number; y: number }>>({});
+  const [collabCursors, setCollabCursors] = useState<Record<string, { name: string; x: number; y: number; color?: string }>>({});
   const [viewerFrame, setViewerFrame] = useState<string | null>(null);
   const [goingLive, setGoingLive] = useState(false);
   const collabHandleRef = useRef<StudioCollabHandle | null>(null);
@@ -204,7 +220,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       {
         onPeers: setCollabPeers,
         onFrame: (_userId, dataUrl) => setViewerFrame(dataUrl),
-        onCursor: (userId, name, x, y) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y } })),
+        onCursor: (userId, name, x, y, color) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y, color } })),
         onChat: (userId, name, text, at) => setCollabMessages(prev => [...prev, { userId, name, text, at }]),
         onEnded: () => {
           swalToast({ icon: 'info', title: 'The host ended this live session' });
@@ -224,6 +240,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     return () => { handle.leave(); collabHandleRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewOnlySession?.sessionId, collabSelf?.id]);
+
+  // Auto-joins voice once, per the pre-join modal's mic choice — mirrors CollabSessionPanel's own
+  // manual "Join Voice" button, just fired automatically instead of requiring a second click.
+  const autoJoinedVoiceRef = useRef(false);
+  useEffect(() => {
+    if (!viewOnlySession || !viewerPrefs?.micOn || autoJoinedVoiceRef.current || voice.joined) return;
+    autoJoinedVoiceRef.current = true;
+    voice.toggleJoined();
+  }, [viewOnlySession, viewerPrefs?.micOn, voice]);
 
   // Core "start hosting" logic, with the team already decided — Go Live is now initiated from
   // Teams' own Live section (which already knows which team it's in), not from inside Studio, so
@@ -245,17 +270,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         { userId: self.id, name: self.name, isHost: true },
         {
           onPeers: setCollabPeers,
-          onCursor: (userId, name, x, y) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y } })),
-          onChat: (userId, name, text, at, tts) => {
-            setCollabMessages(prev => [...prev, { userId, name, text, at }]);
-            // Only the host ever speaks a tts-flagged message — reading it aloud on every
-            // viewer's device too would be a nonsensical, noisy default for what's meant to be a
-            // "make sure the host specifically hears this" gesture (e.g. a viewer flagging
-            // something urgent while the host is heads-down painting and not watching chat).
-            if (tts && typeof window !== 'undefined' && 'speechSynthesis' in window) {
-              window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-            }
-          },
+          onCursor: (userId, name, x, y, color) => setCollabCursors(prev => ({ ...prev, [userId]: { name, x, y, color } })),
+          onChat: (userId, name, text, at) => setCollabMessages(prev => [...prev, { userId, name, text, at }]),
           onVoiceOffer: (from, sdp) => voiceRef.current.handleOffer(from, sdp),
           onVoiceAnswer: (from, sdp) => voiceRef.current.handleAnswer(from, sdp),
           onVoiceIce: (from, candidate) => voiceRef.current.handleIce(from, candidate),
@@ -337,6 +353,25 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handleEndLive();
     onBack();
   }, [isHostingLive, onBack, handleEndLive]);
+
+  // Opening the Text Editor swaps the whole top-level nav tab away from 'library', which unmounts
+  // Studio exactly like Back/Home does — so it needs the same "you're live, this ends it" gate
+  // rather than silently ending the session out from under watching viewers.
+  const handleOpenTextEditorClick = useCallback(async () => {
+    if (!onOpenTextEditor) return;
+    if (!isHostingLive) { onOpenTextEditor(); return; }
+    const r = await swal({
+      icon: 'warning',
+      title: "You're live",
+      text: 'Opening the Text Editor leaves Studio and ends the session for everyone watching. Stop the session and continue?',
+      showCancelButton: true,
+      confirmButtonText: 'Stop & Continue',
+      cancelButtonText: 'Stay',
+    });
+    if (!r.isConfirmed) return;
+    handleEndLive();
+    onOpenTextEditor();
+  }, [isHostingLive, onOpenTextEditor, handleEndLive]);
 
   // Same guard for closing/refreshing the tab outright — the browser's own native "leave site?"
   // prompt is the only thing that can interrupt that, and only if the handler calls
@@ -2631,7 +2666,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       peers={collabPeers}
       messages={collabMessages}
       selfUserId={collabSelf?.id ?? ''}
-      onSend={(text, tts) => collabHandleRef.current?.sendChat(text, tts)}
+      onSend={(text) => collabHandleRef.current?.sendChat(text)}
       speakingUserIds={voice.speakingUserIds}
       voiceJoined={voice.joined}
       voiceMuted={voice.muted}
@@ -2956,9 +2991,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   if (viewOnlySession) {
     const remoteCursors = Object.entries(collabCursors)
       .filter(([userId]) => userId !== collabSelf?.id)
-      .map(([userId, c]) => ({ userId, name: c.name, x: c.x, y: c.y }));
+      .map(([userId, c]) => ({ userId, name: c.name, x: c.x, y: c.y, color: c.color }));
     return (
-      <div className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+      <div className="studio-shell fixed inset-0 studio-canvas-bg flex flex-col z-30">
         <div className="liquid-glass-bar flex items-center gap-2 px-3 h-12 shrink-0 border-b border-hairline">
           <IconButton size="sm" aria-label="Leave live session" title="Leave" onClick={onBack} className="!bg-transparent !border-0 shrink-0">
             <Home size={16} />
@@ -2976,7 +3011,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
               cursors={remoteCursors}
               peers={collabPeers}
               onPointerMove={(x, y) => {
-                collabHandleRef.current?.broadcastCursor(x, y);
+                collabHandleRef.current?.broadcastCursor(x, y, viewerPrefs?.cursorColor);
                 // Also relayed as remote input while in control, not just down/up — a paint
                 // stroke is a drag, and the host's tools need every point along it, not just the
                 // two endpoints.
@@ -2996,7 +3031,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   return (
-    <div id="studio-root" ref={studioRootRef} className="studio-shell fixed inset-0 lg:relative lg:inset-auto studio-canvas-bg flex flex-col lg:rounded-panel lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
+    <div id="studio-root" ref={studioRootRef} className="studio-shell fixed inset-0 studio-canvas-bg flex flex-col z-30">
       {/* No overflow-x here (there used to be one): per the CSS Overflow spec, 'overflow-x: auto'
           with 'overflow-y' unset forces the *computed* overflow-y to 'auto' too — and that
           coercion applies even if overflow-y is set to 'visible' explicitly, since 'visible' paired
@@ -3032,7 +3067,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onToggleLive={isHostingLive ? handleEndLive : undefined}
         isSharingScreen={screenShare.sharing}
         onToggleScreenShare={screenShare.toggleSharing}
-        onOpenTextEditor={onOpenTextEditor}
+        onOpenTextEditor={onOpenTextEditor ? handleOpenTextEditorClick : undefined}
+        onOpenTeamChat={cc ? () => setTeamChatOpen(true) : undefined}
+        onOpenCloudStorage={cc ? () => setCloudStorageOpen(true) : undefined}
       />
 
       {!panelsHidden && optionsBarVisible && (
@@ -3308,6 +3345,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onConfirm={handleConfirmWarp}
         onCancel={handleCancelWarp}
       />
+      {cc && (
+        <StudioTeamChatModal open={teamChatOpen} onClose={() => setTeamChatOpen(false)} cc={cc} />
+      )}
+      {cc && workspaces && onImportWorkspace && automationEngine && (
+        <StudioCloudStorageModal
+          open={cloudStorageOpen}
+          onClose={() => setCloudStorageOpen(false)}
+          cc={cc}
+          workspaces={workspaces}
+          onImportWorkspace={onImportWorkspace}
+          automationEngine={automationEngine}
+        />
+      )}
       {blendingOptionsLayerId && (() => {
         const target = findLayer(layers, blendingOptionsLayerId);
         if (!target) return null;

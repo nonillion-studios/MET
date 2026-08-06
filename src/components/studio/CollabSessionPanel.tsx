@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Send, Crown, Mic, MicOff, PhoneOff, Volume2, MousePointer2, MousePointerClick } from 'lucide-react';
+import { Send, Crown, Mic, MicOff, PhoneOff, MousePointer2, MousePointerClick } from 'lucide-react';
 import { StudioPanel } from './StudioPanel';
 import type { StudioCollabPeer } from '../../lib/studioCollab';
 
@@ -14,9 +14,7 @@ interface CollabSessionPanelProps {
   peers: StudioCollabPeer[];
   messages: CollabChatMessage[];
   selfUserId: string;
-  /** `tts` asks the host's device specifically to read this message aloud — see Studio.tsx's
-   *  onChat wiring, the only place that actually speaks it. */
-  onSend: (text: string, tts: boolean) => void;
+  onSend: (text: string) => void;
   /** Participants (by userId) whose mic volume is currently above the speaking threshold — pulses
    *  their roster avatar. Includes the local user when they're the one talking. */
   speakingUserIds: Set<string>;
@@ -62,12 +60,11 @@ export function CollabSessionPanel({
   isHost, controlGrantedTo, onRequestControl, onRevokeControl, hideTitle,
 }: CollabSessionPanelProps) {
   const [draft, setDraft] = useState('');
-  const [ttsOnSend, setTtsOnSend] = useState(false);
 
   function submit() {
     const text = draft.trim();
     if (!text) return;
-    onSend(text, ttsOnSend);
+    onSend(text);
     setDraft('');
   }
 
@@ -158,11 +155,6 @@ export function CollabSessionPanel({
             </div>
           ))}
         </div>
-
-        <label className="flex items-center gap-1.5 px-3 pt-1 shrink-0 text-micro text-ink-faint">
-          <input type="checkbox" checked={ttsOnSend} onChange={(e) => setTtsOnSend(e.target.checked)} />
-          <Volume2 size={11} /> Read aloud on host's device
-        </label>
 
         <div className="flex items-center gap-1.5 p-2 border-t border-hairline/70 shrink-0">
           <input

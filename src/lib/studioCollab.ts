@@ -105,12 +105,10 @@ export interface StudioCollabHandlers {
   onPeers?: (peers: StudioCollabPeer[]) => void;
   /** A viewer-facing throttled raster snapshot broadcast by the host. */
   onFrame?: (fromUserId: string, dataUrl: string) => void;
-  /** Page-space (not screen-space) cursor position from any participant, including the host. */
-  onCursor?: (fromUserId: string, name: string, x: number, y: number) => void;
-  /** `tts` marks a message the sender wants read aloud on the host's device via SpeechSynthesis —
-   *  only the host side ever acts on it (see Studio.tsx's onChat wiring); a viewer receiving a
-   *  tts-flagged message from someone else just renders it as a normal chat bubble. */
-  onChat?: (fromUserId: string, name: string, text: string, at: number, tts: boolean) => void;
+  /** Page-space (not screen-space) cursor position from any participant, including the host.
+   *  `color` is the sender's own chosen cursor theme (see cursorTheme.ts), when they picked one. */
+  onCursor?: (fromUserId: string, name: string, x: number, y: number, color?: string) => void;
+  onChat?: (fromUserId: string, name: string, text: string, at: number) => void;
   /** The host closed Studio or lost the connection — viewers should be kicked back to the Library. */
   onEnded?: () => void;
   /** WebRTC mesh voice chat signaling — see useStudioVoiceChat.ts, which is the only consumer of
@@ -146,8 +144,8 @@ export interface StudioCollabHandlers {
 
 export interface StudioCollabHandle {
   broadcastFrame: (dataUrl: string) => void;
-  broadcastCursor: (x: number, y: number) => void;
-  sendChat: (text: string, tts?: boolean) => void;
+  broadcastCursor: (x: number, y: number, color?: string) => void;
+  sendChat: (text: string) => void;
   /** Host-only: tells every viewer the session is over, ahead of/independent from the DB update. */
   announceEnded: () => void;
   sendVoiceOffer: (toUserId: string, sdp: RTCSessionDescriptionInit) => void;
@@ -195,10 +193,10 @@ export function joinStudioSessionChannel(
       if (payload.userId !== self.userId) handlers.onFrame?.(payload.userId, payload.dataUrl);
     })
     .on('broadcast', { event: 'cursor' }, ({ payload }) => {
-      if (payload.userId !== self.userId) handlers.onCursor?.(payload.userId, payload.name, payload.x, payload.y);
+      if (payload.userId !== self.userId) handlers.onCursor?.(payload.userId, payload.name, payload.x, payload.y, payload.color);
     })
     .on('broadcast', { event: 'chat' }, ({ payload }) => {
-      handlers.onChat?.(payload.userId, payload.name, payload.text, payload.at, !!payload.tts);
+      handlers.onChat?.(payload.userId, payload.name, payload.text, payload.at);
     })
     .on('broadcast', { event: 'ended' }, () => {
       handlers.onEnded?.();
@@ -241,8 +239,8 @@ export function joinStudioSessionChannel(
 
   return {
     broadcastFrame: (dataUrl) => { channel.send({ type: 'broadcast', event: 'frame', payload: { userId: self.userId, dataUrl } }); },
-    broadcastCursor: (x, y) => { channel.send({ type: 'broadcast', event: 'cursor', payload: { userId: self.userId, name: self.name, x, y } }); },
-    sendChat: (text, tts) => { channel.send({ type: 'broadcast', event: 'chat', payload: { userId: self.userId, name: self.name, text, at: Date.now(), tts: !!tts } }); },
+    broadcastCursor: (x, y, color) => { channel.send({ type: 'broadcast', event: 'cursor', payload: { userId: self.userId, name: self.name, x, y, color } }); },
+    sendChat: (text) => { channel.send({ type: 'broadcast', event: 'chat', payload: { userId: self.userId, name: self.name, text, at: Date.now() } }); },
     announceEnded: () => { channel.send({ type: 'broadcast', event: 'ended', payload: {} }); },
     sendVoiceOffer: (toUserId, sdp) => { channel.send({ type: 'broadcast', event: 'voice-offer', payload: { fromUserId: self.userId, toUserId, sdp } }); },
     sendVoiceAnswer: (toUserId, sdp) => { channel.send({ type: 'broadcast', event: 'voice-answer', payload: { fromUserId: self.userId, toUserId, sdp } }); },

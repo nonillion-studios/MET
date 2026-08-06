@@ -1,4 +1,5 @@
 import type { StudioCollabPeer } from '../../lib/studioCollab';
+import { CURSOR_THEME_COLORS } from '../../lib/cursorTheme';
 
 interface RemoteCursor {
   userId: string;
@@ -6,6 +7,10 @@ interface RemoteCursor {
   /** Page-space coordinates (unscaled image pixels) — resolution/zoom-independent on receipt. */
   x: number;
   y: number;
+  /** A participant's own chosen cursor colour (see cursorTheme.ts's pre-join picker), when they
+   *  picked one. Falls back to the deterministic per-user hash colour for anyone who didn't
+   *  (the host, or a viewer who joined before this existed). */
+  color?: string;
 }
 
 interface CollabCursorsProps {
@@ -15,12 +20,10 @@ interface CollabCursorsProps {
   toContainer: (x: number, y: number) => { x: number; y: number };
 }
 
-const COLORS = ['#f97316', '#22c55e', '#3b82f6', '#e879f9', '#eab308', '#14b8a6', '#ef4444'];
-
 function colorFor(userId: string): string {
   let h = 0;
   for (let i = 0; i < userId.length; i++) h = (h * 31 + userId.charCodeAt(i)) >>> 0;
-  return COLORS[h % COLORS.length];
+  return CURSOR_THEME_COLORS[h % CURSOR_THEME_COLORS.length];
 }
 
 /**
@@ -35,7 +38,7 @@ export function CollabCursors({ cursors, peers, toContainer }: CollabCursorsProp
     <svg className="pointer-events-none absolute inset-0 w-full h-full z-20" aria-hidden>
       {cursors.map((c) => {
         const pos = toContainer(c.x, c.y);
-        const color = colorFor(c.userId);
+        const color = c.color || colorFor(c.userId);
         const name = nameById.get(c.userId) ?? c.name;
         return (
           <g key={c.userId} transform={`translate(${pos.x} ${pos.y})`}>

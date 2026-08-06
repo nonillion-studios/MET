@@ -41,24 +41,6 @@ export async function listMyJoinRequestHistory(): Promise<(JoinRequest & { team:
   return (data as unknown as (JoinRequest & { team: { name: string; logo: string } | null })[]) ?? [];
 }
 
-export interface TeamInviteToken {
-  id: string;
-  team_id: string;
-  token: string;
-  expires_at: string | null;
-  uses_left: number | null;
-  created_at: string;
-}
-
-export async function createInviteToken(teamId: string): Promise<{ token: TeamInviteToken | null; error: string | null }> {
-  const { data, error } = await supabase.rpc('create_invite_token', { _team_id: teamId });
-  return { token: (data as TeamInviteToken) ?? null, error: error ? error.message : null };
-}
-
-export async function redeemInviteToken(token: string, message = ''): Promise<string | null> {
-  const { error } = await supabase.rpc('redeem_invite_token', { _token: token, _message: message });
-  return error ? error.message : null;
-}
 
 export const decideJoinRequest = (id: string, approve: boolean, responseBody?: string) =>
   rpc('decide_join_request', { _id: id, _approve: approve, _response_body: responseBody || null });

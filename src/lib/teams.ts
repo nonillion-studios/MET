@@ -55,6 +55,10 @@ export interface TeamMember {
   is_verified: boolean;
   privacy_prefs: { hide_status?: boolean; hide_balance?: boolean; hide_active?: boolean };
   profile?: { name: string; avatar: string; email: string } | null;
+  is_banned: boolean;
+  banned_reason: string | null;
+  banned_at: string | null;
+  telegram_channel_confirmed: boolean;
 }
 
 export type NotificationCategory = 'broadcasts' | 'tasks' | 'chat';
@@ -299,6 +303,27 @@ export async function declineInvite(memberRowId: string): Promise<string | null>
 
 export async function removeMember(memberRowId: string): Promise<string | null> {
   const { error } = await supabase.from('team_members').delete().eq('id', memberRowId);
+  return error ? error.message : null;
+}
+
+/** Bans a member — distinct from removeMember (a hard delete): the row's is_banned flag stays
+ *  behind and blocks request_to_join_team (see migration 0071_team_bans.sql) until unbanMember
+ *  is called, whereas a plain removed member could immediately request to rejoin. */
+export async function banMember(teamId: string, userId: string, reason?: string): Promise<string | null> {
+  const { error } = await supabase.rpc('ban_team_member', { _team_id: teamId, _user_id: userId, _reason: reason ?? null });
+  return error ? error.message : null;
+}
+
+export async function unbanMember(teamId: string, userId: string): Promise<string | null> {
+  const { error } = await supabase.rpc('unban_team_member', { _team_id: teamId, _user_id: userId });
+  return error ? error.message : null;
+}
+
+/** A member confirming they've joined the team's Telegram channel — gates Team Cloud file
+ *  previewing (see TeamFilesSection), since files are read through *their own* connected
+ *  Telegram client, which needs their account to actually be a member of that channel. */
+export async function confirmTelegramChannelJoined(teamId: string): Promise<string | null> {
+  const { error } = await supabase.rpc('confirm_telegram_channel_joined', { _team_id: teamId });
   return error ? error.message : null;
 }
 

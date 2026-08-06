@@ -1,5 +1,4 @@
 import { Modal } from '../ui';
-import { AdSlot } from '../AdSlot';
 import type { CloudClient } from '../../lib/cloudClient';
 
 // Mounted once at the app root (not inside CloudFiles/the Cloud tab) so
@@ -22,7 +21,6 @@ export function CloudTransferModals({ cc }: { cc: CloudClient }) {
             <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.uploadProgress}%` }} />
             <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.uploadProgress}%</span>
           </div>
-          <AdSlot placement="upload-progress" />
         </div>
       </Modal>
 
@@ -36,7 +34,6 @@ export function CloudTransferModals({ cc }: { cc: CloudClient }) {
             <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.downloadProgress}%` }} />
             <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.downloadProgress}%</span>
           </div>
-          <AdSlot placement="download-progress" />
         </div>
       </Modal>
 
@@ -50,7 +47,6 @@ export function CloudTransferModals({ cc }: { cc: CloudClient }) {
             <div className="absolute top-0 left-0 bg-accent h-full transition-all duration-300" style={{ width: `${cc.restoreProgress}%` }} />
             <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white mix-blend-difference">{cc.restoreProgress}%</span>
           </div>
-          <AdSlot placement="restore-progress" />
         </div>
       </Modal>
     </>

@@ -15,7 +15,6 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { BottomTabBar } from './components/BottomTabBar';
 import { SidebarRail } from './components/SidebarRail';
 import { CloudStorage } from './components/CloudStorage';
-import { AdSlot } from './components/AdSlot';
 import { LibraryAnnouncementBanner } from './components/LibraryAnnouncementBanner';
 import { TeamsPanel } from './components/TeamsPanel';
 import { AuthGate } from './components/AuthGate';
@@ -40,7 +39,7 @@ import {
 } from './lib/workspaceZip';
 import { CloudConfig } from './components/cloud/CloudConfig';
 import { CloudTransferModals } from './components/cloud/CloudTransferModals';
-import { interleaveWithAds } from './lib/interleaveAds';
+import { JoinLiveSessionModal } from './components/JoinLiveSessionModal';
 import type { NavTabId } from './config/navTabs';
 
 export default function App() {
@@ -139,6 +138,10 @@ export default function App() {
   // Set by Teams' "Watch" button on a live session (see LiveSessionsSection in TeamsPanel.tsx) —
   // opens that chapter's Studio in read-only spectator mode instead of the normal edit flow.
   const [viewOnlySession, setViewOnlySession] = useState<{ sessionId: string; teamId: string } | null>(null);
+  // A session the user clicked "Watch" on, pending the pre-join modal's mic/cursor choice before
+  // actually joining — see handleWatchLiveSession/JoinLiveSessionModal below.
+  const [pendingWatchSession, setPendingWatchSession] = useState<StudioSessionRow | null>(null);
+  const [viewerPrefs, setViewerPrefs] = useState<{ micOn: boolean; cursorColor: string } | null>(null);
   // Set alongside viewOnlySession when the session's chapter_id isn't in this device's local
   // library (a teammate on another device is hosting) — mounts Studio's spectator shell directly,
   // bypassing the normal activeWorkspace/manga/volume/chapter chain entirely, since none of that
@@ -146,21 +149,6 @@ export default function App() {
   const [remoteViewOnlyChapter, setRemoteViewOnlyChapter] = useState<{ id: string; name: string } | null>(null);
   // Set by Teams' "Go Live" button — Studio starts hosting for this team automatically on mount.
   const [autoStartLiveSession, setAutoStartLiveSession] = useState<{ teamId: string } | null>(null);
-  // Carries a `?join=<token>` invite link into the Teams tab on load, redeemed
-  // (as a join request, not an auto-join) then cleared from the URL.
-  const [pendingJoinToken, setPendingJoinToken] = useState<string | null>(null);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const join = params.get('join');
-    if (join) {
-      setPendingJoinToken(join);
-      setActiveNavigationTab('teams');
-      params.delete('join');
-      const next = params.toString();
-      window.history.replaceState({}, '', window.location.pathname + (next ? `?${next}` : ''));
-    }
-  }, []);
 
   useEffect(() => {
     get('workspaces_library').then(async (saved) => {
@@ -230,6 +218,9 @@ export default function App() {
   const activeManga = mangas.find(m => m.id === activeMangaId) || null;
   const activeVolume = activeManga?.volumes.find(v => v.id === activeVolumeId) || null;
   const activeChapter = activeVolume?.chapters.find(c => c.id === activeChapterId) || null;
+  // Studio takes over the whole viewport while open — no navbar/sidebar/bottom-tab chrome,
+  // matching the "click Home inside Studio to leave" affordance StudioToolbar already has.
+  const studioActive = activeNavigationTab === 'library' && (!!activeChapter || (!!viewOnlySession && !!remoteViewOnlyChapter));
 
   const resetToWorkspaceRoot = () => {
     setActiveWorkspaceId(null);
@@ -304,7 +295,17 @@ export default function App() {
     return null;
   };
 
+  // Clicking "Watch" stages the session behind the pre-join modal (mic/cursor choice) rather than
+  // joining immediately — matches every video-call app's "choose your mic before entering" step.
   const handleWatchLiveSession = (session: StudioSessionRow) => {
+    setPendingWatchSession(session);
+  };
+
+  const handleConfirmJoinLiveSession = (prefs: { micOn: boolean; cursorColor: string }) => {
+    const session = pendingWatchSession;
+    if (!session) return;
+    setPendingWatchSession(null);
+    setViewerPrefs(prefs);
     // Spectating never actually reads this device's local page data — Studio's viewOnly shell
     // only ever displays the host's broadcast image + cursors + chat — so a chapter missing from
     // this device's local library (a teammate on another device, watching) is not a blocker.
@@ -396,7 +397,8 @@ export default function App() {
     setEditDesc('');
     setEditCoverUrl(volume.coverUrl);
   };
-  const openEditChapter = (chapter: Chapter) => {
+  const openEditChapter = (volume: Volume, chapter: Chapter) => {
+    setActiveVolumeId(volume.id);
     setEditTarget({ level: 'chapter', id: chapter.id });
     setEditName(chapter.name);
     setEditDesc('');
@@ -782,8 +784,8 @@ export default function App() {
     if (activeVolumeId === volume.id) { setActiveVolumeId(null); setActiveChapterId(null); }
   };
 
-  const handleDeleteChapter = async (chapter: Chapter) => {
-    if (!activeManga || !activeVolume) return;
+  const handleDeleteChapter = async (volume: Volume, chapter: Chapter) => {
+    if (!activeManga) return;
     const result = await swal({
       icon: 'warning',
       title: 'Delete this chapter?',
@@ -795,7 +797,7 @@ export default function App() {
     if (!result.isConfirmed) return;
     updateActiveWorkspaceMangas(prev => prev.map(m => {
       if (m.id !== activeManga.id) return m;
-      return { ...m, volumes: m.volumes.map(v => v.id === activeVolume.id ? { ...v, chapters: v.chapters.filter(c => c.id !== chapter.id) } : v) };
+      return { ...m, volumes: m.volumes.map(v => v.id === volume.id ? { ...v, chapters: v.chapters.filter(c => c.id !== chapter.id) } : v) };
     }));
     if (activeChapterId === chapter.id) setActiveChapterId(null);
   };
@@ -830,7 +832,7 @@ export default function App() {
         <span />
       </div>
 
-      <TopBar />
+      {!studioActive && <TopBar />}
 
       {studioBuilding && (
         <StudioBuildTransition
@@ -842,16 +844,18 @@ export default function App() {
         />
       )}
 
-      <SidebarRail
-        activeTab={activeNavigationTab}
-        onTabChange={setActiveNavigationTab}
-        onCreatePress={handleCreatePress}
-        hidden={sidebarHidden}
-        onToggleHidden={() => setSidebarHidden(h => !h)}
-      />
+      {!studioActive && (
+        <SidebarRail
+          activeTab={activeNavigationTab}
+          onTabChange={setActiveNavigationTab}
+          onCreatePress={handleCreatePress}
+          hidden={sidebarHidden}
+          onToggleHidden={() => setSidebarHidden(h => !h)}
+        />
+      )}
 
-      <div className={`flex flex-1 ${sidebarHidden ? '' : 'lg:pl-20'}`}>
-        <main key={activeNavigationTab} className="animate-view-fade flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-6 sm:py-8 pb-28 lg:pb-10 max-w-6xl mx-auto w-full">
+      <div className={studioActive ? 'flex flex-1' : `flex flex-1 ${sidebarHidden ? '' : 'lg:pl-20'}`}>
+        <main key={activeNavigationTab} className={studioActive ? 'flex-1 min-w-0' : 'animate-view-fade flex-1 min-w-0 px-4 sm:px-6 lg:px-10 py-6 sm:py-8 pb-28 lg:pb-10 max-w-6xl mx-auto w-full'}>
           {activeNavigationTab === 'settings' && (
             <SettingsPanel
               onShowPrivacy={() => setShowPrivacyModal(true)}
@@ -867,7 +871,6 @@ export default function App() {
 
           {activeNavigationTab === 'cloud' && (
             <div className="space-y-4">
-              <AdSlot placement="cloud-top" />
               <CloudStorage
                 cc={cloudClient}
                 workspaces={workspaces}
@@ -880,8 +883,6 @@ export default function App() {
           {activeNavigationTab === 'teams' && (
             <TeamsPanel
               cc={cloudClient}
-              pendingJoinToken={pendingJoinToken}
-              onConsumedJoinToken={() => setPendingJoinToken(null)}
               workspaces={workspaces}
               onWatchLiveSession={handleWatchLiveSession}
               onGoLive={handleGoLiveFromTeams}
@@ -898,6 +899,7 @@ export default function App() {
                 pendingChapter={pendingTextEditorChapter}
                 onConsumePendingChapter={() => setPendingTextEditorChapter(null)}
                 onOpenStudio={() => setActiveNavigationTab('library')}
+                onOpenSettings={() => setActiveNavigationTab('settings')}
               />
             </div>
           )}
@@ -905,7 +907,6 @@ export default function App() {
           {activeNavigationTab === 'library' && (
             <div className="space-y-5">
               {!activeChapter && <LibraryAnnouncementBanner />}
-              {!activeChapter && <AdSlot placement="library-top" />}
 
               {/* Breadcrumb */}
               {(activeWorkspace) && (
@@ -916,13 +917,7 @@ export default function App() {
                   {activeManga && (
                     <>
                       <span className="text-ink-faint">/</span>
-                      <button onClick={() => { setActiveVolumeId(null); setActiveChapterId(null); }} className={`transition-colors ${!activeVolume ? 'text-ink font-semibold' : 'text-ink-muted hover:text-accent'}`}>{activeManga.title}</button>
-                    </>
-                  )}
-                  {activeVolume && (
-                    <>
-                      <span className="text-ink-faint">/</span>
-                      <button onClick={() => setActiveChapterId(null)} className={`transition-colors ${!activeChapter ? 'text-ink font-semibold' : 'text-ink-muted hover:text-accent'}`}>{activeVolume.name}</button>
+                      <button onClick={() => { setActiveVolumeId(null); setActiveChapterId(null); }} className={`transition-colors ${!activeChapter ? 'text-ink font-semibold' : 'text-ink-muted hover:text-accent'}`}>{activeManga.title}</button>
                     </>
                   )}
                   {activeChapter && (
@@ -946,6 +941,11 @@ export default function App() {
                   pages={[]}
                   onBack={resetToLibraryRoot}
                   viewOnlySession={viewOnlySession}
+                  viewerPrefs={viewerPrefs}
+                  cc={cloudClient}
+                  workspaces={workspaces}
+                  onImportWorkspace={handleImportWorkspace}
+                  automationEngine={automationEngine}
                 />
               )}
 
@@ -964,159 +964,127 @@ export default function App() {
                     setActiveNavigationTab('text-editor');
                   }}
                   viewOnlySession={viewOnlySession}
+                  viewerPrefs={viewerPrefs}
                   autoStartLiveSession={autoStartLiveSession}
                   onConsumeAutoStartLiveSession={() => setAutoStartLiveSession(null)}
                   onActivePageChange={setStudioActivePageId}
+                  cc={cloudClient}
+                  workspaces={workspaces}
+                  onImportWorkspace={handleImportWorkspace}
+                  automationEngine={automationEngine}
                 />
               )}
 
-              {/* Chapter list within volume */}
-              {activeWorkspace && activeVolume && !activeChapter && activeManga && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-display font-semibold text-ink">{activeVolume.name}</h2>
-                    <Button size="sm" onClick={() => setShowCreateChapterModal(true)}><Plus size={14} /> Add Chapter</Button>
-                  </div>
-                  {activeVolume.chapters.length === 0 && (
-                    <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
-                      <FileStack className="text-ink-faint" size={26} />
-                      <p className="text-sm text-ink-muted">No chapters yet. Create one to start building this volume.</p>
-                      <Button size="sm" onClick={() => setShowCreateChapterModal(true)}><Plus size={14} /> Add Chapter</Button>
-                    </GlassCard>
-                  )}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {interleaveWithAds(activeVolume.chapters, chap => (
-                      <button
-                        key={chap.id}
-                        onClick={() => { setViewOnlySession(null); setRemoteViewOnlyChapter(null); setPendingChapterId(chap.id); setStudioBuilding(true); }}
-                        className="stagger-item group relative text-left overflow-hidden rounded-2xl"
-                      >
-                        <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
-                          <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
-                            {chap.coverUrl ? (
-                              <img src={chap.coverUrl} alt={chap.name} className="w-full h-full object-cover" />
-                            ) : (
-                              <FileStack className="text-accent/60" size={28} />
-                            )}
-                          </div>
-                          <div className="p-3">
-                            <p className="text-sm font-semibold text-ink truncate">{chap.name}</p>
-                            <p className="text-[11px] text-ink-faint">{chap.pages.length} page(s)</p>
-                          </div>
-                        </GlassCard>
-                        <div className="absolute top-2 right-2 flex items-center gap-1">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openEditChapter(chap); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Edit chapter info"
-                            title="Edit name/cover"
-                          >
-                            <Pencil size={12} />
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setPendingTextEditorChapter({ id: chap.id, name: chap.name }); setActiveNavigationTab('text-editor'); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Open in Text Editor"
-                            title="Open in Text Editor"
-                          >
-                            <FileText size={12} />
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDownloadChapterZip(chap); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Download chapter as ZIP"
-                            title="Download as ZIP"
-                          >
-                            <Download size={12} />
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleUploadChapterToCloud(activeManga, activeVolume, chap); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Upload chapter to Telecloud"
-                            title="Upload to Telecloud"
-                          >
-                            <UploadCloud size={12} />
-                          </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteChapter(chap); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Delete chapter"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </button>
-                    ), 'library-chapters')}
-                  </div>
-                </div>
-              )}
-
-              {/* Volume list within manga */}
-              {activeWorkspace && activeManga && !activeVolume && (
-                <div className="space-y-3">
+              {/* Chapters grouped by volume, directly under the series — no separate
+                  volume-selection screen. Volume stays part of the data model (and
+                  shows as a section heading + still owns "Add Chapter"/edit/delete),
+                  it's just no longer its own navigation stop. */}
+              {activeWorkspace && activeManga && !activeChapter && (
+                <div className="space-y-6">
                   <div className="flex items-center justify-between">
                     <h2 className="text-lg font-display font-semibold text-ink">{activeManga.title}</h2>
-                    <Button size="sm" onClick={() => setShowCreateVolumeModal(true)}><Plus size={14} /> Add Volume</Button>
+                    <Button size="sm" onClick={() => { setActiveVolumeId(null); setShowCreateVolumeModal(true); }}><Plus size={14} /> Add Volume</Button>
                   </div>
                   {activeManga.volumes.length === 0 && (
-                    <GlassCard className="p-8 flex flex-col items-center text-center gap-3">
+                    <GlassCard className="p-10 flex flex-col items-center text-center gap-3">
                       <Layers className="text-ink-faint" size={26} />
-                      <p className="text-sm text-ink-muted">No volumes yet. Create one to start organizing this series.</p>
-                      <Button size="sm" onClick={() => setShowCreateVolumeModal(true)}><Plus size={14} /> Add Volume</Button>
+                      <p className="text-sm text-ink-muted max-w-sm">No volumes yet. Create one to start organizing this series.</p>
+                      <Button onClick={() => { setActiveVolumeId(null); setShowCreateVolumeModal(true); }}><Plus size={14} /> Create Volume</Button>
                     </GlassCard>
                   )}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {interleaveWithAds(activeManga.volumes, vol => (
-                      <button key={vol.id} onClick={() => setActiveVolumeId(vol.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
-                        <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
-                          <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
-                            {vol.coverUrl ? (
-                              <img src={vol.coverUrl} alt={vol.name} className="w-full h-full object-cover" />
-                            ) : (
-                              <Layers className="text-accent/60" size={28} />
-                            )}
-                          </div>
-                          <div className="p-3">
-                            <p className="text-sm font-semibold text-ink truncate">{vol.name}</p>
-                            <p className="text-[11px] text-ink-faint">{vol.chapters.length} chapter(s)</p>
-                          </div>
-                        </GlassCard>
-                        <div className="absolute top-2 right-2 flex items-center gap-1">
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openEditVolume(vol); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Edit volume info"
-                            title="Edit name/cover"
-                          >
+                  {activeManga.volumes.map(vol => (
+                    <div key={vol.id} className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <h3 className="text-sm font-display font-semibold text-ink-muted uppercase tracking-wide truncate">{vol.name}</h3>
+                          <button onClick={() => openEditVolume(vol)} className="p-1 rounded text-ink-faint hover:text-accent shrink-0" aria-label="Edit volume info" title="Edit volume name/cover">
                             <Pencil size={12} />
                           </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDownloadVolumeZip(vol); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Download volume as ZIP"
-                            title="Download as ZIP"
-                          >
+                          <button onClick={() => handleDownloadVolumeZip(vol)} className="p-1 rounded text-ink-faint hover:text-accent shrink-0" aria-label="Download volume as ZIP" title="Download as ZIP">
                             <Download size={12} />
                           </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleUploadVolumeToCloud(activeManga, vol); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Upload volume to Telecloud"
-                            title="Upload to Telecloud"
-                          >
+                          <button onClick={() => handleUploadVolumeToCloud(activeManga, vol)} className="p-1 rounded text-ink-faint hover:text-accent shrink-0" aria-label="Upload volume to Telecloud" title="Upload to Telecloud">
                             <UploadCloud size={12} />
                           </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); handleDeleteVolume(vol); }}
-                            className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
-                            aria-label="Delete volume"
-                          >
+                          <button onClick={() => handleDeleteVolume(vol)} className="p-1 rounded text-ink-faint hover:text-red-500 shrink-0" aria-label="Delete volume">
                             <Trash2 size={12} />
                           </button>
                         </div>
-                      </button>
-                    ), 'library-volumes')}
-                  </div>
+                        <Button size="sm" variant="secondary" onClick={() => { setActiveVolumeId(vol.id); setShowCreateChapterModal(true); }}><Plus size={14} /> Add Chapter</Button>
+                      </div>
+                      {vol.chapters.length === 0 ? (
+                        <GlassCard className="p-6 flex flex-col items-center text-center gap-2">
+                          <FileStack className="text-ink-faint" size={22} />
+                          <p className="text-xs text-ink-muted">No chapters yet in this volume.</p>
+                        </GlassCard>
+                      ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                          {vol.chapters.map(chap => (
+                            <button
+                              key={chap.id}
+                              onClick={() => { setViewOnlySession(null); setRemoteViewOnlyChapter(null); setActiveVolumeId(vol.id); setPendingChapterId(chap.id); setStudioBuilding(true); }}
+                              className="stagger-item group relative text-left overflow-hidden rounded-2xl"
+                            >
+                              <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
+                                <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
+                                  {chap.coverUrl ? (
+                                    <img src={chap.coverUrl} alt={chap.name} className="w-full h-full object-cover" />
+                                  ) : (
+                                    <FileStack className="text-accent/60" size={28} />
+                                  )}
+                                </div>
+                                <div className="p-3">
+                                  <p className="text-sm font-semibold text-ink truncate">{chap.name}</p>
+                                  <p className="text-[11px] text-ink-faint">{chap.pages.length} page(s)</p>
+                                </div>
+                              </GlassCard>
+                              <div className="absolute top-2 right-2 flex items-center gap-1">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openEditChapter(vol, chap); }}
+                                  className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                                  aria-label="Edit chapter info"
+                                  title="Edit name/cover"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setPendingTextEditorChapter({ id: chap.id, name: chap.name }); setActiveNavigationTab('text-editor'); }}
+                                  className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                                  aria-label="Open in Text Editor"
+                                  title="Open in Text Editor"
+                                >
+                                  <FileText size={12} />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleDownloadChapterZip(chap); }}
+                                  className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                                  aria-label="Download chapter as ZIP"
+                                  title="Download as ZIP"
+                                >
+                                  <Download size={12} />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleUploadChapterToCloud(activeManga, vol, chap); }}
+                                  className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                                  aria-label="Upload chapter to Telecloud"
+                                  title="Upload to Telecloud"
+                                >
+                                  <UploadCloud size={12} />
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); handleDeleteChapter(vol, chap); }}
+                                  className="p-1.5 rounded-lg bg-black/40 text-white hover:bg-black/60"
+                                  aria-label="Delete chapter"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -1135,7 +1103,7 @@ export default function App() {
                     </GlassCard>
                   )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                    {interleaveWithAds(mangas, manga => (
+                    {mangas.map(manga => (
                       <button key={manga.id} onClick={() => setActiveMangaId(manga.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
@@ -1256,7 +1224,7 @@ export default function App() {
                   )}
                   {!isLoadingLibrary && (
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                    {interleaveWithAds(visibleWorkspaces, ws => (
+                    {visibleWorkspaces.map(ws => (
                       <button key={ws.id} onClick={() => setActiveWorkspaceId(ws.id)} className="stagger-item group relative text-left overflow-hidden rounded-2xl">
                         <GlassCard className="overflow-hidden flex flex-col h-full transition-transform group-hover:-translate-y-0.5">
                           <div className="aspect-[3/4] bg-gradient-to-br from-accent/25 to-accent/5 flex items-center justify-center overflow-hidden">
@@ -1333,7 +1301,7 @@ export default function App() {
         </main>
       </div>
 
-      <BottomTabBar activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />
+      {!studioActive && <BottomTabBar activeTab={activeNavigationTab} onTabChange={setActiveNavigationTab} onCreatePress={handleCreatePress} />}
 
       {/* Edit library card info (rename / re-cover a workspace, series, volume or chapter) */}
       <Modal
@@ -1596,6 +1564,12 @@ export default function App() {
       <Modal open={showTermsModal} onClose={() => setShowTermsModal(false)} title="User Agreement" size="lg">
         <UserAgreement />
       </Modal>
+
+      <JoinLiveSessionModal
+        open={!!pendingWatchSession}
+        onCancel={() => setPendingWatchSession(null)}
+        onConfirm={handleConfirmJoinLiveSession}
+      />
 
       {/* Mounted globally so Telecloud upload/download/restore progress is visible
           from any tab (e.g. a Library "Upload to Telecloud" action), not only

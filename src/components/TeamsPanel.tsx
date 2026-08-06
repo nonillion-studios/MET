@@ -4,9 +4,8 @@ import {
   Users, ImagePlus, Plus, Mail, Check, X, Crown, ShieldCheck, ArrowUpCircle, ArrowDownCircle, UserMinus,
   Send, ListTodo, Paperclip, CalendarClock, Trash2, Wallet, Flame, Trophy, BarChart3, Link as LinkIcon,
   ThumbsUp, ThumbsDown, Pencil, LogOut, Clock3, PiggyBank, Home, MessageCircle, Globe, Lock, ArrowLeft, UserPlus,
-  Megaphone, AlertTriangle, ChevronDown, Boxes, Mic, Radio, RefreshCw, Eye,
+  Megaphone, AlertTriangle, ChevronDown, Boxes, Radio, RefreshCw, Eye, Ban, ShieldOff,
 } from 'lucide-react';
-import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { GlassCard, Button, Input, Textarea, Modal, Switch, SkeletonCard, SkeletonRow } from './ui';
 import { TeamUploadModal, type TeamUploadMeta } from './TeamUploadModal';
 import { swal, swalToast, confirmAction } from '../lib/swalTheme';
@@ -20,7 +19,7 @@ import {
   Team, TeamMember, JOB_TITLES, JobTitle,
   createTeam, getMyOwnedTeam, getMyMembership, getPendingInvitesForMe,
   inviteMember, acceptInvite, declineInvite, listTeamMembers, updateMemberFields,
-  promoteToLeader, demoteToMember, removeMember, getLeaderboard,
+  promoteToLeader, demoteToMember, removeMember, banMember, unbanMember, confirmTelegramChannelJoined, getLeaderboard,
   updateTeamSettings, deleteTeam, broadcastToTeam, updateMyNotificationPrefs, updateMyNotificationCategory, updateMyPrivacyPrefs,
   setMemberVerified, listMyMemberships, getActiveTeamId, setActiveTeamId,
   TeamCustomPermissionDef, TeamCustomPermissionGrant,
@@ -46,7 +45,7 @@ import {
 } from '../lib/memberRequests';
 import {
   requestToJoinTeam, decideJoinRequest, listPublicTeams, listPendingJoinRequests, expireStaleJoinRequests,
-  createInviteToken, redeemInviteToken, getPublicTeamLeaderboard, PublicTeamLeaderboardRow,
+  getPublicTeamLeaderboard, PublicTeamLeaderboardRow,
   listResponseTemplates, upsertResponseTemplate, deleteResponseTemplate, ResponseTemplate,
   JoinRequest, PublicTeamCard,
 } from '../lib/joinRequests';
@@ -56,7 +55,7 @@ import {
   editTeamMessage, deleteTeamMessage, pinTeamMessage, editDirectMessage, deleteDirectMessage,
   listReactions, subscribeToReactions, toggleReaction, MessageReaction,
   parseMentions, subscribeToTyping, markTeamChatRead, getTeamChatUnreadCount,
-  reportMessage,
+  reportMessage, listMessageReports, resolveMessageReport, getReportedMessage, adminDeleteMessage, MessageReport,
 } from '../lib/chat';
 import { notify } from '../lib/notifications';
 import { dominantColorFromImage } from '../lib/color';
@@ -78,10 +77,8 @@ import { getActiveStudioSessionsForTeam, type StudioSessionRow } from '../lib/st
 
 type SectionId = 'dashboard' | 'tasks' | 'bank' | 'chat' | 'files' | 'requests' | 'roster' | 'analytics' | 'admin' | 'live';
 
-export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken, workspaces, onWatchLiveSession, onGoLive }: {
+export function TeamsPanel({ cc, workspaces, onWatchLiveSession, onGoLive }: {
   cc: CloudClient;
-  pendingJoinToken?: string | null;
-  onConsumedJoinToken?: () => void;
   /** Read-only, for LiveSessionsSection to resolve a session's chapter_id into a real chapter name
    *  on this device (chapter ids are only meaningful within this device's own local library). */
   workspaces: Workspace[];
@@ -101,10 +98,6 @@ export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken, workspac
         <p className="text-xs text-ink-muted mt-0.5">Signed in as {session?.user.email}</p>
       </div>
 
-      {pendingJoinToken && onConsumedJoinToken && (
-        <RedeemInviteTokenModal token={pendingJoinToken} onClose={onConsumedJoinToken} />
-      )}
-
       <PendingOwnerTransfers />
 
       {isAdmin
@@ -114,28 +107,33 @@ export function TeamsPanel({ cc, pendingJoinToken, onConsumedJoinToken, workspac
   );
 }
 
-function RedeemInviteTokenModal({ token, onClose }: { token: string; onClose: () => void }) {
+/** Replaces the old "join via shareable link" flow — a member pastes the Team ID they were given
+ *  (visible in that team's own Admin > Team ID card) and sends a join request, same
+ *  leader/owner-approval flow as every other join path. */
+function JoinByTeamIdCard({ onSent }: { onSent: () => void }) {
+  const [teamId, setTeamId] = useState('');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
 
   const handleSend = async () => {
+    if (!teamId.trim()) { swal({ icon: 'error', title: 'Team ID required', text: 'Paste the team ID you were given.' }); return; }
     setSending(true);
-    const error = await redeemInviteToken(token, message.trim());
+    const error = await requestToJoinTeam(teamId.trim(), message.trim());
     setSending(false);
-    if (error) { swal({ icon: 'error', title: 'Could not join', text: error }); onClose(); return; }
+    if (error) { swal({ icon: 'error', title: 'Could not send request', text: error }); return; }
     swalToast({ icon: 'success', title: 'Join request sent' });
-    onClose();
+    setTeamId(''); setMessage('');
+    onSent();
   };
 
   return (
-    <Modal open onClose={onClose} title="Join via invite link" size="sm" footer={
+    <GlassCard className="p-5 space-y-3">
+      <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><LinkIcon size={15} className="text-accent" /> Join a Team by ID</h3>
+      <p className="text-xs text-ink-muted">Ask a team's owner or leader for their Team ID, paste it below, and send a request — they still approve or reject it.</p>
+      <Input placeholder="Team ID" value={teamId} onChange={e => setTeamId(e.target.value)} className="font-mono text-xs" />
+      <Textarea placeholder="Message (optional)" value={message} onChange={e => setMessage(e.target.value)} rows={2} />
       <Button className="w-full" onClick={handleSend} disabled={sending}>{sending ? 'Sending...' : 'Send Join Request'}</Button>
-    }>
-      <div className="space-y-1">
-        <label className="text-xs text-accent font-semibold">Message (optional letter to the admin)</label>
-        <Textarea placeholder="Tell them a bit about yourself..." value={message} onChange={e => setMessage(e.target.value)} rows={4} />
-      </div>
-    </Modal>
+    </GlassCard>
   );
 }
 
@@ -1083,6 +1081,39 @@ function TeamRoster({
     onChanged();
   };
 
+  // Distinct from Remove: bans additionally block request_to_join_team, so this member can't
+  // just immediately request to rejoin the way a plain removed member could.
+  const handleBan = async (m: TeamMember) => {
+    if (!m.user_id) return;
+    const result = await swal({
+      icon: 'warning',
+      title: 'Ban this member?',
+      text: 'They will be removed and blocked from requesting to join this team again until unbanned.',
+      input: 'text',
+      inputPlaceholder: 'Reason (optional)',
+      showCancelButton: true,
+      confirmButtonText: 'Ban',
+      confirmButtonColor: '#FF3B30',
+    });
+    if (!result.isConfirmed) return;
+    setBusyId(m.id);
+    const error = await banMember(team.id, m.user_id, (result.value as string)?.trim() || undefined);
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not ban member', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Member banned' });
+    onChanged();
+  };
+
+  const handleUnban = async (m: TeamMember) => {
+    if (!m.user_id) return;
+    setBusyId(m.id);
+    const error = await unbanMember(team.id, m.user_id);
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not unban member', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Member unbanned' });
+    onChanged();
+  };
+
   return (
     <GlassCard className="overflow-hidden">
       {editing && <EditMemberModal member={editing} teamId={team.id} isOwner={isOwner} onClose={() => setEditing(null)} onSaved={onChanged} />}
@@ -1156,8 +1187,13 @@ function TeamRoster({
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${m.status === 'active' ? 'bg-accent-soft text-accent' : 'bg-ink/5 text-ink-faint'}`}>
-                  {m.status === 'active' ? 'Active' : 'Pending'}
+                <span
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    m.is_banned ? 'bg-danger/10 text-danger' : m.status === 'active' ? 'bg-accent-soft text-accent' : 'bg-ink/5 text-ink-faint'
+                  }`}
+                  title={m.is_banned && m.banned_reason ? `Banned: ${m.banned_reason}` : undefined}
+                >
+                  {m.is_banned ? 'Banned' : m.status === 'active' ? 'Active' : 'Pending'}
                 </span>
                 {canEditMemberDetails && m.status === 'active' && (
                   <button onClick={() => setEditing(m)} aria-label="Edit member" title="Edit member" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
@@ -1178,6 +1214,16 @@ function TeamRoster({
                 {canManageMembers && (m.member_status === 'on_leave' || m.member_status === 'resigned') && m.user_id && (
                   <button onClick={() => setReassignFrom(m)} aria-label="Reassign open tasks" title="Reassign open tasks" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
                     <ListTodo size={14} />
+                  </button>
+                )}
+                {canManageMembers && m.is_banned && (
+                  <button onClick={() => handleUnban(m)} disabled={busyId === m.id} aria-label="Unban member" title="Unban member" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
+                    <ShieldOff size={14} />
+                  </button>
+                )}
+                {canManageMembers && !m.is_banned && m.status === 'active' && (
+                  <button onClick={() => handleBan(m)} disabled={busyId === m.id} aria-label="Ban member" title="Ban member" className="p-1.5 rounded-lg text-ink-faint hover:text-danger hover:bg-danger/10 transition-colors">
+                    <Ban size={14} />
                   </button>
                 )}
                 {canManageMembers && (
@@ -1462,6 +1508,8 @@ function MemberTeamSection({ cc, workspaces, onWatchLiveSession, onGoLive }: { c
           ))}
         </div>
       )}
+
+      <JoinByTeamIdCard onSent={refresh} />
 
       <TeamDirectory />
     </div>
@@ -2703,8 +2751,9 @@ function JoinRequestRow({ request, teamId, onDecided }: { request: JoinRequest; 
   const handleDecide = async (approve: boolean) => {
     setBusy(true);
     const body = templates.find(t => t.id === templateId)?.body;
-    await decideJoinRequest(request.id, approve, body);
+    const error = await decideJoinRequest(request.id, approve, body);
     setBusy(false);
+    if (error) { swal({ icon: 'error', title: 'Could not decide request', text: error }); return; }
     onDecided();
   };
 
@@ -3191,15 +3240,6 @@ async function ensurePrivateFolderId(cc: CloudClient, team: Team, userId: string
   return refreshed.find(f => f.parentId === null && f.name === name)?.id ?? null;
 }
 
-/** The Team Files browser only ever shows ZIP backups — checked against the underlying
- *  Telegram file's own name (not the possibly-custom display name/meta.name, which might
- *  omit the extension entirely), matching how downloadCloudFile derives a file's real
- *  extension elsewhere in this file. */
-function isZipFile(f: CloudFile): boolean {
-  const rawName = (f.msg as any)?.file?.name as string | undefined;
-  return (rawName || f.name || '').toLowerCase().endsWith('.zip');
-}
-
 function TeamFilesSection({ team, canManage, canManageCloudFiles, cc, members }: { team: Team; canManage: boolean; canManageCloudFiles: boolean; cc: CloudClient; members: TeamMember[] }) {
   const [files, setFiles] = useState<CloudFile[]>([]);
   const [folders, setFolders] = useState<CloudFolder[]>([]);
@@ -3218,6 +3258,16 @@ function TeamFilesSection({ team, canManage, canManageCloudFiles, cc, members }:
   const coverTargetRef = useRef<CloudFile | null>(null);
   const { session } = useTeamAuth();
   const myUserId = session?.user.id;
+  const myMember = members.find(m => m.user_id === myUserId);
+  const [confirmingChannel, setConfirmingChannel] = useState(false);
+
+  const handleConfirmChannel = async () => {
+    setConfirmingChannel(true);
+    const error = await confirmTelegramChannelJoined(team.id);
+    setConfirmingChannel(false);
+    if (error) { swal({ icon: 'error', title: 'Could not confirm', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Thanks — files should now load' });
+  };
 
   const refresh = async () => {
     if (!team.telegram_channel_id) { setLoading(false); return; }
@@ -3391,21 +3441,33 @@ function TeamFilesSection({ team, canManage, canManageCloudFiles, cc, members }:
   // task-submission/reference files land in the same Telegram channel but
   // aren't deliberate Team Cloud uploads, so they're excluded by the flags
   // set at their own upload call sites (see upsertCloudFileMeta callers).
-  // This browser is specifically for ZIP backups (matching the personal TeleCloud's own
-  // workspace-backup listing, which is ZIP-only by construction) — a reference photo or
-  // other non-ZIP file uploaded into the same channel/folder isn't a deliverable and
-  // shouldn't clutter this card grid.
+  // Any file type is shown here — Team Cloud is a general shared drive, not a
+  // ZIP-backups-only browser (a prior version restricted this to .zip; removed).
   const filesInFolder = files.filter(f => {
     if (f.folderId !== currentFolderId) return false;
     if (!canSeeFile(f)) return false;
     const meta = metaByMsgId.get(f.id);
     if (meta?.is_chat_upload || meta?.is_task_submission) return false;
-    return isZipFile(f);
+    return true;
   });
   const inFinished = currentFolder?.name === 'Finished';
 
   return (
     <div className="space-y-4">
+      {myMember && !myMember.telegram_channel_confirmed && (
+        <GlassCard className="p-4 flex items-center justify-between gap-3 flex-wrap bg-accent-soft/40 border-accent/30">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-ink">Join this team's Telegram channel to preview files</p>
+            <p className="text-xs text-ink-muted mt-0.5">
+              Team Cloud reads files through your own Telegram account — join the channel by ID first:{' '}
+              <span className="font-mono text-ink">{team.telegram_channel_id}</span>
+            </p>
+          </div>
+          <Button size="sm" onClick={handleConfirmChannel} disabled={confirmingChannel} className="shrink-0">
+            {confirmingChannel ? 'Confirming...' : "I've Joined"}
+          </Button>
+        </GlassCard>
+      )}
       <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) setPendingUploadFile(f); e.target.value = ''; }} />
       <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCoverFile(f); e.target.value = ''; }} />
       {pendingUploadFile && (
@@ -3550,10 +3612,12 @@ function TeamFilesSection({ team, canManage, canManageCloudFiles, cc, members }:
 // Chat (team channel + DMs)
 // ---------------------------------------------------------------------------
 
-function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, cc }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; isOwner: boolean; canManage: boolean; onChanged: () => void; cc: CloudClient }) {
+export function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, cc }: { team: Team; members: TeamMember[]; myMember: TeamMember | null; isOwner: boolean; canManage: boolean; onChanged: () => void; cc: CloudClient }) {
   const [mode, setMode] = useState<'team' | 'dm'>('team');
   const [activePartner, setActivePartner] = useState<string | null>(null);
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
+  const [imageLightbox, setImageLightbox] = useState<{ url: string; name: string } | null>(null);
+  const openLightbox = (url: string, name: string) => setImageLightbox({ url, name });
 
   const partnerMember = members.find(m => m.user_id === activePartner);
   const profileMember = members.find(m => m.user_id === profileUserId);
@@ -3577,7 +3641,7 @@ function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, c
         </button>
       </div>
 
-      {mode === 'team' && <TeamChatThread team={team} members={members} myMember={myMember} canManage={canManage} onOpenProfile={setProfileUserId} cc={cc} />}
+      {mode === 'team' && <TeamChatThread team={team} members={members} myMember={myMember} canManage={canManage} onOpenProfile={setProfileUserId} onOpenLightbox={openLightbox} cc={cc} />}
       {mode === 'dm' && !activePartner && <ConversationList team={team} members={members} myMember={myMember} onSelect={setActivePartner} />}
       {mode === 'dm' && activePartner && (
         <DirectThread
@@ -3587,6 +3651,7 @@ function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, c
           partnerAvatar={partnerMember?.profile?.avatar || ''}
           onBack={() => setActivePartner(null)}
           onOpenProfile={setProfileUserId}
+          onOpenLightbox={openLightbox}
           cc={cc}
         />
       )}
@@ -3601,6 +3666,27 @@ function ChatSection({ team, members, myMember, isOwner, canManage, onChanged, c
           onChanged={onChanged}
         />
       )}
+
+      <Modal open={!!imageLightbox} onClose={() => setImageLightbox(null)} title={imageLightbox?.name || 'Image'} size="lg">
+        {imageLightbox && (
+          <div className="space-y-3">
+            <img src={imageLightbox.url} alt={imageLightbox.name} className="w-full max-h-[70vh] object-contain rounded-xl" />
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                onClick={() => {
+                  const a = document.createElement('a');
+                  a.href = imageLightbox.url;
+                  a.download = imageLightbox.name || 'image';
+                  a.click();
+                }}
+              >
+                <Download size={14} /> Download
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </GlassCard>
   );
 }
@@ -3647,12 +3733,14 @@ const attachmentPreviewCache = new Map<number, string>();
 /** A photo or voice-message attachment auto-downloads and renders inline the moment the
  *  bubble mounts — no manual "click to download" step, unlike a generic file attachment,
  *  which keeps the existing Paperclip download link/button. */
-function AttachmentPreview({ channelId, msgId, name, onFetchPreview, onDownload }: {
+function AttachmentPreview({ channelId, msgId, name, onFetchPreview, onDownload, onOpenLightbox }: {
   channelId: string;
   msgId: number;
   name: string;
   onFetchPreview: (channelId: string, msgId: number, mimeType?: string) => Promise<string | null>;
   onDownload: () => void;
+  /** Opens the shared image lightbox (in-app, with a Download button) instead of a new browser tab. */
+  onOpenLightbox: (url: string, name: string) => void;
 }) {
   const kind = getAttachmentKind(name);
   const [url, setUrl] = useState<string | null>(attachmentPreviewCache.get(msgId) ?? null);
@@ -3676,16 +3764,16 @@ function AttachmentPreview({ channelId, msgId, name, onFetchPreview, onDownload 
 
   if (kind === 'file') {
     return (
-      <button onClick={onDownload} className="text-[11px] text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1">
-        <Paperclip size={11} /> {name || 'Attachment'}
+      <button onClick={onDownload} title={name || 'Attachment'} aria-label={`Download ${name || 'attachment'}`} className="text-accent hover:text-ink flex items-center gap-1 font-semibold mt-1">
+        <Paperclip size={14} />
       </button>
     );
   }
 
   if (failed) {
     return (
-      <button onClick={onDownload} className="text-[11px] text-danger hover:text-ink flex items-center gap-1 font-semibold mt-1">
-        <Paperclip size={11} /> Preview failed — {name || 'Attachment'}
+      <button onClick={onDownload} title={`Preview failed — ${name || 'Attachment'}`} aria-label={`Download ${name || 'attachment'}`} className="text-danger hover:text-ink flex items-center gap-1 font-semibold mt-1">
+        <Paperclip size={14} />
       </button>
     );
   }
@@ -3695,10 +3783,40 @@ function AttachmentPreview({ channelId, msgId, name, onFetchPreview, onDownload 
   }
 
   if (kind === 'image') {
-    return <img src={url} alt={name} className="mt-1 max-w-[240px] max-h-[240px] rounded-lg object-cover cursor-pointer" onClick={() => window.open(url, '_blank')} />;
+    return <img src={url} alt={name} className="mt-1 max-w-[240px] max-h-[240px] rounded-lg object-cover cursor-pointer" onClick={() => onOpenLightbox(url, name)} />;
   }
 
   return <audio controls src={url} className="mt-1 h-9 max-w-[240px]" />;
+}
+
+/** Shown above the composer once a file is picked, before it actually uploads — a caption can
+ *  still be typed in the normal composer input while this preview sits there, matching every
+ *  other chat app's "attach, review, then send" convention instead of uploading the instant a
+ *  file is selected. */
+function PendingAttachmentBar({ file, onCancel }: { file: File; onCancel: () => void }) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const isImage = file.type.startsWith('image/');
+
+  useEffect(() => {
+    if (!isImage) return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file, isImage]);
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 border-t border-hairline bg-ink/[0.02] shrink-0">
+      {isImage && previewUrl ? (
+        <img src={previewUrl} alt={file.name} className="w-10 h-10 rounded-lg object-cover shrink-0" />
+      ) : (
+        <span className="w-10 h-10 rounded-lg bg-ink/5 flex items-center justify-center shrink-0">
+          <Paperclip size={16} className="text-ink-faint" />
+        </span>
+      )}
+      <p className="text-xs text-ink-muted truncate flex-1">{file.name}</p>
+      <button type="button" onClick={onCancel} aria-label="Remove attachment" className="text-ink-faint hover:text-danger text-xs shrink-0 px-1.5">✕</button>
+    </div>
+  );
 }
 
 function ChatAvatar({ name, avatar, size = 28 }: { name: string; avatar?: string; size?: number }) {
@@ -3781,7 +3899,7 @@ function reactionsSignatureEqual(a: MessageReaction[], b: MessageReaction[]): bo
   return true;
 }
 
-const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, isMine, canManage, isVerified, reactions, myUserId, teamId, telegramChannelId, onOpenProfile, onReply, onEdit, onDelete, onPin, onReport, onDownloadAttachment, onFetchAttachmentPreview, onToggleReaction }: {
+const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, isMine, canManage, isVerified, reactions, myUserId, teamId, telegramChannelId, onOpenProfile, onReply, onEdit, onDelete, onPin, onReport, onDownloadAttachment, onFetchAttachmentPreview, onOpenLightbox, onToggleReaction }: {
   message: TeamMessage;
   replied: TeamMessage | null;
   isMine: boolean;
@@ -3799,6 +3917,7 @@ const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, is
   onReport: (m: TeamMessage) => void;
   onDownloadAttachment: (channelId: string, msgId: number, name: string) => void;
   onFetchAttachmentPreview: (channelId: string, msgId: number, mimeType?: string) => Promise<string | null>;
+  onOpenLightbox: (url: string, name: string) => void;
   onToggleReaction: (teamId: string, table: 'team_messages', messageId: string, emoji: string) => void;
 }) {
   const m = message;
@@ -3854,6 +3973,7 @@ const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, is
                   name={m.attachment_name || 'attachment'}
                   onFetchPreview={onFetchAttachmentPreview}
                   onDownload={() => onDownloadAttachment(telegramChannelId, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                  onOpenLightbox={onOpenLightbox}
                 />
               )}
             </>
@@ -3874,7 +3994,7 @@ const TeamMessageBubble = memo(function TeamMessageBubble({ message, replied, is
   reactionsSignatureEqual(prev.reactions, next.reactions)
 ));
 
-const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied, isMine, partnerId, isPartnerOnline, reactions, myUserId, teamId, telegramChannelId, partnerName, partnerAvatar, onDownloadAttachment, onFetchAttachmentPreview, onReply, onEdit, onDelete, onReport, onToggleReaction }: {
+const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied, isMine, partnerId, isPartnerOnline, reactions, myUserId, teamId, telegramChannelId, partnerName, partnerAvatar, onDownloadAttachment, onFetchAttachmentPreview, onOpenLightbox, onReply, onEdit, onDelete, onReport, onToggleReaction }: {
   message: DirectMessage;
   replied: DirectMessage | null;
   isMine: boolean;
@@ -3888,6 +4008,7 @@ const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied
   partnerAvatar?: string;
   onDownloadAttachment: (channelId: string, msgId: number, name: string) => void;
   onFetchAttachmentPreview: (channelId: string, msgId: number, mimeType?: string) => Promise<string | null>;
+  onOpenLightbox: (url: string, name: string) => void;
   onReply: (m: DirectMessage) => void;
   onEdit: (m: DirectMessage) => void;
   onDelete: (id: string) => void;
@@ -3941,6 +4062,7 @@ const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied
                   name={m.attachment_name || 'attachment'}
                   onFetchPreview={onFetchAttachmentPreview}
                   onDownload={() => onDownloadAttachment(telegramChannelId, m.attachment_msg_id!, m.attachment_name || 'attachment')}
+                  onOpenLightbox={onOpenLightbox}
                 />
               )}
             </>
@@ -3961,8 +4083,8 @@ const DirectMessageBubble = memo(function DirectMessageBubble({ message, replied
   reactionsSignatureEqual(prev.reactions, next.reactions)
 ));
 
-function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc }: {
-  team: Team; members: TeamMember[]; myMember: TeamMember | null; canManage: boolean; onOpenProfile: (userId: string) => void; cc: CloudClient;
+function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, onOpenLightbox, cc }: {
+  team: Team; members: TeamMember[]; myMember: TeamMember | null; canManage: boolean; onOpenProfile: (userId: string) => void; onOpenLightbox: (url: string, name: string) => void; cc: CloudClient;
 }) {
   const [messages, setMessages] = useState<TeamMessage[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
@@ -3973,6 +4095,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
   const [search, setSearch] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [attaching, setAttaching] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const typingRef = useRef<ReturnType<typeof subscribeToTyping> | null>(null);
   const typingTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -4092,7 +4215,10 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     setAttaching(false);
     if (result) {
       const id = crypto.randomUUID();
-      const text = body.trim() || captionOverride || `📎 ${result.name}`;
+      // Deliberately not the filename — AttachmentPreview already shows the file itself
+      // (a thumbnail, or an icon with the name only as a hover tooltip), so echoing it back as the
+      // message's own visible text would be pure redundancy.
+      const text = body.trim() || captionOverride || '📎';
       pinToBottom();
       setMessages(prev => upsertById(prev, {
         id, team_id: team.id, sender_id: myUserId || '', body: text,
@@ -4106,9 +4232,14 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
     }
   };
 
-  const voiceRecorder = useVoiceRecorder((file) => handleAttach(file, '🎤 Voice message'));
 
   const handleSend = async () => {
+    if (pendingFile) {
+      const file = pendingFile;
+      setPendingFile(null);
+      await handleAttach(file);
+      return;
+    }
     if (!body.trim()) return;
     const text = body.trim();
     setBody(''); setMentionQuery(null);
@@ -4135,7 +4266,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
       return;
     }
 
-    const mentioned = parseMentions(text, members);
+    const mentioned = parseMentions(text, members).filter(id => id !== myUserId);
     for (const userId of mentioned) {
       notify(userId, 'Mentioned you', `${myMember?.profile?.name || 'Someone'} mentioned you: "${text.slice(0, 80)}"`);
     }
@@ -4148,7 +4279,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
   };
 
   const mentionCandidates = mentionQuery !== null
-    ? members.filter(m => m.status === 'active' && (m.profile?.name || m.invited_email).toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 5)
+    ? members.filter(m => m.status === 'active' && m.user_id !== myUserId && (m.profile?.name || m.invited_email).toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 5)
     : [];
 
   return (
@@ -4189,6 +4320,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
             onReport={handleReportMessage}
             onDownloadAttachment={(channelId, msgId, name) => cc.downloadTaskAttachment(channelId, msgId, name)}
             onFetchAttachmentPreview={(channelId, msgId, mimeType) => cc.fetchAttachmentBlobUrl(channelId, msgId, mimeType)}
+            onOpenLightbox={onOpenLightbox}
             onToggleReaction={handleToggleReaction}
           />
         ))}
@@ -4224,6 +4356,7 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
           <button onClick={() => setReplyTo(null)} className="text-ink-faint hover:text-danger text-xs shrink-0">✕</button>
         </div>
       )}
+      {pendingFile && <PendingAttachmentBar file={pendingFile} onCancel={() => setPendingFile(null)} />}
       <div className="p-3 border-t border-hairline shrink-0 relative">
         {mentionCandidates.length > 0 && (
           <div className="absolute bottom-full left-3 mb-1 flex flex-col rounded-xl bg-surface border border-hairline shadow-lg overflow-hidden">
@@ -4235,26 +4368,16 @@ function TeamChatThread({ team, members, myMember, canManage, onOpenProfile, cc 
           </div>
         )}
         <div className="flex gap-2">
-          <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching} title="Attach file" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+          <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.target.value = ''; }} />
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching || !!pendingFile} title="Attach file" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
             <Paperclip size={16} />
           </button>
-          <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
-          <button type="button" onClick={() => photoInputRef.current?.click()} disabled={attaching} title="Send a photo" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+          <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.target.value = ''; }} />
+          <button type="button" onClick={() => photoInputRef.current?.click()} disabled={attaching || !!pendingFile} title="Send a photo" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
             <ImagePlus size={16} />
           </button>
-          <button
-            type="button"
-            onClick={voiceRecorder.toggle}
-            disabled={attaching}
-            className={`p-2 rounded-xl transition-colors shrink-0 ${voiceRecorder.isRecording ? 'text-white bg-danger animate-pulse' : 'text-ink-faint hover:text-accent hover:bg-accent-soft'}`}
-            aria-label={voiceRecorder.isRecording ? 'Stop recording' : 'Record voice message'}
-            title={voiceRecorder.isRecording ? 'Stop recording' : 'Record voice message'}
-          >
-            <Mic size={16} />
-          </button>
-          <Input placeholder={editingId ? 'Edit message...' : 'Message the team...'} value={body} onChange={e => handleBodyChange(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
-          <Button onClick={handleSend}><Send size={14} /></Button>
+          <Input placeholder={editingId ? 'Edit message...' : pendingFile ? 'Add a caption (optional)...' : 'Message the team...'} value={body} onChange={e => handleBodyChange(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+          <Button onClick={handleSend} disabled={attaching}><Send size={14} /></Button>
         </div>
       </div>
     </>
@@ -4303,8 +4426,8 @@ function ConversationList({ team, members, myMember, onSelect }: { team: Team; m
   );
 }
 
-function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onOpenProfile, cc }: {
-  team: Team; partnerId: string; partnerName: string; partnerAvatar?: string; onBack: () => void; onOpenProfile: (userId: string) => void; cc: CloudClient;
+function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onOpenProfile, onOpenLightbox, cc }: {
+  team: Team; partnerId: string; partnerName: string; partnerAvatar?: string; onBack: () => void; onOpenProfile: (userId: string) => void; onOpenLightbox: (url: string, name: string) => void; cc: CloudClient;
 }) {
   const [messages, setMessages] = useState<DirectMessage[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
@@ -4312,6 +4435,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
   const [replyTo, setReplyTo] = useState<DirectMessage | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const { scrollRef, showJumpToEnd, handleScroll, jumpToEnd, pinToBottom } = useChatScroll(messages.length);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
@@ -4389,7 +4513,10 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     setAttaching(false);
     if (result) {
       const id = crypto.randomUUID();
-      const text = body.trim() || captionOverride || `📎 ${result.name}`;
+      // Deliberately not the filename — AttachmentPreview already shows the file itself
+      // (a thumbnail, or an icon with the name only as a hover tooltip), so echoing it back as the
+      // message's own visible text would be pure redundancy.
+      const text = body.trim() || captionOverride || '📎';
       pinToBottom();
       setMessages(prev => upsertById(prev, {
         id, team_id: team.id, sender_id: myUserId || '', receiver_id: partnerId, body: text, read: false,
@@ -4401,9 +4528,14 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
     }
   };
 
-  const voiceRecorder = useVoiceRecorder((file) => handleAttach(file, '🎤 Voice message'));
 
   const handleSend = async () => {
+    if (pendingFile) {
+      const file = pendingFile;
+      setPendingFile(null);
+      await handleAttach(file);
+      return;
+    }
     if (!body.trim()) return;
     const text = body.trim();
     setBody('');
@@ -4436,11 +4568,8 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
         <button onClick={onBack} aria-label="Back" className="p-1.5 rounded-lg text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors">
           <ArrowLeft size={14} />
         </button>
-        <button type="button" onClick={() => onOpenProfile(partnerId)} className="flex items-center gap-2 hover:opacity-80">
-          <span className="relative">
-            <ChatAvatar name={partnerName} avatar={partnerAvatar} size={24} />
-            {isPartnerOnline && <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-success border border-surface" />}
-          </span>
+        <button type="button" onClick={() => onOpenProfile(partnerId)} className="flex items-center gap-1.5 hover:opacity-80">
+          {isPartnerOnline && <span className="w-2 h-2 rounded-full bg-success shrink-0" />}
           <p className="text-sm font-semibold text-ink">{partnerName}</p>
         </button>
       </div>
@@ -4461,6 +4590,7 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
             partnerAvatar={partnerAvatar}
             onDownloadAttachment={(channelId, msgId, name) => cc.downloadTaskAttachment(channelId, msgId, name)}
             onFetchAttachmentPreview={(channelId, msgId, mimeType) => cc.fetchAttachmentBlobUrl(channelId, msgId, mimeType)}
+            onOpenLightbox={onOpenLightbox}
             onReply={setReplyTo}
             onEdit={(msg) => { setEditingId(msg.id); setBody(msg.body); }}
             onDelete={deleteDirectMessage}
@@ -4483,27 +4613,18 @@ function DirectThread({ team, partnerId, partnerName, partnerAvatar, onBack, onO
           <button onClick={() => setReplyTo(null)} className="text-ink-faint hover:text-danger text-xs shrink-0">✕</button>
         </div>
       )}
+      {pendingFile && <PendingAttachmentBar file={pendingFile} onCancel={() => setPendingFile(null)} />}
       <div className="p-3 border-t border-hairline flex gap-2 shrink-0">
-        <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
-        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching} title="Attach file" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+        <input ref={fileInputRef} type="file" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.target.value = ''; }} />
+        <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attaching || !!pendingFile} title="Attach file" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
           <Paperclip size={16} />
         </button>
-        <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handleAttach(f); }} />
-        <button type="button" onClick={() => photoInputRef.current?.click()} disabled={attaching} title="Send a photo" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
+        <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) setPendingFile(f); e.target.value = ''; }} />
+        <button type="button" onClick={() => photoInputRef.current?.click()} disabled={attaching || !!pendingFile} title="Send a photo" className="p-2 rounded-xl text-ink-faint hover:text-accent hover:bg-accent-soft transition-colors shrink-0">
           <ImagePlus size={16} />
         </button>
-        <button
-          type="button"
-          onClick={voiceRecorder.toggle}
-          disabled={attaching}
-          className={`p-2 rounded-xl transition-colors shrink-0 ${voiceRecorder.isRecording ? 'text-white bg-danger animate-pulse' : 'text-ink-faint hover:text-accent hover:bg-accent-soft'}`}
-          aria-label={voiceRecorder.isRecording ? 'Stop recording' : 'Record voice message'}
-          title={voiceRecorder.isRecording ? 'Stop recording' : 'Record voice message'}
-        >
-          <Mic size={16} />
-        </button>
-        <Input placeholder={editingId ? 'Edit message...' : 'Type a message...'} value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
-        <Button onClick={handleSend}><Send size={14} /></Button>
+        <Input placeholder={editingId ? 'Edit message...' : pendingFile ? 'Add a caption (optional)...' : 'Type a message...'} value={body} onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSend()} className="flex-1" />
+        <Button onClick={handleSend} disabled={attaching}><Send size={14} /></Button>
       </div>
     </>
   );
@@ -4577,21 +4698,113 @@ function MemberProfileModal({ team, member, canManage, isOwner, onClose, onChang
 // Admin — team settings, broadcast, danger zone (owner only)
 // ---------------------------------------------------------------------------
 
+/** Review queue for reportMessage (chat.ts) — item 26's "preview reports in chat". Each row
+ *  resolves its own reported message content on demand (getReportedMessage) since message_reports
+ *  is polymorphic across two tables and a single embedded-select join can't follow that. */
+function MessageReportsCard({ team, members, onChanged }: { team: Team; members: TeamMember[]; onChanged: () => void }) {
+  const [reports, setReports] = useState<MessageReport[]>([]);
+  const [contentByReport, setContentByReport] = useState<Record<string, { body: string; deleted: boolean; senderId: string | null }>>({});
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    const rows = await listMessageReports(team.id, 'open');
+    setReports(rows);
+    const entries = await Promise.all(rows.map(async r => {
+      const m = await getReportedMessage(r.message_table, r.message_id);
+      return [r.id, m ? { body: m.body, deleted: m.deleted, senderId: m.sender_id } : { body: '(message not found)', deleted: true, senderId: null }] as const;
+    }));
+    setContentByReport(Object.fromEntries(entries));
+    setLoading(false);
+  };
+
+  useEffect(() => { refresh(); }, [team.id]);
+
+  const nameFor = (userId: string | null) => userId === null ? 'Team Bot' : members.find(m => m.user_id === userId)?.profile?.name || 'Member';
+
+  const handleDismiss = async (id: string) => {
+    setBusyId(id);
+    const error = await resolveMessageReport(id, 'dismissed');
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not dismiss report', text: error }); return; }
+    refresh();
+  };
+
+  const handleDelete = async (r: MessageReport) => {
+    setBusyId(r.id);
+    const delError = await adminDeleteMessage(r.message_table, r.message_id);
+    if (delError) { setBusyId(null); swal({ icon: 'error', title: 'Could not delete message', text: delError }); return; }
+    const error = await resolveMessageReport(r.id, 'resolved');
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not resolve report', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Message deleted' });
+    refresh();
+  };
+
+  const handleBanSender = async (r: MessageReport) => {
+    const senderId = contentByReport[r.id]?.senderId;
+    if (!senderId) return;
+    const result = await swal({
+      icon: 'warning',
+      title: 'Ban this member?',
+      text: 'They will be removed and blocked from requesting to join this team again.',
+      showCancelButton: true,
+      confirmButtonText: 'Ban',
+      confirmButtonColor: '#FF3B30',
+    });
+    if (!result.isConfirmed) return;
+    setBusyId(r.id);
+    const banError = await banMember(team.id, senderId, `Reported message: ${r.reason || 'no reason given'}`);
+    if (banError) { setBusyId(null); swal({ icon: 'error', title: 'Could not ban member', text: banError }); return; }
+    const error = await resolveMessageReport(r.id, 'resolved');
+    setBusyId(null);
+    if (error) { swal({ icon: 'error', title: 'Could not resolve report', text: error }); return; }
+    swalToast({ icon: 'success', title: 'Member banned' });
+    onChanged();
+    refresh();
+  };
+
+  if (loading) return <GlassCard className="p-6"><SkeletonRow /></GlassCard>;
+  if (reports.length === 0) return null;
+
+  return (
+    <GlassCard className="p-6 space-y-3">
+      <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><ChatBubbleIcons.Report size={16} className="text-danger" /> Reported Messages ({reports.length})</h3>
+      <div className="space-y-2">
+        {reports.map(r => {
+          const content = contentByReport[r.id];
+          return (
+            <div key={r.id} className="p-3 rounded-xl border border-hairline space-y-1.5">
+              <p className="text-[10px] text-ink-faint">
+                Reported by <span className="font-semibold">{r.reporter?.name || 'Member'}</span> · {new Date(r.created_at).toLocaleString()}
+              </p>
+              {r.reason && <p className="text-xs text-ink-muted italic">"{r.reason}"</p>}
+              <p className="text-xs text-ink bg-ink/5 rounded-lg px-2 py-1.5">
+                <span className="font-semibold">{nameFor(content?.senderId ?? null)}:</span>{' '}
+                {content?.deleted ? <span className="italic text-ink-faint">Message already deleted</span> : content?.body}
+              </p>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" variant="secondary" onClick={() => handleDismiss(r.id)} disabled={busyId === r.id}>Dismiss</Button>
+                {!content?.deleted && (
+                  <Button size="sm" variant="danger" onClick={() => handleDelete(r)} disabled={busyId === r.id}>Delete Message</Button>
+                )}
+                {content?.senderId && (
+                  <Button size="sm" variant="danger" onClick={() => handleBanSender(r)} disabled={busyId === r.id}>Ban Sender</Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </GlassCard>
+  );
+}
+
 function AdminSection({ team, members, onChanged }: { team: Team; members: TeamMember[]; onChanged: () => void }) {
   const [name, setName] = useState(team.name);
   const [transferTo, setTransferTo] = useState('');
   const [transferring, setTransferring] = useState(false);
-  const [creatingInvite, setCreatingInvite] = useState(false);
-
-  const handleCreateInviteLink = async () => {
-    setCreatingInvite(true);
-    const { token, error } = await createInviteToken(team.id);
-    setCreatingInvite(false);
-    if (error || !token) { swal({ icon: 'error', title: 'Could not create invite link', text: error || 'Unknown error' }); return; }
-    const link = `${window.location.origin}${window.location.pathname}?join=${token.token}`;
-    await navigator.clipboard.writeText(link);
-    swalToast({ icon: 'success', title: 'Invite link copied to clipboard' });
-  };
 
   const handleTransfer = async () => {
     if (!transferTo) return;
@@ -4700,6 +4913,9 @@ function AdminSection({ team, members, onChanged }: { team: Team; members: TeamM
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      <div className="lg:col-span-2">
+        <MessageReportsCard team={team} members={members} onChanged={onChanged} />
+      </div>
       <GlassCard className="p-6 space-y-3">
         <h3 className="text-sm font-semibold text-ink">Team Settings</h3>
         <div className="space-y-1">
@@ -4761,9 +4977,17 @@ function AdminSection({ team, members, onChanged }: { team: Team; members: TeamM
       </GlassCard>
 
       <GlassCard className="p-6 space-y-3">
-        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><LinkIcon size={16} className="text-accent" /> Invite Link</h3>
-        <p className="text-xs text-ink-muted">Anyone who opens the link can request to join — you still approve or reject each request.</p>
-        <Button className="w-full" variant="secondary" onClick={handleCreateInviteLink} disabled={creatingInvite}>{creatingInvite ? 'Creating...' : 'Copy Invite Link'}</Button>
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><LinkIcon size={16} className="text-accent" /> Team ID</h3>
+        <p className="text-xs text-ink-muted">Share this ID so someone can request to join — you still approve or reject each request. There's no shareable link anymore, just this ID.</p>
+        <div className="flex items-center gap-2">
+          <Input readOnly value={team.id} className="flex-1 font-mono text-xs" onFocus={e => e.target.select()} />
+          <Button
+            variant="secondary"
+            onClick={async () => { await navigator.clipboard.writeText(team.id); swalToast({ icon: 'success', title: 'Team ID copied' }); }}
+          >
+            Copy
+          </Button>
+        </div>
       </GlassCard>
 
       <GlassCard className="p-6 space-y-3">

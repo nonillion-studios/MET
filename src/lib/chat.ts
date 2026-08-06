@@ -253,6 +253,58 @@ export async function reportMessage(teamId: string, messageTable: 'team_messages
   return error ? error.message : null;
 }
 
+export interface MessageReport {
+  id: string;
+  team_id: string;
+  message_table: 'team_messages' | 'direct_messages';
+  message_id: string;
+  reporter_id: string;
+  reason: string;
+  status: 'open' | 'resolved' | 'dismissed';
+  created_at: string;
+  reporter?: { name: string; avatar: string } | null;
+}
+
+/** Admin review queue for reportMessage above — RLS (message_reports_select_managers, migration
+ *  0062_reports_and_privacy.sql) already restricts this to the team's own owner/leader, so a
+ *  non-manager caller just gets an empty list back rather than needing a client-side gate too. */
+export async function listMessageReports(teamId: string, status: 'open' | 'resolved' | 'dismissed' = 'open'): Promise<MessageReport[]> {
+  const { data } = await supabase
+    .from('message_reports')
+    .select('*, reporter:profiles!message_reports_reporter_id_fkey(name, avatar)')
+    .eq('team_id', teamId)
+    .eq('status', status)
+    .order('created_at', { ascending: false });
+  return (data as unknown as MessageReport[]) ?? [];
+}
+
+/** The reported message's own current content — fetched separately since message_reports.message_id
+ *  points at one of two tables (team_messages or direct_messages) depending on message_table, which
+ *  isn't something a single embedded-select join can follow. Returns null if the message was since
+ *  hard-deleted (its row genuinely gone, not just soft-deleted — a soft-deleted row still resolves,
+ *  with body '' and deleted: true, same as it renders in the thread itself). */
+export async function getReportedMessage(messageTable: 'team_messages' | 'direct_messages', messageId: string): Promise<{ body: string; deleted: boolean; sender_id: string | null } | null> {
+  const { data } = await supabase.from(messageTable).select('body, deleted, sender_id').eq('id', messageId).maybeSingle();
+  return (data as { body: string; deleted: boolean; sender_id: string | null }) ?? null;
+}
+
+export async function resolveMessageReport(id: string, status: 'resolved' | 'dismissed'): Promise<string | null> {
+  const { error } = await supabase.from('message_reports').update({ status }).eq('id', id);
+  return error ? error.message : null;
+}
+
+/** Same soft-delete shape deleteTeamMessage/deleteDirectMessage already use (blank body,
+ *  deleted:true, so "This message was deleted" renders in place) — just reachable by a team
+ *  manager for someone else's message, not only the sender. team_messages already grants this via
+ *  team_messages_update_managers_pin (any field, not just `pinned` — RLS is row-level, not
+ *  column-level). direct_messages needed a new, narrowly-scoped policy (migration
+ *  0073_message_report_queue.sql) that only applies to a DM with an *open* report against it —
+ *  a manager can't use this to edit arbitrary private DMs, only ones actually reported. */
+export async function adminDeleteMessage(messageTable: 'team_messages' | 'direct_messages', messageId: string): Promise<string | null> {
+  const { error } = await supabase.from(messageTable).update({ deleted: true, body: '' }).eq('id', messageId);
+  return error ? error.message : null;
+}
+
 // ---------------------------------------------------------------------------
 // System bot — automated messages only (welcome/task notices), no command parsing.
 // ---------------------------------------------------------------------------

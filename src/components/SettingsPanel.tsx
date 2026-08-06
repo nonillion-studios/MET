@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut, Download, CloudUpload, Archive, Eraser, Users } from 'lucide-react';
+import { Sun, Moon, Laptop, Trash2, Info, ShieldCheck, FileText, ImagePlus, Save, LogOut, Download, CloudUpload, Archive, Eraser, Users, Sparkles } from 'lucide-react';
 import { clear } from 'idb-keyval';
 import { useTheme, type ThemeMode } from '../contexts/ThemeContext';
 import { GlassCard, Button, Input } from './ui';
-import { AdSlot } from './AdSlot';
 import { swal, swalToast } from '../lib/swalTheme';
 import { readAvatarFile, uploadImageToStorage } from '../lib/image';
 import { useTeamAuth, profileFromSession } from '../lib/teamAuth';
@@ -15,6 +14,7 @@ import { isAllowedAnnouncementSender } from '../lib/adminMessages';
 import { AdminDashboard } from './AdminDashboard';
 import { isSiteAdmin } from '../lib/adminDashboard';
 import { loadMagicEraseServer, saveMagicEraseServer } from '../lib/magicEraseStore';
+import { loadAiTranslationSettings, saveAiTranslationSettings } from '../lib/geminiSettingsStore';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -70,6 +70,36 @@ export function SettingsPanel({
     await saveMagicEraseServer(magicEraseServer);
     setSavingMagicErase(false);
     swalToast({ icon: 'success', title: 'Magic Erase server saved' });
+  };
+
+  const PRESET_LANGUAGES = ['English', 'Spanish', 'Arabic', 'Japanese', 'Korean', 'French', 'German', 'Portuguese', 'Italian', 'Indonesian'];
+  const [geminiKey, setGeminiKey] = useState('');
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiTargetLanguage, setAiTargetLanguage] = useState('');
+  const [customLanguage, setCustomLanguage] = useState('');
+  const [customLanguageMode, setCustomLanguageMode] = useState(false);
+  const [savingAiSettings, setSavingAiSettings] = useState(false);
+  const isCustomLanguage = customLanguageMode || (aiTargetLanguage !== '' && !PRESET_LANGUAGES.includes(aiTargetLanguage));
+
+  useEffect(() => {
+    if (!session) return;
+    loadAiTranslationSettings().then(settings => {
+      if (!settings) return;
+      setGeminiKey(settings.geminiKey);
+      setAiPrompt(settings.defaultPrompt);
+      setAiTargetLanguage(settings.targetLanguage);
+      if (settings.targetLanguage && !PRESET_LANGUAGES.includes(settings.targetLanguage)) {
+        setCustomLanguage(settings.targetLanguage);
+        setCustomLanguageMode(true);
+      }
+    });
+  }, [session]);
+
+  const handleSaveAiSettings = async () => {
+    setSavingAiSettings(true);
+    await saveAiTranslationSettings({ geminiKey, defaultPrompt: aiPrompt, targetLanguage: aiTargetLanguage });
+    setSavingAiSettings(false);
+    swalToast({ icon: 'success', title: 'AI translation settings saved' });
   };
 
   const handleEnableNotifications = async () => {
@@ -327,6 +357,70 @@ export function SettingsPanel({
         </div>
       </GlassCard>
 
+      {session && (
+        <GlassCard className="p-6 space-y-4">
+          <h3 className="text-base font-semibold text-ink font-display flex items-center gap-2">
+            <Sparkles size={16} className="text-ink-faint" /> AI Translation
+          </h3>
+          <p className="text-xs text-ink-muted -mt-2">
+            Your Gemini API key is encrypted and synced to your account — it's never stored in plain text.
+            Used by the Text Editor's AI translation mode.
+          </p>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">Gemini API Key</label>
+            <Input
+              type="password"
+              placeholder="Paste your Gemini API key"
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              className="w-full"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">Target Language</label>
+            <select
+              className="w-full text-sm rounded-xl border border-hairline bg-ink/5 px-3 py-2.5 text-ink outline-none focus:border-accent"
+              value={isCustomLanguage ? '__custom__' : aiTargetLanguage}
+              onChange={(e) => {
+                if (e.target.value === '__custom__') {
+                  setCustomLanguageMode(true);
+                  setAiTargetLanguage(customLanguage);
+                } else {
+                  setCustomLanguageMode(false);
+                  setAiTargetLanguage(e.target.value);
+                }
+              }}
+            >
+              <option value="">Select a language...</option>
+              {PRESET_LANGUAGES.map(lang => <option key={lang} value={lang}>{lang}</option>)}
+              <option value="__custom__">Custom...</option>
+            </select>
+            {isCustomLanguage && (
+              <Input
+                autoFocus
+                placeholder="Enter a language"
+                value={customLanguage}
+                onChange={(e) => { setCustomLanguage(e.target.value); setAiTargetLanguage(e.target.value); }}
+                className="w-full mt-1"
+              />
+            )}
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">Translation Prompt</label>
+            <textarea
+              placeholder="Instructions the AI follows while translating (tone, honorifics, formatting conventions, etc.)"
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              rows={4}
+              className="w-full text-sm rounded-xl border border-hairline bg-ink/5 px-3 py-2.5 text-ink outline-none focus:border-accent resize-y"
+            />
+          </div>
+          <Button onClick={handleSaveAiSettings} disabled={savingAiSettings}>
+            <Save size={14} /> {savingAiSettings ? 'Saving...' : 'Save'}
+          </Button>
+        </GlassCard>
+      )}
+
       <GlassCard className="p-6 space-y-4">
         <h3 className="text-base font-semibold text-ink font-display">System</h3>
         <div className="flex flex-col gap-4">
@@ -370,8 +464,6 @@ export function SettingsPanel({
           </button>
         </div>
       </GlassCard>
-
-      <AdSlot placement="settings-bottom" />
     </div>
   );
 }

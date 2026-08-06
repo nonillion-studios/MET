@@ -1,4 +1,4 @@
-import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText, Radio, Users, FileText, ScreenShare, ScreenShareOff } from 'lucide-react';
+import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText, Radio, Users, FileText, ScreenShare, ScreenShareOff, MessagesSquare, Cloud } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { WorkflowStage } from './WorkflowBar';
 import { MusicPlayerToggleButton } from '../musicPlayer/MusicPlayer';
@@ -37,13 +37,18 @@ interface StudioToolbarProps {
   /** Opens the Text Editor tab with a doc linked to this chapter — the Text Editor's only entry
    *  point now; it's no longer a top-level nav destination (see navTabs.ts). */
   onOpenTextEditor?: () => void;
+  /** Small in-Studio modals so a user doesn't have to leave the fullscreen canvas to check their
+   *  team chat or grab a file from Cloud Storage — undefined when neither is wired up (e.g. no
+   *  CloudClient available yet). */
+  onOpenTeamChat?: () => void;
+  onOpenCloudStorage?: () => void;
 }
 
 export function StudioToolbar({
   chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
   onFit, onBack, onToggleLeftSidebar, onToggleRightSidebar, hasCleaned, isFullscreen, onToggleFullscreen, workflowStages,
   typeRegionArmed, onToggleTypeRegion, isLive, goingLive, liveViewerCount = 0, onToggleLive,
-  isSharingScreen, onToggleScreenShare, onOpenTextEditor,
+  isSharingScreen, onToggleScreenShare, onOpenTextEditor, onOpenTeamChat, onOpenCloudStorage,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline">
@@ -158,6 +163,18 @@ export function StudioToolbar({
       {onOpenTextEditor && (
         <IconButton size="sm" aria-label="Open Text Editor" title="Text Editor" onClick={onOpenTextEditor} className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11">
           <FileText size={15} />
+        </IconButton>
+      )}
+
+      {onOpenTeamChat && (
+        <IconButton size="sm" aria-label="Team Chat" title="Team Chat" onClick={onOpenTeamChat} className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11">
+          <MessagesSquare size={15} />
+        </IconButton>
+      )}
+
+      {onOpenCloudStorage && (
+        <IconButton size="sm" aria-label="Cloud Storage" title="Cloud Storage" onClick={onOpenCloudStorage} className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11">
+          <Cloud size={15} />
         </IconButton>
       )}
 

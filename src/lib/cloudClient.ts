@@ -103,6 +103,24 @@ export function useCloudClient() {
       setClient(newClient);
       setIsConnected(true);
       await loadMe(newClient);
+
+      // GramJS transparently migrates to a different Telegram data center during connect()
+      // when the account's home DC differs from the default one it started on — a routine,
+      // silent thing that happens on plenty of accounts, not an error condition. That migration
+      // rewrites the session's internal dcId/authKey/serverAddress, but only the *in-memory*
+      // StringSession object; nothing here ever re-persisted it. The stored string a future app
+      // load reads back stayed pinned to the pre-migration DC and became stale — the actual
+      // cause of "have to re-login often" despite the session genuinely being stored server-side
+      // correctly (this isn't a storage bug, storage was always fine; the value going into it was
+      // wrong). Re-saving after every successful connect, not just at initial login, keeps the
+      // persisted string in sync with whatever DC GramJS actually ended up authenticated against.
+      const refreshed = newClient.session.save() as unknown as string;
+      if (refreshed && refreshed !== session) {
+        localStorage.setItem('tg_session', refreshed);
+        saveTelegramCredentials({ session: refreshed }).catch(err => {
+          console.error('Failed to sync refreshed Telegram session to the cloud', err);
+        });
+      }
     } catch (error) {
       console.error(error);
       setIsConnected(false);
