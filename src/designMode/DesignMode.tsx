@@ -10,6 +10,7 @@ import { DesignImageTabs } from './DesignImageTabs';
 import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
 import { exportDesignImage } from './exportDesignImage';
 import { useDesignHistory } from './useDesignHistory';
+import { useDesignShortcuts } from './useDesignShortcuts';
 import { swalToast } from '../lib/swalTheme';
 
 /**
@@ -83,23 +84,36 @@ export function DesignMode() {
   // alike — so snapshotting for undo here covers all of them at once. pushHistory's own coalescing
   // window (see useDesignHistory.ts) collapses a paint stroke's or a typing burst's many rapid calls
   // into one undo step without needing separate gesture-start/end signals threaded through the
-  // canvas.
+  // canvas. Also bundles a canvas-pixel snapshot alongside the layer array — paint/placed-image
+  // pixels live out-of-band in DesignCanvas's own registry, so array-only undo would silently leave
+  // a brush stroke's pixels in place.
   const handleUpdateLayers = useCallback((updater: Parameters<typeof store.updateImageLayers>[1]) => {
     if (!store.activeImageId) return;
-    if (store.activeImage) history.pushHistory(store.activeImageId, store.activeImage.layers);
+    if (store.activeImage) {
+      const canvases = canvasHandleRef.current?.snapshotCanvases() ?? {};
+      history.pushHistory(store.activeImageId, store.activeImage.layers, canvases);
+    }
     store.updateImageLayers(store.activeImageId, updater);
   }, [store, history]);
 
   const handleUndo = useCallback(() => {
     if (!store.activeImageId || !store.activeImage) return;
-    const restored = history.undo(store.activeImageId, store.activeImage.layers);
-    if (restored) store.updateImageLayers(store.activeImageId, () => restored);
+    const currentCanvases = canvasHandleRef.current?.snapshotCanvases() ?? {};
+    const restored = history.undo(store.activeImageId, store.activeImage.layers, currentCanvases);
+    if (restored) {
+      store.updateImageLayers(store.activeImageId, () => restored.layers);
+      canvasHandleRef.current?.restoreCanvases(restored.canvases);
+    }
   }, [store, history]);
 
   const handleRedo = useCallback(() => {
     if (!store.activeImageId || !store.activeImage) return;
-    const restored = history.redo(store.activeImageId, store.activeImage.layers);
-    if (restored) store.updateImageLayers(store.activeImageId, () => restored);
+    const currentCanvases = canvasHandleRef.current?.snapshotCanvases() ?? {};
+    const restored = history.redo(store.activeImageId, store.activeImage.layers, currentCanvases);
+    if (restored) {
+      store.updateImageLayers(store.activeImageId, () => restored.layers);
+      canvasHandleRef.current?.restoreCanvases(restored.canvases);
+    }
   }, [store, history]);
 
   const addLayer = useCallback((layer: StudioLayer) => {
@@ -162,6 +176,17 @@ export function DesignMode() {
   const handleConvertBackgroundToLayer = useCallback((name: string) => {
     handleUpdateLayers(layers => layers.map(l => (l.isBackground ? { ...l, isBackground: false, locked: false, name } : l)));
   }, [handleUpdateLayers]);
+
+  useDesignShortcuts({
+    onToolChange: setActiveTool,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+    onNewCanvas: store.openNewCanvasDialog,
+    onDuplicateActiveLayer: () => { if (store.activeImage?.activeLayerId) handleDuplicate(store.activeImage.activeLayerId); },
+    onDeleteActiveLayer: () => { if (store.activeImage?.activeLayerId) handleDelete(store.activeImage.activeLayerId); },
+    onZoomFit: () => canvasHandleRef.current?.fit(),
+    onZoom100: () => canvasHandleRef.current?.zoomTo100(),
+  });
 
   return (
     <div ref={rootRef} className="flex flex-col w-full h-full overflow-hidden bg-[var(--color-surface)]">

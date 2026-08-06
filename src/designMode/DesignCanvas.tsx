@@ -12,6 +12,7 @@ import { screenToImage, imageToScreen, type CanvasViewport } from '../components
 import type { SerializedStudioLayer } from '../lib/studioProjectStore';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
+import type { CanvasSnapshots } from './useDesignHistory';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
 
 const MIN_SCALE = 0.05;
@@ -24,10 +25,18 @@ export interface DesignCanvasHandle {
   zoomIn: () => void;
   zoomOut: () => void;
   fit: () => void;
+  zoomTo100: () => void;
   getZoom: () => number;
   placeImageFile: (file: File) => Promise<void>;
   duplicateLayer: (layerId: string) => void;
   exportSnapshot: () => ExportSnapshot | null;
+  /** Dumps every registry canvas currently keyed to a layer in the active image, as data URLs — for
+   *  bundling into a history entry (see useDesignHistory's CanvasSnapshots). Paint/placed-image
+   *  pixels live outside the StudioLayer array entirely, so undo/redo need this alongside the array
+   *  snapshot or a brush stroke's pixels would never actually revert. */
+  snapshotCanvases: () => CanvasSnapshots;
+  /** Redraws each layer's registry canvas from a previously-captured snapshot and repaints it. */
+  restoreCanvases: (snapshots: CanvasSnapshots) => void;
 }
 
 interface DesignCanvasProps {
@@ -254,18 +263,46 @@ export function DesignCanvas({
     return { width: image.width, height: image.height, backgroundDataUrl: transparent.toDataURL('image/png'), layers };
   }, [image]);
 
+  // ── Canvas snapshot/restore (for undo/redo of pixel content — see useDesignHistory.ts) ─────────
+  const snapshotCanvases = useCallback((): CanvasSnapshots => {
+    const out: CanvasSnapshots = {};
+    for (const [layerId, canvas] of Object.entries(paintRegistry.current)) {
+      if (canvas) out[layerId] = canvas.toDataURL('image/png');
+    }
+    return out;
+  }, []);
+
+  const restoreCanvases = useCallback((snapshots: CanvasSnapshots) => {
+    for (const [layerId, dataUrl] of Object.entries(snapshots)) {
+      const canvas = paintRegistry.current[layerId];
+      if (!canvas) continue; // layer no longer exists (e.g. this snapshot predates its deletion)
+      const img = new Image();
+      img.onload = () => {
+        const ctx = canvas.getContext('2d')!;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        paintNodeRefs.current[layerId]?.getLayer()?.batchDraw();
+        placedImageNodeRefs.current[layerId]?.getLayer()?.batchDraw();
+      };
+      img.src = dataUrl;
+    }
+  }, []);
+
   useEffect(() => {
     if (!canvasHandleRef) return;
     canvasHandleRef.current = {
       zoomIn: () => setScale(s => clampScale(s * 1.25)),
       zoomOut: () => setScale(s => clampScale(s / 1.25)),
       fit,
+      zoomTo100: () => setScale(1),
       getZoom: () => scale,
       placeImageFile: handlePlaceImageFile,
       duplicateLayer,
       exportSnapshot,
+      snapshotCanvases,
+      restoreCanvases,
     };
-  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot]);
+  }, [canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot, snapshotCanvases, restoreCanvases]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -305,6 +342,13 @@ export function DesignCanvas({
       if (!pointer) return;
       isPaintingRef.current = true;
       lastPaintPointRef.current = null;
+      // Paint strokes mutate the registry canvas directly and never touch the layers array, so
+      // without this the history push in onUpdateLayers would never fire for a stroke at all — an
+      // identity update is enough to trigger it (and its accompanying canvas snapshot) once, here,
+      // at stroke start; the coalescing window in useDesignHistory.ts absorbs the fact that this
+      // fires on every pointerdown regardless of how far apart strokes are, same as every other call
+      // site.
+      onUpdateLayers(layers => layers);
       const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
       paintAt(imgPoint.x, imgPoint.y);
       return;

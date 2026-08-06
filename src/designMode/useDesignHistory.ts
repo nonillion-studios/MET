@@ -10,21 +10,34 @@ const MAX_HISTORY = 50; // matches Studio's own HistoryContext MAX_ENTRIES
  *  out and gets its own entry. */
 const COALESCE_WINDOW_MS = 500;
 
+/** dataURL per layer id, for whatever's currently in DesignCanvas's paint-canvas registry. Layer
+ *  *array* membership/order/properties live in `StudioLayer[]` and undo fine on their own, but
+ *  paint/placed-image *pixels* live out-of-band (same as Studio's own registry) — a brush stroke
+ *  never touches the layers array at all, so without also snapshotting canvas pixels here, undoing
+ *  "the array as it looked before" would leave the stroke's pixels untouched on whatever layer they
+ *  landed on. */
+export type CanvasSnapshots = Record<string, string>;
+
+interface HistoryEntry {
+  layers: StudioLayer[];
+  canvases: CanvasSnapshots;
+}
+
 interface ImageHistory {
-  past: StudioLayer[][];
-  future: StudioLayer[][];
+  past: HistoryEntry[];
+  future: HistoryEntry[];
   lastPushAt: number;
 }
 
 export interface UseDesignHistory {
-  /** Snapshots `layers` (the state *before* an about-to-happen change) onto the undo stack for
-   *  `imageId`, and clears its redo stack. Safe to call unconditionally on every layer-mutating
-   *  action, continuous or discrete — see COALESCE_WINDOW_MS. */
-  pushHistory: (imageId: string, layers: StudioLayer[]) => void;
-  /** Pops the most recent undo entry, pushing `currentLayers` onto the redo stack, and returns the
-   *  layers to restore — or null if there's nothing to undo. */
-  undo: (imageId: string, currentLayers: StudioLayer[]) => StudioLayer[] | null;
-  redo: (imageId: string, currentLayers: StudioLayer[]) => StudioLayer[] | null;
+  /** Snapshots `layers` + `canvases` (the state *before* an about-to-happen change) onto the undo
+   *  stack for `imageId`, and clears its redo stack. Safe to call unconditionally on every
+   *  layer/pixel-mutating action, continuous or discrete — see COALESCE_WINDOW_MS. */
+  pushHistory: (imageId: string, layers: StudioLayer[], canvases: CanvasSnapshots) => void;
+  /** Pops the most recent undo entry, pushing the current state onto the redo stack, and returns
+   *  the state to restore — or null if there's nothing to undo. */
+  undo: (imageId: string, currentLayers: StudioLayer[], currentCanvases: CanvasSnapshots) => HistoryEntry | null;
+  redo: (imageId: string, currentLayers: StudioLayer[], currentCanvases: CanvasSnapshots) => HistoryEntry | null;
   canUndo: (imageId: string | null) => boolean;
   canRedo: (imageId: string | null) => boolean;
 }
@@ -45,31 +58,31 @@ export function useDesignHistory(): UseDesignHistory {
     return h;
   };
 
-  const pushHistory = useCallback((imageId: string, layers: StudioLayer[]) => {
+  const pushHistory = useCallback((imageId: string, layers: StudioLayer[], canvases: CanvasSnapshots) => {
     const h = getOrCreate(imageId);
     const now = Date.now();
     if (now - h.lastPushAt < COALESCE_WINDOW_MS) return;
     h.lastPushAt = now;
-    h.past.push(layers);
+    h.past.push({ layers, canvases });
     if (h.past.length > MAX_HISTORY) h.past.shift();
     h.future = [];
     forceUpdate();
   }, [forceUpdate]);
 
-  const undo = useCallback((imageId: string, currentLayers: StudioLayer[]): StudioLayer[] | null => {
+  const undo = useCallback((imageId: string, currentLayers: StudioLayer[], currentCanvases: CanvasSnapshots): HistoryEntry | null => {
     const h = getOrCreate(imageId);
     if (h.past.length === 0) return null;
     const previous = h.past.pop()!;
-    h.future.push(currentLayers);
+    h.future.push({ layers: currentLayers, canvases: currentCanvases });
     forceUpdate();
     return previous;
   }, [forceUpdate]);
 
-  const redo = useCallback((imageId: string, currentLayers: StudioLayer[]): StudioLayer[] | null => {
+  const redo = useCallback((imageId: string, currentLayers: StudioLayer[], currentCanvases: CanvasSnapshots): HistoryEntry | null => {
     const h = getOrCreate(imageId);
     if (h.future.length === 0) return null;
     const next = h.future.pop()!;
-    h.past.push(currentLayers);
+    h.past.push({ layers: currentLayers, canvases: currentCanvases });
     forceUpdate();
     return next;
   }, [forceUpdate]);
