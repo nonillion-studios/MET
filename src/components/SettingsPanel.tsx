@@ -14,7 +14,8 @@ import { isAllowedAnnouncementSender } from '../lib/adminMessages';
 import { AdminDashboard } from './AdminDashboard';
 import { isSiteAdmin } from '../lib/adminDashboard';
 import { loadMagicEraseServer, saveMagicEraseServer } from '../lib/magicEraseStore';
-import { loadAiTranslationSettings, saveAiTranslationSettings } from '../lib/geminiSettingsStore';
+import { loadAiTranslationSettings, saveAiTranslationSettings } from '../lib/aiSettingsStore';
+import { AI_PROVIDERS, defaultModelFor, type AiProvider } from '../lib/aiTranslate';
 
 interface SettingsPanelProps {
   onShowPrivacy: () => void;
@@ -73,19 +74,24 @@ export function SettingsPanel({
   };
 
   const PRESET_LANGUAGES = ['English', 'Spanish', 'Arabic', 'Japanese', 'Korean', 'French', 'German', 'Portuguese', 'Italian', 'Indonesian'];
-  const [geminiKey, setGeminiKey] = useState('');
+  const [aiProvider, setAiProvider] = useState<AiProvider>('gemini');
+  const [aiModel, setAiModel] = useState('');
+  const [aiApiKey, setAiApiKey] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiTargetLanguage, setAiTargetLanguage] = useState('');
   const [customLanguage, setCustomLanguage] = useState('');
   const [customLanguageMode, setCustomLanguageMode] = useState(false);
   const [savingAiSettings, setSavingAiSettings] = useState(false);
   const isCustomLanguage = customLanguageMode || (aiTargetLanguage !== '' && !PRESET_LANGUAGES.includes(aiTargetLanguage));
+  const activeProviderInfo = AI_PROVIDERS.find(p => p.id === aiProvider) ?? AI_PROVIDERS[0];
 
   useEffect(() => {
     if (!session) return;
     loadAiTranslationSettings().then(settings => {
       if (!settings) return;
-      setGeminiKey(settings.geminiKey);
+      setAiProvider(settings.provider);
+      setAiModel(settings.model || defaultModelFor(settings.provider));
+      setAiApiKey(settings.apiKey);
       setAiPrompt(settings.defaultPrompt);
       setAiTargetLanguage(settings.targetLanguage);
       if (settings.targetLanguage && !PRESET_LANGUAGES.includes(settings.targetLanguage)) {
@@ -97,7 +103,13 @@ export function SettingsPanel({
 
   const handleSaveAiSettings = async () => {
     setSavingAiSettings(true);
-    await saveAiTranslationSettings({ geminiKey, defaultPrompt: aiPrompt, targetLanguage: aiTargetLanguage });
+    await saveAiTranslationSettings({
+      provider: aiProvider,
+      model: aiModel.trim() || defaultModelFor(aiProvider),
+      apiKey: aiApiKey,
+      defaultPrompt: aiPrompt,
+      targetLanguage: aiTargetLanguage,
+    });
     setSavingAiSettings(false);
     swalToast({ icon: 'success', title: 'AI translation settings saved' });
   };
@@ -363,18 +375,44 @@ export function SettingsPanel({
             <Sparkles size={16} className="text-ink-faint" /> AI Translation
           </h3>
           <p className="text-xs text-ink-muted -mt-2">
-            Your Gemini API key is encrypted and synced to your account — it's never stored in plain text.
+            Your API key is encrypted and synced to your account — it's never stored in plain text.
             Used by the Text Editor's AI translation mode.
           </p>
           <div className="space-y-1">
-            <label className="text-xs font-medium text-ink-muted">Gemini API Key</label>
+            <label className="text-xs font-medium text-ink-muted">Provider</label>
+            <select
+              className="w-full text-sm rounded-xl border border-hairline bg-ink/5 px-3 py-2.5 text-ink outline-none focus:border-accent"
+              value={aiProvider}
+              onChange={(e) => {
+                const next = e.target.value as AiProvider;
+                setAiProvider(next);
+                // Swap in the new provider's default model unless the field was already
+                // hand-edited away from the previous provider's own default.
+                setAiModel(prev => (prev === '' || prev === activeProviderInfo.defaultModel) ? defaultModelFor(next) : prev);
+              }}
+            >
+              {AI_PROVIDERS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">Model</label>
             <Input
-              type="password"
-              placeholder="Paste your Gemini API key"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder={activeProviderInfo.defaultModel}
+              value={aiModel}
+              onChange={(e) => setAiModel(e.target.value)}
               className="w-full"
             />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-ink-muted">{activeProviderInfo.keyHint}</label>
+            <Input
+              type="password"
+              placeholder={`Paste your ${activeProviderInfo.label} API key`}
+              value={aiApiKey}
+              onChange={(e) => setAiApiKey(e.target.value)}
+              className="w-full"
+            />
+            <p className="text-[10px] text-ink-faint">Switching provider needs its own key pasted in here — only one key is stored at a time.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-ink-muted">Target Language</label>

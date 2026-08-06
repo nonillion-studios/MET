@@ -8,7 +8,7 @@ interface TranslateModeDialogProps {
   onClose: () => void;
   chapter: Chapter | null;
   /** Null while settings are still loading; empty string once loaded with no key configured. */
-  geminiKeyConfigured: boolean | null;
+  apiKeyConfigured: boolean | null;
   targetLanguage: string;
   onOpenSettings: () => void;
   onStart: (includedPageIds: string[]) => void;
@@ -17,7 +17,7 @@ interface TranslateModeDialogProps {
 /** Page-selection + start screen for AI Translation mode — lets the user drop pages the AI should
  *  skip (covers, blank pages, already-translated pages) before a run starts. Every page defaults to
  *  included, matching how Select-to-TypeR's "Entire Document" default reads as the common case. */
-export function TranslateModeDialog({ open, onClose, chapter, geminiKeyConfigured, targetLanguage, onOpenSettings, onStart }: TranslateModeDialogProps) {
+export function TranslateModeDialog({ open, onClose, chapter, apiKeyConfigured, targetLanguage, onOpenSettings, onStart }: TranslateModeDialogProps) {
   const [ignored, setIgnored] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -48,7 +48,7 @@ export function TranslateModeDialog({ open, onClose, chapter, geminiKeyConfigure
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => onStart(pages.filter(p => !ignored.has(p.id)).map(p => p.id))}
-            disabled={!chapter || includedCount === 0 || !geminiKeyConfigured}
+            disabled={!chapter || includedCount === 0 || !apiKeyConfigured}
           >
             <Sparkles size={13} /> Start Translating ({includedCount})
           </Button>
@@ -62,9 +62,9 @@ export function TranslateModeDialog({ open, onClose, chapter, geminiKeyConfigure
           </p>
         )}
 
-        {chapter && geminiKeyConfigured === false && (
+        {chapter && apiKeyConfigured === false && (
           <div className="rounded-xl border border-hairline bg-ink/5 p-3 space-y-2">
-            <p className="text-xs text-ink-muted">Add a Gemini API key in Settings before starting a translation run.</p>
+            <p className="text-xs text-ink-muted">Add an AI provider API key in Settings before starting a translation run.</p>
             <Button size="sm" variant="secondary" onClick={onOpenSettings}>Open Settings</Button>
           </div>
         )}

@@ -25,7 +25,7 @@ function tokenizeLine(line: string): MarkupToken[] {
   return tokens;
 }
 
-/** Parses a Gemini translation reply (see `geminiTranslate.ts`'s `buildInstructions`) into a flat
+/** Parses an AI translation reply (see `aiTranslate.ts`'s `buildInstructions`) into a flat
  *  token stream: a blank line separates bubbles/captions (`paragraph-break`), a single line break
  *  is a `newline`, and `**...**`/`//...//` runs become bold/italic start-end pairs around their own
  *  text tokens. Pure function — no DOM — so it's covered by a plain unit test rather than e2e. */

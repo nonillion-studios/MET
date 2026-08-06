@@ -38,8 +38,8 @@ import { SendToTyperDialog, type SendToTyperChapterOption, type SendToTyperResul
 import type { TyperSendRequest } from '../../lib/typerBridge';
 import type { Workspace, Chapter } from '../../types';
 import { TranslateModeDialog } from './TranslateModeDialog';
-import { loadAiTranslationSettings } from '../../lib/geminiSettingsStore';
-import { translatePageImage } from '../../lib/geminiTranslate';
+import { loadAiTranslationSettings } from '../../lib/aiSettingsStore';
+import { translatePageImage } from '../../lib/aiTranslate';
 import { createTypewriterHandle, typeMarkupIntoElement, type TypewriterHandle } from '../../lib/aiTypewriter';
 
 /**
@@ -208,7 +208,7 @@ interface TextEditorPageProps {
    *  page can also be reached with no Studio chapter context at all, straight from the left nav). */
   onOpenStudio?: () => void;
   /** Switches the app to Settings — used by the AI Translation dialog's "Open Settings" shortcut
-   *  when no Gemini key is configured yet. */
+   *  when no AI provider API key is configured yet. */
   onOpenSettings?: () => void;
 }
 
@@ -256,7 +256,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   const [translationRunning, setTranslationRunning] = useState(false);
   const [translationStatus, setTranslationStatus] = useState('');
   const [translationCurrentPageId, setTranslationCurrentPageId] = useState<string | null>(null);
-  const [geminiKeyConfigured, setGeminiKeyConfigured] = useState<boolean | null>(null);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
   const [aiTargetLanguage, setAiTargetLanguage] = useState('');
   const translationStopHandleRef = useRef<TypewriterHandle | null>(null);
 
@@ -2081,9 +2081,9 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
 
   function refreshAiSettings() {
     loadAiTranslationSettings().then(settings => {
-      setGeminiKeyConfigured(!!settings?.geminiKey);
+      setApiKeyConfigured(!!settings?.apiKey);
       setAiTargetLanguage(settings?.targetLanguage ?? '');
-    }).catch(() => setGeminiKeyConfigured(false));
+    }).catch(() => setApiKeyConfigured(false));
   }
 
   function handleOpenTranslateDialog() {
@@ -2108,7 +2108,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   }
 
   /** Runs the whole "AI controls the PC" pipeline: for each included page, in chapter order, call
-   *  Gemini vision on that page's image, then type the reply into the document letter-by-letter via
+   *  the configured provider's vision API on that page's image, then type the reply into the document letter-by-letter via
    *  the real toolbar commands (see aiTypewriter.ts), then move the split-screen preview's "photo"
    *  onto the next page. Failures on one page are reported and skipped rather than aborting the
    *  whole run — a single bad page (blank scan, transient network error) shouldn't lose progress on
@@ -2116,8 +2116,8 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   async function runTranslation(includedPageIds: string[]) {
     if (!linkedChapter || includedPageIds.length === 0) return;
     const settings = await loadAiTranslationSettings();
-    if (!settings?.geminiKey) {
-      swal({ icon: 'error', title: 'No Gemini API Key', text: 'Add your Gemini API key in Settings first.' });
+    if (!settings?.apiKey) {
+      swal({ icon: 'error', title: 'No API Key', text: 'Add an AI provider API key in Settings first.' });
       return;
     }
 
@@ -2140,7 +2140,9 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         let markup: string;
         try {
           markup = await translatePageImage({
-            apiKey: settings.geminiKey,
+            provider: settings.provider,
+            model: settings.model,
+            apiKey: settings.apiKey,
             imageDataUrl: image.dataUrl,
             prompt: settings.defaultPrompt,
             targetLanguage: settings.targetLanguage,
@@ -2747,7 +2749,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         open={translateDialogOpen}
         onClose={() => setTranslateDialogOpen(false)}
         chapter={linkedChapter}
-        geminiKeyConfigured={geminiKeyConfigured}
+        apiKeyConfigured={apiKeyConfigured}
         targetLanguage={aiTargetLanguage}
         onOpenSettings={() => { setTranslateDialogOpen(false); onOpenSettings?.(); }}
         onStart={(pageIds) => { setTranslateDialogOpen(false); void runTranslation(pageIds); }}
