@@ -6,7 +6,7 @@ import {
   Pencil, Eye,
   Heading3, Heading4, AlignJustify, IndentIncrease, IndentDecrease,
   Strikethrough, Undo2, Redo2, Languages, ChevronUp, ChevronDown, Minus, Clock,
-  Maximize2, Minimize2, Sun, Moon, Image as ImageIcon,
+  Maximize2, Minimize2, Sun, Moon, Image as ImageIcon, Sparkles, Square,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -36,7 +36,11 @@ import type { TextEditorMenuActions } from './textEditorMenuDefinitions';
 import { useTextEditorShortcuts } from './useTextEditorShortcuts';
 import { SendToTyperDialog, type SendToTyperChapterOption, type SendToTyperResult } from './SendToTyperDialog';
 import type { TyperSendRequest } from '../../lib/typerBridge';
-import type { Workspace } from '../../types';
+import type { Workspace, Chapter } from '../../types';
+import { TranslateModeDialog } from './TranslateModeDialog';
+import { loadAiTranslationSettings } from '../../lib/geminiSettingsStore';
+import { translatePageImage } from '../../lib/geminiTranslate';
+import { createTypewriterHandle, typeMarkupIntoElement, type TypewriterHandle } from '../../lib/aiTypewriter';
 
 /**
  * Section 0 architecture audit (see plan doc for full detail):
@@ -203,9 +207,12 @@ interface TextEditorPageProps {
    *  existing `onOpenTextEditor` button. Omitted when there's nothing meaningful to switch to (this
    *  page can also be reached with no Studio chapter context at all, straight from the left nav). */
   onOpenStudio?: () => void;
+  /** Switches the app to Settings — used by the AI Translation dialog's "Open Settings" shortcut
+   *  when no Gemini key is configured yet. */
+  onOpenSettings?: () => void;
 }
 
-export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter, onOpenStudio }: TextEditorPageProps) {
+export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, studioActivePageId, pendingChapter, onConsumePendingChapter, onOpenStudio, onOpenSettings }: TextEditorPageProps) {
   const [splitScreenOpen, setSplitScreenOpen] = useState(false);
   // The ratio itself persists across sessions; whether split screen is *open* deliberately does
   // not — a fresh session always starts full-width, matching the spec's own "not persisted" rule.
@@ -243,6 +250,15 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   const markMenuRef = useRef<HTMLDivElement | null>(null);
   const markSelectionRef = useRef<{ root: HTMLElement; range: Range } | null>(null);
   const [sendToTyperOpen, setSendToTyperOpen] = useState(false);
+
+  // AI Translation mode — see runTranslation()/stopTranslation() below.
+  const [translateDialogOpen, setTranslateDialogOpen] = useState(false);
+  const [translationRunning, setTranslationRunning] = useState(false);
+  const [translationStatus, setTranslationStatus] = useState('');
+  const [translationCurrentPageId, setTranslationCurrentPageId] = useState<string | null>(null);
+  const [geminiKeyConfigured, setGeminiKeyConfigured] = useState<boolean | null>(null);
+  const [aiTargetLanguage, setAiTargetLanguage] = useState('');
+  const translationStopHandleRef = useRef<TypewriterHandle | null>(null);
 
   // Full screen: mirrors Studio.tsx's own studioRootRef/isFullscreen/toggleFullscreen idiom exactly,
   // scoped to this component's own root instead.
@@ -1193,6 +1209,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   const [tableMenu, setTableMenu] = useState<{ cell: HTMLTableCellElement; x: number; y: number } | null>(null);
 
   function addDoc() {
+    if (translationRunning) return;
     const based = getDocsWithLiveContent();
     docCounterRef.current += 1;
     const doc = newDoc(`Document ${docCounterRef.current}`);
@@ -1209,6 +1226,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
    *  than Word's own "once per session" unsaved-changes prompt, so this flushes the outgoing
    *  doc's live content first and only surfaces anything if that flush itself fails. */
   function closeDoc(id: string) {
+    if (translationRunning) return;
     const based = getDocsWithLiveContent();
     if (based.length <= 1) return;
     const next = based.filter(d => d.id !== id);
@@ -1275,6 +1293,7 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   }
 
   function switchDoc(id: string) {
+    if (translationRunning) return;
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
@@ -2043,6 +2062,112 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     setSendToTyperOpen(true);
   }
 
+  /** The chapter this doc is linked to (set when it was opened from a chapter's "Open in Text
+   *  Editor" button — see findOrCreateChapterDoc), resolved fresh against the live workspace tree
+   *  so page edits made elsewhere (Studio, cloud sync) are always current. AI Translation mode reads
+   *  page images straight from here — independent of whether the split-screen preview is open. */
+  const linkedChapter = useMemo<Chapter | null>(() => {
+    if (!activeDoc?.chapterId) return null;
+    for (const ws of workspaces) {
+      for (const manga of ws.mangas) {
+        for (const vol of manga.volumes) {
+          const found = vol.chapters.find(c => c.id === activeDoc.chapterId);
+          if (found) return found;
+        }
+      }
+    }
+    return null;
+  }, [workspaces, activeDoc?.chapterId]);
+
+  function refreshAiSettings() {
+    loadAiTranslationSettings().then(settings => {
+      setGeminiKeyConfigured(!!settings?.geminiKey);
+      setAiTargetLanguage(settings?.targetLanguage ?? '');
+    }).catch(() => setGeminiKeyConfigured(false));
+  }
+
+  function handleOpenTranslateDialog() {
+    if (!linkedChapter) {
+      swalToast({ icon: 'info', title: 'Open this document from a chapter first' });
+      return;
+    }
+    refreshAiSettings();
+    setTranslateDialogOpen(true);
+  }
+
+  /** Resolves fresh before every single insertion step inside typeMarkupIntoElement (not just once)
+   *  — see that function's own doc comment for why a stale element reference isn't safe across a
+   *  pagination reflow. Always "the current last page" since translation only ever appends. */
+  function lastPageEl(): HTMLElement | null {
+    const pages = pageRefs.current.filter((el): el is HTMLDivElement => !!el);
+    return pages.length > 0 ? pages[pages.length - 1] : null;
+  }
+
+  function stopTranslation() {
+    translationStopHandleRef.current?.cancel();
+  }
+
+  /** Runs the whole "AI controls the PC" pipeline: for each included page, in chapter order, call
+   *  Gemini vision on that page's image, then type the reply into the document letter-by-letter via
+   *  the real toolbar commands (see aiTypewriter.ts), then move the split-screen preview's "photo"
+   *  onto the next page. Failures on one page are reported and skipped rather than aborting the
+   *  whole run — a single bad page (blank scan, transient network error) shouldn't lose progress on
+   *  every page already translated or every page still queued. */
+  async function runTranslation(includedPageIds: string[]) {
+    if (!linkedChapter || includedPageIds.length === 0) return;
+    const settings = await loadAiTranslationSettings();
+    if (!settings?.geminiKey) {
+      swal({ icon: 'error', title: 'No Gemini API Key', text: 'Add your Gemini API key in Settings first.' });
+      return;
+    }
+
+    const pagesToRun = linkedChapter.pages.filter(p => includedPageIds.includes(p.id));
+    if (pagesToRun.length === 0) return;
+
+    const handle = createTypewriterHandle();
+    translationStopHandleRef.current = handle;
+    setTranslationRunning(true);
+    setSplitScreenOpen(true);
+
+    try {
+      for (let i = 0; i < pagesToRun.length; i++) {
+        if (handle.cancelled) break;
+        const page = pagesToRun[i];
+        setTranslationCurrentPageId(page.id);
+        setTranslationStatus(`Reading page ${i + 1} of ${pagesToRun.length}…`);
+
+        const image = page.cleaned ?? page.original;
+        let markup: string;
+        try {
+          markup = await translatePageImage({
+            apiKey: settings.geminiKey,
+            imageDataUrl: image.dataUrl,
+            prompt: settings.defaultPrompt,
+            targetLanguage: settings.targetLanguage,
+          });
+        } catch (err) {
+          swalToast({ icon: 'error', title: `Page ${i + 1} failed`, text: err instanceof Error ? err.message : 'Translation request failed.' });
+          continue;
+        }
+        if (handle.cancelled) break;
+        if (!markup.trim()) continue;
+
+        setTranslationStatus(`Typing page ${i + 1} of ${pagesToRun.length}…`);
+        await typeMarkupIntoElement(lastPageEl, markup, handle, {
+          leadingParagraphBreak: true,
+          charsPerTick: 2,
+          tickMs: 18,
+        });
+        scheduleAutosave();
+      }
+    } finally {
+      setTranslationRunning(false);
+      setTranslationCurrentPageId(null);
+      setTranslationStatus('');
+      translationStopHandleRef.current = null;
+    }
+  }
+
   /** Dialog confirm handler: builds the text for exactly the pages the user chose (never the whole
    *  document unless "Entire Document" was actually picked) and hands the request off — nothing
    *  is sent until this runs. */
@@ -2230,6 +2355,12 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
             </button>
           </div>
         )}
+        {translationRunning && (
+          <span className="flex items-center gap-1.5 text-[11px] shrink-0 px-2 py-1 rounded-full bg-accent-soft text-accent">
+            <Sparkles size={11} className="animate-pulse" /> {translationStatus || 'Translating…'}
+            <button onClick={stopTranslation} className="ml-1 hover:underline" aria-label="Stop translation">Stop</button>
+          </span>
+        )}
         <span className={`flex items-center gap-1 text-[11px] shrink-0 px-1 ${saveStatusClassName}`}>
           <SaveStatusIcon size={12} className={saveStatus === 'saving' ? 'animate-spin' : ''} />
           {saveStatusLabel}
@@ -2241,6 +2372,15 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         )}
         <IconButton size="sm" aria-label="Toggle split screen" onClick={() => setSplitScreenOpen(v => !v)} className={`!bg-transparent shrink-0 ${splitScreenOpen ? '!text-accent' : ''}`}>
           <PanelRight size={14} />
+        </IconButton>
+        <IconButton
+          size="sm"
+          aria-label="AI Translate"
+          title="AI Translate"
+          onClick={translationRunning ? stopTranslation : handleOpenTranslateDialog}
+          className={`!bg-transparent shrink-0 ${translationRunning ? '!text-danger' : ''}`}
+        >
+          {translationRunning ? <Square size={14} /> : <Sparkles size={14} />}
         </IconButton>
         <IconButton size="sm" aria-label="Find & replace" onClick={() => (searchOpen ? closeFindPanel() : openFindPanel('replace'))} className={`!bg-transparent shrink-0 ${searchOpen ? '!text-accent' : ''}`}>
           <Search size={14} />
@@ -2482,6 +2622,8 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
             workspaces={workspaces}
             activeChapterId={activeChapterId}
             studioActivePageId={studioActivePageId}
+            forceChapterId={translationRunning ? linkedChapter?.id ?? null : null}
+            forcePageId={translationCurrentPageId}
             onClose={() => setSplitScreenOpen(false)}
           />
         </>
@@ -2600,6 +2742,15 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         currentPageNumber={activePageIndex + 1}
         pageCount={activeDoc?.pages.length ?? 1}
         onConfirm={confirmSendToTyper}
+      />
+      <TranslateModeDialog
+        open={translateDialogOpen}
+        onClose={() => setTranslateDialogOpen(false)}
+        chapter={linkedChapter}
+        geminiKeyConfigured={geminiKeyConfigured}
+        targetLanguage={aiTargetLanguage}
+        onOpenSettings={() => { setTranslateDialogOpen(false); onOpenSettings?.(); }}
+        onStart={(pageIds) => { setTranslateDialogOpen(false); void runTranslation(pageIds); }}
       />
       </div>
     </div>

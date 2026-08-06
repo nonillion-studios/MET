@@ -55,10 +55,19 @@ interface SplitScreenPreviewProps {
    *  independently afterward (via its own prev/next controls) doesn't keep getting yanked back.
    *  Mirrors the same snap-once convention this component's own stored-selection restore uses. */
   studioActivePageId?: string | null;
+  /** AI Translation mode's chapter — forces the preview onto this chapter the moment it *changes*
+   *  (unlike `activeChapterId`, which only ever picks a *default* when nothing is stored yet). Set
+   *  by TextEditorPage.tsx when a translation run starts, so the preview follows along even if the
+   *  user had a different chapter selected here. */
+  forceChapterId?: string | null;
+  /** AI Translation mode's current page — snaps the preview to it the moment it *changes*, the same
+   *  "changes the photo to the next page" behavior TypeR's own page auto-advance already relies on
+   *  in Studio (see StudioCanvas's Page-N-hint effect). */
+  forcePageId?: string | null;
   onClose: () => void;
 }
 
-export function SplitScreenPreview({ workspaces, activeChapterId, studioActivePageId, onClose }: SplitScreenPreviewProps) {
+export function SplitScreenPreview({ workspaces, activeChapterId, studioActivePageId, forceChapterId, forcePageId, onClose }: SplitScreenPreviewProps) {
   const flatChapters = useMemo(() => flattenChapters(workspaces), [workspaces]);
 
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(() => loadStoredSelection().chapterId);
@@ -85,6 +94,23 @@ export function SplitScreenPreview({ workspaces, activeChapterId, studioActivePa
     if (idx >= 0) setSelectedPageIndex(idx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studioActivePageId]);
+
+  // AI Translation mode forcing the preview onto the chapter it's translating, the moment that
+  // changes (a real switch, unlike activeChapterId's "only when nothing is stored yet" default).
+  useEffect(() => {
+    if (!forceChapterId || !flatChapters.some(f => f.id === forceChapterId)) return;
+    setSelectedChapterId(forceChapterId);
+    clearUpload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceChapterId]);
+
+  // AI Translation mode advancing "the photo" to whichever page it's currently translating.
+  useEffect(() => {
+    if (!forcePageId || !selectedChapter) return;
+    const idx = selectedChapter.pages.findIndex(p => p.id === forcePageId);
+    if (idx >= 0) { setSelectedPageIndex(idx); clearUpload(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forcePageId]);
 
   useEffect(() => {
     const t = setTimeout(() => {
