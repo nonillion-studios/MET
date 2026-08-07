@@ -3121,7 +3121,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // the next time they actually select/type in a textarea again.
           onBlur={() => setEditingLayerId(null)}
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingLayerId(null); }}
-          className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none overflow-hidden"
+          className="absolute p-0 m-0 bg-black/20 border border-dashed border-white/50 outline-none resize-none"
           style={{
             // Layout (width/fontSize) is intentionally left in unscaled page-space units and only
             // the *transform* scales it to match canvas zoom — mobile Safari/Chrome auto-zoom the
@@ -3134,6 +3134,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             top: editingTextScreenPos!.y,
             left: editingTextScreenPos!.x,
             width: editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width,
+            // No explicit height/rows means a native textarea falls back to a ~2-row default and
+            // clips (overflow-hidden above was the other half of that) anything typed past it, even
+            // though the underlying content is intact — this grows the box to fit the frame and any
+            // typed overflow so it stays visible while editing, matching the rendered/exported state
+            // (TextLayerNode.tsx / exportImage.ts) not clipping it either.
+            height: Math.max(20, editingLayer.text.fixedHeight ?? 0, layoutText(editingLayer.text).height),
+            // The browser's own textarea wrapping is UA-default word-break, which force-breaks
+            // unbreakably-long tokens mid-word — layoutText()'s wrapParagraph never does that (a
+            // too-long token just overflows the line instead). Normal here keeps live-typing wraps
+            // closer to what layoutText() will lay out once you exit edit mode.
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'normal',
+            wordBreak: 'normal',
             fontSize: editingLayer.text.fontSize,
             fontFamily: editingLayer.text.fontFamily,
             fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
@@ -3150,7 +3163,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       {editingLayer?.text && (() => {
         const t = editingLayer.text!;
         const w = t.autoWidth ? layoutText(t).width : t.width;
-        const h = t.autoWidth ? layoutText(t).height : (t.fixedHeight ?? layoutText(t).height);
+        // At least the frame height, but grows to the actual (now-visible-past-the-frame) content
+        // height once it overflows — matches the editing textarea's own height below, so the
+        // toolbar's below/above flip decision is based on the space the box really occupies on
+        // screen rather than the frame alone, and never ends up positioned over the textarea.
+        const h = Math.max(t.fixedHeight ?? 0, layoutText(t).height);
         const boxScreenPos = imageToScreen(t.x, t.y, { scale, pos });
         return (
           <FloatingTextToolbar

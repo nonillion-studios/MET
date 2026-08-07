@@ -72,10 +72,6 @@ export function TextLayerNode({
   // rendering untouched, so the overwhelmingly common unwarped case pays nothing extra.
   const isWarped = !!text.warp && text.warp.style !== 'none';
   const warpedCanvas = useMemo(() => (isWarped ? rasterizeWarpedTextLocal(text, layout) : null), [isWarped, text, layout]);
-  // Area text with a fixed frame: clips glyph content at the box's bottom edge. Unconditional on
-  // fixedHeight being set, not gated on layout.overflowing — the boundary this rect draws is the
-  // same one naturalHeight > fixedHeight checks, so there's no discontinuity right at the threshold.
-  const fixedHeightClip = !text.autoWidth && text.fixedHeight != null;
 
   const gradient = text.gradient?.enabled ? text.gradient : null;
   // One ramp across the whole layer, not one per run: the vector is computed on the layout box and
@@ -204,19 +200,12 @@ export function TextLayerNode({
         onMouseLeave={() => onHoverChange?.(false)}
       />
 
-      {/* Glyphs only — clipped to the fixed-height frame when one is set. Scoped to this inner
-          Group rather than the outer Group above: the outer Group also carries UI chrome (the W×H
-          readout, the ⊞ indicator, per-line hit rects) that must stay visible/clickable even while
-          content past fixedHeight is being clipped away. Konva clip areas nest via ordinary canvas
-          save/clip/restore, so this composes for free with the outer Group's own Type Region
-          clipFunc without any manual path-combining. */}
-      <Group
-        listening={false}
-        clipX={0}
-        clipY={0}
-        clipWidth={fixedHeightClip ? Math.max(layout.width, 4) : undefined}
-        clipHeight={fixedHeightClip ? text.fixedHeight : undefined}
-      >
+      {/* Glyphs only — not clipped to the fixed-height frame: content past `fixedHeight` renders
+          visibly below it (the frame is an informational boundary, flagged by the ⊞ indicator, not
+          a hard mask). Scoped to its own inner Group rather than folded into the outer Group above
+          purely so `listening={false}` stays scoped to glyphs and doesn't affect the outer Group's
+          UI chrome (the W×H readout, the ⊞ indicator, per-line hit rects). */}
+      <Group listening={false}>
         {warpedCanvas ? (
           // Warped: one rasterized (and warped) bitmap instead of per-run Konva.Text nodes — still
           // just a normal image inside this same clipped/positioned Group, so Type Region clipping,
