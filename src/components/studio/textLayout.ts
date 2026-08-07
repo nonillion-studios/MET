@@ -234,7 +234,10 @@ export function layoutText(text: TextLayerData): TextLayout {
   const naturalHeight = Math.max(1, lines.length) * lineStep;
   return {
     runs,
-    width: boxWidth,
+    // Box text can still overflow its authored width (a single token longer than the frame isn't
+    // broken or clipped by wrapParagraph) — report the true rendered extent so the selection box,
+    // hit-rect, and W×H readout never claim a narrower box than what's actually on screen.
+    width: Math.max(boxWidth, contentWidth),
     height: naturalHeight,
     // Approximates the baseline at 80% of the em box — canvas gives no baseline metric without
     // measuring, and this only positions a visual guide.
