@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { mapPsdEffects } from './importPsd';
-import type { LayerEffectsInfo } from 'ag-psd';
+import { mapPsdEffects, mapPsdTextLayer } from './importPsd';
+import type { LayerEffectsInfo, Layer as PsdLayer } from 'ag-psd';
 
 /**
  * `mapPsdEffects` is exportPsd.ts's `psdEffects()` run in reverse (same field names, same px/pct/
@@ -110,5 +110,106 @@ describe('mapPsdEffects', () => {
     expect(effects?.dropShadow.enabled).toBe(false);
     expect(effects?.innerGlow.enabled).toBe(false);
     expect(effects?.stroke.enabled).toBe(false);
+  });
+});
+
+/**
+ * `mapPsdTextLayer` converts one PSD text layer into a real, editable `'text'`-type `StudioLayer`
+ * instead of the flattened raster every other layer gets — these tests exercise the field mapping
+ * directly against plain ag-psd-shaped objects (no binary .psd file needed, mirroring
+ * `mapPsdEffects`'s tests above), since the pure metadata mapping doesn't touch canvas/pixel data.
+ */
+describe('mapPsdTextLayer', () => {
+  function psdTextLayer(text: PsdLayer['text'], overrides: Partial<PsdLayer> = {}): PsdLayer {
+    return { name: 'My Layer', opacity: 1, blendMode: 'normal', hidden: false, text, ...overrides };
+  }
+
+  it('returns null for a present-but-empty text shell', () => {
+    expect(mapPsdTextLayer(psdTextLayer({ text: undefined as unknown as string }))).toBeNull();
+  });
+
+  it('detects point text (no shapeType/bounds) and leaves autoWidth/fixedHeight accordingly', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({ text: 'Hello' }));
+    expect(layer).not.toBeNull();
+    expect(layer!.type).toBe('text');
+    expect(layer!.text!.autoWidth).toBe(true);
+    expect(layer!.text!.fixedHeight).toBeUndefined();
+    expect(layer!.text!.content).toBe('Hello');
+  });
+
+  it('detects box text (shapeType box + finite positive bounds) and sets width/fixedHeight', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({
+      text: 'Hello', shapeType: 'box', left: 10, top: 20, right: 210, bottom: 120,
+    }));
+    expect(layer!.text!.autoWidth).toBe(false);
+    expect(layer!.text!.width).toBe(200);
+    expect(layer!.text!.fixedHeight).toBe(100);
+    expect(layer!.text!.x).toBe(10);
+    expect(layer!.text!.y).toBe(20);
+  });
+
+  it('falls back to point text when bounds are missing or non-positive', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({ text: 'Hi', shapeType: 'box', left: 10, top: 10, right: 10, bottom: 10 }));
+    expect(layer!.text!.autoWidth).toBe(true);
+  });
+
+  it('maps base style (font, size, faux bold/italic, tracking, fill color) onto the layer', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({
+      text: 'Styled',
+      style: {
+        font: { name: 'Georgia' }, fontSize: 42, fauxBold: true, fauxItalic: true,
+        tracking: 50, fillColor: { r: 200, g: 10, b: 10 },
+      },
+    }));
+    const t = layer!.text!;
+    expect(t.fontFamily).toBe('Georgia');
+    expect(t.fontSize).toBe(42);
+    expect(t.bold).toBe(true);
+    expect(t.italic).toBe(true);
+    expect(t.letterSpacing).toBe(50);
+    expect(t.color).toBe('#c80a0a');
+  });
+
+  it('maps leading to a lineHeight multiplier, but keeps the default when auto-leading', () => {
+    const withLeading = mapPsdTextLayer(psdTextLayer({ text: 'x', style: { fontSize: 20, leading: 30, autoLeading: false } }));
+    expect(withLeading!.text!.lineHeight).toBeCloseTo(1.5, 5);
+
+    const autoLeading = mapPsdTextLayer(psdTextLayer({ text: 'x', style: { fontSize: 20, leading: 30, autoLeading: true } }));
+    expect(autoLeading!.text!.lineHeight).toBe(1.15);
+  });
+
+  it.each([
+    ['left', 'left'], ['right', 'right'], ['center', 'center'],
+    ['justify-left', 'justify'], ['justify-right', 'justify'], ['justify-center', 'justify'], ['justify-all', 'justify'],
+  ] as const)('maps justification %s to align %s', (justification, align) => {
+    const layer = mapPsdTextLayer(psdTextLayer({ text: 'x', paragraphStyle: { justification } }));
+    expect(layer!.text!.align).toBe(align);
+  });
+
+  it('maps styleRuns to per-character runs, only overriding fields the run actually sets', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({
+      text: 'ABCDE',
+      style: { fontSize: 20, fillColor: { r: 0, g: 0, b: 0 } },
+      styleRuns: [
+        { length: 2, style: {} },
+        { length: 3, style: { fillColor: { r: 255, g: 0, b: 0 }, fauxBold: true } },
+      ],
+    }));
+    const runs = layer!.text!.runs;
+    expect(runs.reduce((sum, r) => sum + r.length, 0)).toBe(5);
+    const styledRun = runs.find((r) => r.color === '#ff0000');
+    expect(styledRun).toBeDefined();
+    expect(styledRun!.bold).toBe(true);
+    expect(styledRun!.fontSize).toBeUndefined(); // not overridden by this run -> falls back to layer default
+  });
+
+  it('normalizes CR/CRLF line endings to LF, matching how this app stores content elsewhere', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({ text: 'line1\r\nline2\rline3' }));
+    expect(layer!.text!.content).toBe('line1\nline2\nline3');
+  });
+
+  it('never imports a text layer as locked, matching every other PSD-imported layer', () => {
+    const layer = mapPsdTextLayer(psdTextLayer({ text: 'x' }));
+    expect(layer!.locked).toBe(false);
   });
 });
