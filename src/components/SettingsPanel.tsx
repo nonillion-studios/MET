@@ -46,11 +46,16 @@ export function SettingsPanel({
   const [canSendAnnouncements, setCanSendAnnouncements] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
 
+  const sessionUserId = session?.user?.id ?? null;
+
   useEffect(() => {
-    if (!session) { setCanSendAnnouncements(false); setIsAdmin(false); return; }
+    if (!sessionUserId) { setCanSendAnnouncements(false); setIsAdmin(false); return; }
     isAllowedAnnouncementSender().then(setCanSendAnnouncements);
     isSiteAdmin().then(setIsAdmin);
-  }, [session]);
+    // Depends on the user's id, not the session object — Supabase issues a new session
+    // object (new token) on every background refresh, and re-running this on every
+    // refresh would be wasteful without ever changing the result.
+  }, [sessionUserId]);
   const [name, setName] = useState(profile.name);
   const [avatar, setAvatar] = useState(profile.avatar);
   const [saving, setSaving] = useState(false);
@@ -79,6 +84,7 @@ export function SettingsPanel({
   const [aiApiKey, setAiApiKey] = useState('');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiTargetLanguage, setAiTargetLanguage] = useState('');
+  const [aiBaseUrl, setAiBaseUrl] = useState('');
   const [customLanguage, setCustomLanguage] = useState('');
   const [customLanguageMode, setCustomLanguageMode] = useState(false);
   const [savingAiSettings, setSavingAiSettings] = useState(false);
@@ -86,7 +92,7 @@ export function SettingsPanel({
   const activeProviderInfo = AI_PROVIDERS.find(p => p.id === aiProvider) ?? AI_PROVIDERS[0];
 
   useEffect(() => {
-    if (!session) return;
+    if (!sessionUserId) return;
     loadAiTranslationSettings().then(settings => {
       if (!settings) return;
       setAiProvider(settings.provider);
@@ -94,12 +100,16 @@ export function SettingsPanel({
       setAiApiKey(settings.apiKey);
       setAiPrompt(settings.defaultPrompt);
       setAiTargetLanguage(settings.targetLanguage);
+      setAiBaseUrl(settings.baseUrl);
       if (settings.targetLanguage && !PRESET_LANGUAGES.includes(settings.targetLanguage)) {
         setCustomLanguage(settings.targetLanguage);
         setCustomLanguageMode(true);
       }
     });
-  }, [session]);
+    // Depends on the user's id (stable across Supabase's background token refreshes),
+    // not the session object — reloading on every refresh was silently overwriting any
+    // unsaved edits (prompt, provider choice, etc.) with the last-saved DB values.
+  }, [sessionUserId]);
 
   const handleSaveAiSettings = async () => {
     setSavingAiSettings(true);
@@ -109,6 +119,7 @@ export function SettingsPanel({
       apiKey: aiApiKey,
       defaultPrompt: aiPrompt,
       targetLanguage: aiTargetLanguage,
+      baseUrl: aiBaseUrl,
     });
     setSavingAiSettings(false);
     swalToast({ icon: 'success', title: 'AI translation settings saved' });
@@ -124,12 +135,12 @@ export function SettingsPanel({
   const [savingPush, setSavingPush] = useState(false);
 
   useEffect(() => {
-    if (!session) return;
+    if (!sessionUserId) return;
     getUserNotificationPrefs().then(prefs => {
       setUserPrefs(prefs);
       setPushEnabled(prefs.broadcasts.channel === 'in_app_push' || prefs.requests.channel === 'in_app_push');
     });
-  }, [session]);
+  }, [sessionUserId]);
 
   const updateCategoryPref = async (category: 'broadcasts' | 'requests', patch: Partial<{ enabled: boolean; channel: NotifyChannel }>) => {
     if (!userPrefs) return;
@@ -143,12 +154,31 @@ export function SettingsPanel({
     if (pushEnabled) {
       await unsubscribeFromPush();
       setPushEnabled(false);
+      if (userPrefs) {
+        const next: UserNotificationPrefs = {
+          broadcasts: { ...userPrefs.broadcasts, channel: 'in_app' },
+          requests: { ...userPrefs.requests, channel: 'in_app' },
+        };
+        setUserPrefs(next);
+        await setUserNotificationPrefs(next);
+      }
     } else {
       const error = await subscribeToPush();
       if (error) {
         swal({ icon: 'error', title: 'Could not enable push notifications', text: error });
       } else {
         setPushEnabled(true);
+        // Without persisting this, the toggle reverts to "Enable" on the next reload even
+        // though a valid push_subscriptions row already exists — the DB-derived pushEnabled
+        // state above would go stale and desync from the real subscription.
+        if (userPrefs) {
+          const next: UserNotificationPrefs = {
+            broadcasts: { ...userPrefs.broadcasts, channel: 'in_app_push' },
+            requests: { ...userPrefs.requests, channel: 'in_app_push' },
+          };
+          setUserPrefs(next);
+          await setUserNotificationPrefs(next);
+        }
       }
     }
     setSavingPush(false);
@@ -403,17 +433,38 @@ export function SettingsPanel({
               className="w-full"
             />
           </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-ink-muted">{activeProviderInfo.keyHint}</label>
-            <Input
-              type="password"
-              placeholder={`Paste your ${activeProviderInfo.label} API key`}
-              value={aiApiKey}
-              onChange={(e) => setAiApiKey(e.target.value)}
-              className="w-full"
-            />
-            <p className="text-[10px] text-ink-faint">Switching provider needs its own key pasted in here — only one key is stored at a time.</p>
-          </div>
+          {activeProviderInfo.openAiCompatible && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-ink-muted">Base URL</label>
+              <Input
+                placeholder={activeProviderInfo.defaultBaseUrl}
+                value={aiBaseUrl}
+                onChange={(e) => setAiBaseUrl(e.target.value)}
+                className="w-full"
+              />
+              <p className="text-[10px] text-ink-faint">
+                {activeProviderInfo.id === 'ollama'
+                  ? "Point this at your local/self-hosted Ollama instance, e.g. http://localhost:11434/v1."
+                  : `Leave blank to use ${activeProviderInfo.label}'s default endpoint, or override it (e.g. a self-hosted gateway).`}
+              </p>
+            </div>
+          )}
+          {!activeProviderInfo.noKeyRequired && (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-ink-muted">{activeProviderInfo.keyHint}</label>
+              <Input
+                type="password"
+                placeholder={`Paste your ${activeProviderInfo.label} API key`}
+                value={aiApiKey}
+                onChange={(e) => setAiApiKey(e.target.value)}
+                className="w-full"
+              />
+              <p className="text-[10px] text-ink-faint">Switching provider needs its own key pasted in here — only one key is stored at a time.</p>
+            </div>
+          )}
+          {activeProviderInfo.noKeyRequired && (
+            <p className="text-xs text-ink-muted">{activeProviderInfo.keyHint}</p>
+          )}
           <div className="space-y-1">
             <label className="text-xs font-medium text-ink-muted">Target Language</label>
             <select

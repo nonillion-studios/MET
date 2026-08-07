@@ -6,7 +6,7 @@ import {
   Pencil, Eye,
   Heading3, Heading4, AlignJustify, IndentIncrease, IndentDecrease,
   Strikethrough, Undo2, Redo2, Languages, ChevronUp, ChevronDown, Minus, Clock,
-  Maximize2, Minimize2, Sun, Moon, Image as ImageIcon, Sparkles, Square,
+  Maximize2, Minimize2, Sun, Moon, Image as ImageIcon, Sparkles, Square, BookOpen,
 } from 'lucide-react';
 import { Button, IconButton } from '../ui';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -2062,6 +2062,55 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     setSendToTyperOpen(true);
   }
 
+  /** Links the active doc to a chapter directly from within the Text Editor — the same
+   *  find-or-create-doc logic the `pendingChapter` effect runs when arriving here via a chapter's
+   *  "Open in Text Editor" button (App.tsx), just triggered from inside this page instead of
+   *  requiring that pre-navigation. Once linked, `linkedChapter` resolves it and AI Translation
+   *  (which reads page images straight from `linkedChapter`) can run without ever having opened
+   *  Library/Studio first. */
+  function linkChapterToActiveDoc(chapterId: string, chapterName: string) {
+    const { docs: nextDocs, doc } = findOrCreateChapterDoc(docsRef.current, chapterId, chapterName);
+    if (nextDocs !== docsRef.current) {
+      updateDocs(nextDocs);
+      saveTextEditorDocs(nextDocs).catch(console.error);
+    }
+    pageSeedRef.current = doc.pages;
+    setActiveDocId(doc.id);
+    setRenderKey((k) => k + 1);
+  }
+
+  async function handleLinkChapter() {
+    if (chapterOptions.length === 0) {
+      swalToast({ icon: 'info', title: 'Create a chapter in Library first' });
+      return;
+    }
+    const inputOptions: Record<string, string> = {};
+    for (const c of chapterOptions) inputOptions[c.id] = c.label;
+    const r = await swal({
+      title: 'Open Chapter',
+      text: 'Link this document to a chapter so AI Translation can read its pages.',
+      input: 'select',
+      inputOptions,
+      inputPlaceholder: 'Choose a chapter',
+      showCancelButton: true,
+      confirmButtonText: 'Open',
+    });
+    if (!r.isConfirmed || !r.value) return null;
+    const chapterId = r.value as string;
+    let chapterName: string | null = null;
+    outer: for (const ws of workspaces) {
+      for (const manga of ws.mangas) {
+        for (const vol of manga.volumes) {
+          const found = vol.chapters.find(c => c.id === chapterId);
+          if (found) { chapterName = found.name; break outer; }
+        }
+      }
+    }
+    if (!chapterName) return null;
+    linkChapterToActiveDoc(chapterId, chapterName);
+    return chapterId;
+  }
+
   /** The chapter this doc is linked to (set when it was opened from a chapter's "Open in Text
    *  Editor" button — see findOrCreateChapterDoc), resolved fresh against the live workspace tree
    *  so page edits made elsewhere (Studio, cloud sync) are always current. AI Translation mode reads
@@ -2086,10 +2135,10 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
     }).catch(() => setApiKeyConfigured(false));
   }
 
-  function handleOpenTranslateDialog() {
+  async function handleOpenTranslateDialog() {
     if (!linkedChapter) {
-      swalToast({ icon: 'info', title: 'Open this document from a chapter first' });
-      return;
+      const chapterId = await handleLinkChapter();
+      if (!chapterId) return;
     }
     refreshAiSettings();
     setTranslateDialogOpen(true);
@@ -2146,6 +2195,9 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
             imageDataUrl: image.dataUrl,
             prompt: settings.defaultPrompt,
             targetLanguage: settings.targetLanguage,
+            pageIndex: i,
+            pageCount: pagesToRun.length,
+            baseUrl: settings.baseUrl,
           });
         } catch (err) {
           swalToast({ icon: 'error', title: `Page ${i + 1} failed`, text: err instanceof Error ? err.message : 'Translation request failed.' });
@@ -2374,6 +2426,15 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
         )}
         <IconButton size="sm" aria-label="Toggle split screen" onClick={() => setSplitScreenOpen(v => !v)} className={`!bg-transparent shrink-0 ${splitScreenOpen ? '!text-accent' : ''}`}>
           <PanelRight size={14} />
+        </IconButton>
+        <IconButton
+          size="sm"
+          aria-label="Open chapter"
+          title={linkedChapter ? `Linked chapter: ${linkedChapter.name} (click to change)` : 'Link this document to a chapter'}
+          onClick={handleLinkChapter}
+          className={`!bg-transparent shrink-0 ${linkedChapter ? '!text-accent' : ''}`}
+        >
+          <BookOpen size={14} />
         </IconButton>
         <IconButton
           size="sm"

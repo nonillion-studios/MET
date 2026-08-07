@@ -10,9 +10,12 @@ export interface AiTranslationSettings {
   model: string;
   defaultPrompt: string;
   targetLanguage: string;
+  /** Only used by OpenAI-compatible providers that need a custom endpoint (Ollama, a self-hosted
+   *  gateway, an alternate OpenRouter/Groq region, etc.) — blank means "use the provider's default". */
+  baseUrl: string;
 }
 
-const VALID_PROVIDERS: AiProvider[] = ['gemini', 'openai', 'anthropic'];
+const VALID_PROVIDERS: AiProvider[] = ['gemini', 'openai', 'anthropic', 'ollama', 'openrouter', 'groq', 'mistral', 'deepseek', 'xai'];
 
 export async function loadAiTranslationSettings(): Promise<AiTranslationSettings | null> {
   const { data: userData } = await supabase.auth.getUser();
@@ -21,7 +24,7 @@ export async function loadAiTranslationSettings(): Promise<AiTranslationSettings
 
   const { data } = await supabase
     .from('ai_credentials')
-    .select('default_prompt, target_language, provider, model')
+    .select('default_prompt, target_language, provider, model, base_url')
     .eq('id', userId)
     .maybeSingle();
 
@@ -37,6 +40,7 @@ export async function loadAiTranslationSettings(): Promise<AiTranslationSettings
     model: data?.model || '',
     defaultPrompt: data?.default_prompt || '',
     targetLanguage: data?.target_language || '',
+    baseUrl: data?.base_url || '',
   };
 }
 
@@ -54,6 +58,7 @@ export async function saveAiTranslationSettings(partial: Partial<AiTranslationSe
   if (partial.targetLanguage !== undefined) row.target_language = partial.targetLanguage;
   if (partial.provider !== undefined) row.provider = partial.provider;
   if (partial.model !== undefined) row.model = partial.model;
+  if (partial.baseUrl !== undefined) row.base_url = partial.baseUrl;
   if (Object.keys(row).length > 0) {
     await supabase.from('ai_credentials').upsert({ id: userId, ...row });
   }
