@@ -50,6 +50,7 @@ export function DesignMode() {
   const addImageInputRef = useRef<HTMLInputElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeTool, setActiveTool] = useState('select');
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
@@ -145,7 +146,9 @@ export function DesignMode() {
     const imageId = store.activeImageId;
     const flush = () => {
       const data = canvasHandleRef.current?.serializeForSave();
-      if (data && data.id === imageId) void saveDesignImage(data);
+      // Only cleared once this specific save actually lands — a rejected save (network/idb failure)
+      // never calls .then, so the dot correctly keeps showing "unsaved" rather than lying about it.
+      if (data && data.id === imageId) void saveDesignImage(data).then(() => setHasUnsavedChanges(false));
     };
     pendingSaveFlushRef.current = flush;
     const timer = setTimeout(() => { flush(); pendingSaveFlushRef.current = null; }, SAVE_DEBOUNCE_MS);
@@ -164,8 +167,10 @@ export function DesignMode() {
   }, [store]);
 
   // Clear stale selection when the active image changes — a layer id from a different image's tree
-  // must never leak into the new image's selection/Transformer binding.
-  useEffect(() => { setSelectedLayerIds([]); }, [store.activeImageId]);
+  // must never leak into the new image's selection/Transformer binding. Also resets the dirty flag,
+  // so a previous image's unsaved-changes dot can't visually leak onto a newly-selected image; this
+  // covers the initial-load case too, since the load effect's setActiveImageId fires this same effect.
+  useEffect(() => { setSelectedLayerIds([]); setHasUnsavedChanges(false); }, [store.activeImageId]);
 
   const handleSelectLayer = useCallback((id: string | null, mode: LayerSelectMode = 'replace') => {
     setSelectedLayerIds(prev => {
@@ -191,6 +196,7 @@ export function DesignMode() {
       history.pushHistory(store.activeImageId, store.activeImage.layers, canvases);
     }
     store.updateImageLayers(store.activeImageId, updater);
+    setHasUnsavedChanges(true);
   }, [store, history]);
 
   const handleUndo = useCallback(() => {
@@ -200,6 +206,7 @@ export function DesignMode() {
     if (restored) {
       store.updateImageLayers(store.activeImageId, () => restored.layers);
       canvasHandleRef.current?.restoreCanvases(restored.canvases);
+      setHasUnsavedChanges(true);
     }
   }, [store, history]);
 
@@ -210,6 +217,7 @@ export function DesignMode() {
     if (restored) {
       store.updateImageLayers(store.activeImageId, () => restored.layers);
       canvasHandleRef.current?.restoreCanvases(restored.canvases);
+      setHasUnsavedChanges(true);
     }
   }, [store, history]);
 
@@ -289,7 +297,7 @@ export function DesignMode() {
     <div ref={rootRef} className="flex flex-col w-full h-full overflow-hidden bg-[var(--color-surface)]">
       <DesignModeTopBar
         activeImage={store.activeImage}
-        hasUnsavedChanges={false}
+        hasUnsavedChanges={hasUnsavedChanges}
         onRenameActiveImage={(name) => { if (store.activeImageId) store.renameImage(store.activeImageId, name); }}
         onNewCanvas={store.openNewCanvasDialog}
         onAddImage={() => addImageInputRef.current?.click()}

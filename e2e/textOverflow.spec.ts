@@ -3,10 +3,10 @@ import { openStudio, readStudioStore, typeIntoTextLayer } from './studioFixture'
 
 /**
  * Overflow indicator (⊞) on area (fixed-height) text boxes: appears once wrapped content exceeds
- * the frame, real content is clipped at the frame's bottom edge, a single click on the glyph is a
- * no-op, a double-click auto-fits the frame to content (undoably), and its on-screen footprint
- * stays a fixed ~16px regardless of zoom. See TextLayerNode.tsx / textLayout.ts / Studio.tsx's
- * handleAutoFitTextHeight.
+ * the frame, real content renders visibly past the frame's bottom edge rather than being clipped,
+ * a single click on the glyph is a no-op, a double-click auto-fits the frame to content (undoably),
+ * and its on-screen footprint stays a fixed ~16px regardless of zoom. See TextLayerNode.tsx /
+ * textLayout.ts / Studio.tsx's handleAutoFitTextHeight.
  */
 
 interface StoredTextLayer {
@@ -364,7 +364,7 @@ test('point text never shows the overflow indicator, however long the content', 
   expect(await countIndicatorFillPixels(page)).toBe(0);
 });
 
-test('overflowing content is actually clipped at the frame bottom, not just flagged', async ({ page }) => {
+test('overflowing content renders visibly past the frame bottom, not clipped', async ({ page }) => {
   const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
   const fh = await waitForFixedHeight(page);
   const lines = Array.from({ length: linesToOverflow(fh) + 5 }, () => 'XXXXXXXXXX');
@@ -373,9 +373,10 @@ test('overflowing content is actually clipped at the frame bottom, not just flag
   await expect.poll(() => countIndicatorFillPixels(page), { timeout: 15_000 }).toBeGreaterThan(15);
   await deselect(page);
 
-  // Well below the box's bottom edge (y0 + h), where an unclipped line would otherwise paint —
-  // dark default (#000000) text on the fixture's flat grey (#808080) page. If clipping weren't
-  // working, several more full lines of "XXXXXXXXXX" would paint through this whole band.
+  // Well below the box's bottom edge (y0 + h), where overflow content paints — dark default
+  // (#000000) text on the fixture's flat grey (#808080) page. The frame is an informational
+  // boundary (the ⊞ indicator above), not a hard mask, so the remaining "XXXXXXXXXX" lines paint
+  // straight through this band instead of being clipped away.
   const darkPixels = await countPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60, 'dark');
-  expect(darkPixels).toBe(0);
+  expect(darkPixels).toBeGreaterThan(0);
 });

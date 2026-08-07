@@ -1,9 +1,13 @@
 import { readPsd } from 'ag-psd';
-import type { Layer as PsdLayer, Psd, LayerEffectsInfo, Color, UnitsValue } from 'ag-psd';
+import type {
+  Layer as PsdLayer, Psd, LayerEffectsInfo, Color, UnitsValue,
+  TextStyle as PsdTextStyle, Justification as PsdJustification,
+} from 'ag-psd';
 import {
-  createLayer, createGroupLayer, createDefaultLayerEffects, BLEND_MODES,
-  type StudioLayer, type BlendMode, type LayerEffects,
+  createLayer, createGroupLayer, createTextLayer, createDefaultLayerEffects, BLEND_MODES,
+  type StudioLayer, type BlendMode, type LayerEffects, type TextAlign, type TextRun,
 } from '../components/studio/studioTypes';
+import { normalizeRuns, type RunStylePatch } from '../components/studio/textRuns';
 
 const VALID_BLEND_MODES = new Set<string>(BLEND_MODES.map((m) => m.id));
 
@@ -25,6 +29,104 @@ function psdColorToHex(color: Color | undefined): string | null {
   if (!color || !('r' in color) || !('g' in color) || !('b' in color)) return null;
   const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
   return `#${[color.r, color.g, color.b].map((c) => clamp(c).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** ag-psd's `Justification` has four `justify-*` variants this app's `TextAlign` has no finer
+ *  equivalent for — all four collapse to `'justify'`. */
+const JUSTIFICATION_TO_ALIGN: Record<PsdJustification, TextAlign> = {
+  left: 'left',
+  right: 'right',
+  center: 'center',
+  'justify-left': 'justify',
+  'justify-right': 'justify',
+  'justify-center': 'justify',
+  'justify-all': 'justify',
+};
+
+/** Maps one ag-psd `TextStyle` (the layer's base style, or one `styleRuns[i].style`) onto this
+ *  app's `RunStylePatch` — only setting fields the PSD style actually defines, so unset ones
+ *  correctly fall back to the layer default via `resolveRunStyle`'s own run-then-layer precedence
+ *  (textRuns.ts) instead of duplicating that precedence here. Reuses `psdColorToHex`, the same
+ *  converter layer-effect colors already go through. */
+function textStyleToRunPatch(style: PsdTextStyle | undefined): RunStylePatch {
+  if (!style) return {};
+  const patch: RunStylePatch = {};
+  if (style.font?.name) patch.fontFamily = style.font.name;
+  if (style.fontSize != null) patch.fontSize = style.fontSize;
+  if (style.fauxBold != null) patch.bold = style.fauxBold;
+  if (style.fauxItalic != null) patch.italic = style.fauxItalic;
+  if (style.tracking != null) patch.letterSpacing = style.tracking;
+  const color = psdColorToHex(style.fillColor);
+  if (color) patch.color = color;
+  return patch;
+}
+
+/**
+ * Converts one PSD text layer into a real, editable `StudioLayer` (`type: 'text'`) instead of the
+ * rasterized `clean-patch` every other layer gets — see `importLayer()`'s `psdLayer.text` branch.
+ * Built on `createTextLayer()`, the same factory Studio itself uses, so every field this function
+ * doesn't touch keeps that factory's normal defaults rather than being hand-assembled here.
+ *
+ * Only `left`/`top` are used for position — `transform`'s rotation/scale is deliberately not
+ * decomposed: `exportPsd.ts` doesn't write text rotation either, so there's no round-trip to
+ * preserve, and ordinary PSD text is essentially never transformed. `paragraphStyleRuns` (PSD's
+ * per-character-range paragraph overrides) has no equivalent in this app's model either (which only
+ * has one layer-level `align` plus per-wrapped-*line* `lineOverrides`, a different partitioning
+ * scheme) — also not mapped, matching the fact `exportPsd.ts` doesn't write it.
+ *
+ * Returns `null` for the narrow case of a present-but-empty text shell; any other unexpected shape
+ * is left to throw, which the caller catches and falls back to the raster path for.
+ */
+export function mapPsdTextLayer(psdLayer: PsdLayer): StudioLayer | null {
+  const data = psdLayer.text;
+  if (!data || typeof data.text !== 'string') return null;
+
+  const content = data.text.replace(/\r\n?/g, '\n');
+  const x = data.left ?? psdLayer.left ?? 0;
+  const y = data.top ?? psdLayer.top ?? 0;
+
+  const { left, top, right, bottom } = data;
+  const layer =
+    data.shapeType === 'box'
+    && typeof left === 'number' && typeof top === 'number'
+    && typeof right === 'number' && typeof bottom === 'number'
+    && Number.isFinite(left) && Number.isFinite(top) && Number.isFinite(right) && Number.isFinite(bottom)
+    && (right - left) > 0 && (bottom - top) > 0
+      ? createTextLayer(x, y, right - left, bottom - top)
+      : createTextLayer(x, y);
+
+  const text = layer.text!;
+  const base = textStyleToRunPatch(data.style);
+  if (base.fontFamily != null) text.fontFamily = base.fontFamily;
+  if (base.fontSize != null) text.fontSize = base.fontSize;
+  if (base.bold != null) text.bold = base.bold;
+  if (base.italic != null) text.italic = base.italic;
+  if (base.letterSpacing != null) text.letterSpacing = base.letterSpacing;
+  if (base.color != null) text.color = base.color;
+
+  // ag-psd stores absolute leading (px); this app stores a lineHeight multiplier. Auto-leading (no
+  // explicit value, Photoshop's default) keeps the factory default rather than dividing by nothing.
+  if (data.style?.leading != null && data.style.autoLeading !== true && text.fontSize > 0) {
+    text.lineHeight = data.style.leading / text.fontSize;
+  }
+
+  const justification = data.paragraphStyle?.justification;
+  if (justification) text.align = JUSTIFICATION_TO_ALIGN[justification];
+
+  text.content = content;
+  const rawRuns: TextRun[] = (data.styleRuns ?? []).map((run) => ({
+    length: run.length,
+    ...textStyleToRunPatch(run.style),
+  }));
+  text.runs = rawRuns.length > 0 ? normalizeRuns(content, rawRuns) : [];
+
+  layer.name = psdLayer.name || 'Layer';
+  layer.visible = !psdLayer.hidden;
+  layer.opacity = psdLayer.opacity ?? 1;
+  layer.blendMode = fromPsdBlendMode(psdLayer.blendMode);
+  layer.effects = mapPsdEffects(psdLayer.effects);
+
+  return layer;
 }
 
 /** Inverse of exportPsd.ts's `px(...)` — that helper always writes `{ units: 'Pixels', value }`, so
@@ -178,13 +280,14 @@ export interface ParsedPsd {
 /**
  * Reads a `.psd` file and converts it into this app's own layer tree, for File > Open/Place PSD.
  *
- * Every PSD layer (including text) imports as a flattened raster `clean-patch` layer using
- * ag-psd's own pre-composited per-layer canvas (`readPsd`'s default behavior) — reconstructing an
- * editable text/adjustment layer from PSD's proprietary text-engine data would be a much larger,
- * much less reliable undertaking, and this app already treats "real pixels now" as the honest
- * scope for a first cut (same reasoning as Bevel & Emboss's overlay-only simplification). Groups
- * become real `group`-type layers with their children imported recursively, so grouping structure
- * still survives the round trip even though text doesn't stay editable.
+ * A PSD layer with text data imports as a real, editable `'text'`-type layer (see
+ * `mapPsdTextLayer`). Every other non-group layer (adjustment, shape, smart object, ordinary pixel
+ * layer) still imports as a flattened raster `clean-patch` layer using ag-psd's own pre-composited
+ * per-layer canvas (`readPsd`'s default behavior) — reconstructing those from PSD's proprietary,
+ * feature-specific data would be a much larger, much less reliable undertaking than text was, and
+ * this app already treats "real pixels now" as the honest scope for those (same reasoning as
+ * Bevel & Emboss's overlay-only simplification). Groups become real `group`-type layers with their
+ * children imported recursively, so grouping structure survives the round trip regardless.
  */
 export async function parsePsdFile(file: File): Promise<ParsedPsd> {
   const buffer = await file.arrayBuffer();
@@ -202,6 +305,17 @@ export async function parsePsdFile(file: File): Promise<ParsedPsd> {
       group.blendMode = fromPsdBlendMode(psdLayer.blendMode);
       group.effects = mapPsdEffects(psdLayer.effects);
       return group;
+    }
+
+    if (psdLayer.text) {
+      try {
+        const textLayer = mapPsdTextLayer(psdLayer);
+        if (textLayer) return textLayer;
+      } catch {
+        // Malformed/unexpected text data — fall through to the raster path below rather than
+        // dropping the layer or aborting the whole import; ag-psd still produces a composited
+        // `psdLayer.canvas` for text layers regardless, so it's always a valid fallback input.
+      }
     }
 
     const layer = createLayer('clean-patch', psdLayer.name || 'Layer');
