@@ -197,6 +197,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     selfUserId: collabSelf?.id ?? null,
     isHost: isHostingLive,
     peerUserIds: collabPeers.filter(p => p.userId !== collabSelf?.id).map(p => p.userId),
+    onShareError: (err) => {
+      const denied = err instanceof DOMException && err.name === 'NotAllowedError';
+      swalToast({
+        icon: 'error',
+        title: denied ? 'Tab share was cancelled' : 'Could not share this tab',
+        text: denied ? 'Viewers will only see periodic snapshots until you share.' : 'Viewers will see periodic snapshots instead — try again from the toolbar.',
+      });
+    },
   });
   const screenShareRef = useRef(screenShare);
   useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
@@ -312,19 +320,33 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onConsumeAutoStartLiveSession?.();
   }, [autoStartLiveSession, collabSelf, liveSession, startHostingForTeam, onConsumeAutoStartLiveSession]);
 
-  // Auto-starts real tab screen-share the instant hosting begins, instead of leaving viewers on
+  // Prompts for real tab screen-share the instant hosting begins, instead of leaving viewers on
   // the flattened-canvas-only snapshot until the host separately clicks "Share This Tab" — a
   // viewer should see the host's actual Studio (toolbars/panels included), not just the artwork,
-  // from the first moment of a session. The browser's own screen-share picker still can't be
-  // skipped (screen capture can never be silently granted, by design) — a host who dismisses it
-  // just stays on the snapshot fallback, exactly as if they'd never turned it on manually; nothing
-  // about that fallback path changes here.
+  // from the first moment of a session.
+  //
+  // This can't just call `screenShare.toggleSharing()` directly from a `useEffect`: getDisplayMedia()
+  // requires a live user gesture (transient activation), and by the time this effect fires we're
+  // several `await`s removed from the original "Go Live" click (routing into Studio, resolving
+  // collabSelf, joining the Supabase realtime channel) — activation has expired, so the browser
+  // silently rejects the call and the host is stuck on the JPEG-frame fallback with no indication
+  // why. Routing it through a confirm dialog instead means the *dialog's own button click* is the
+  // gesture that reaches getDisplayMedia(), which keeps it reliable.
   const autoStartedScreenShareRef = useRef(false);
   useEffect(() => {
     if (!isHostingLive) { autoStartedScreenShareRef.current = false; return; }
     if (autoStartedScreenShareRef.current || screenShare.sharing) return;
     autoStartedScreenShareRef.current = true;
-    void screenShare.toggleSharing();
+    swal({
+      icon: 'question',
+      title: 'Share this tab?',
+      text: 'Viewers see a live video of this Studio tab (toolbars/panels included) instead of just periodic snapshots. Choose "This Tab" in the picker.',
+      showCancelButton: true,
+      confirmButtonText: 'Share This Tab',
+      cancelButtonText: 'Not now',
+    }).then(r => {
+      if (r.isConfirmed) void screenShare.toggleSharing();
+    });
   }, [isHostingLive, screenShare]);
 
   const handleEndLive = useCallback(() => {

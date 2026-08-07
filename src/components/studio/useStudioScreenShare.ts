@@ -29,8 +29,11 @@ export function useStudioScreenShare(params: {
   isHost: boolean;
   /** Only meaningful for the host — the viewers to connect out to. */
   peerUserIds: string[];
+  /** Surfaces a denied/failed getDisplayMedia() call to the host — without this the host has no
+   *  way to know why viewers are still stuck on the JPEG-frame fallback. */
+  onShareError?: (err: unknown) => void;
 }) {
-  const { collabHandleRef, selfUserId, isHost, peerUserIds } = params;
+  const { collabHandleRef, selfUserId, isHost, peerUserIds, onShareError } = params;
   const [sharing, setSharing] = useState(false);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
@@ -96,9 +99,10 @@ export function useStudioScreenShare(params: {
       for (const viewerId of peerUserIds) connectToViewer(viewerId);
     } catch (err) {
       console.error('Screen share unavailable/denied', err);
+      onShareError?.(err);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost, sharing, peerUserIds, connectToViewer, teardownPeer, collabHandleRef]);
+  }, [isHost, sharing, peerUserIds, connectToViewer, teardownPeer, collabHandleRef, onShareError]);
 
   // New viewers joining mid-share get connected to; viewers who leave get torn down. Mirrors
   // useStudioVoiceChat's identical peer-list-reconciliation effect.
