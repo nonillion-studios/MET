@@ -1,6 +1,10 @@
 // Supabase Edge Function: sends a real Web Push notification for a just-inserted
 // `notifications` row, to every device the recipient has subscribed on (see
-// `push_subscriptions`), respecting their notification-category channel preference.
+// `push_subscriptions`). Note: `notifications` rows aren't tagged with a category, so this
+// does NOT currently filter by the user's per-category channel preference
+// (`user_notification_prefs` / `shouldDeliverWebPush` in src/lib/notifications.ts) — any
+// subscribed device gets every push. Scoping delivery to preference would need a `category`
+// column threaded through every `insert into notifications` call site first.
 //
 // Deployment (see supabase/functions/send-push/README.md for the full VAPID walkthrough):
 //   supabase secrets set VAPID_PUBLIC_KEY=... VAPID_PRIVATE_KEY=... VAPID_SUBJECT=mailto:you@example.com
@@ -52,6 +56,11 @@ Deno.serve(async (req) => {
           // rather than retrying it forever.
           if (err?.statusCode === 404 || err?.statusCode === 410) {
             await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+          } else {
+            // Anything else (401/403 VAPID key mismatch, network error, etc.) was previously
+            // swallowed with no trace anywhere — log it so a misconfigured deploy is visible
+            // in the function's logs instead of just "push doesn't work" with no lead.
+            console.error(`send-push: delivery failed for subscription ${sub.id} (status ${err?.statusCode ?? 'unknown'}):`, err?.body ?? err?.message ?? err);
           }
           throw err;
         })
@@ -59,6 +68,9 @@ Deno.serve(async (req) => {
     );
 
     const sent = results.filter((r) => r.status === 'fulfilled').length;
+    if (sent < subscriptions.length) {
+      console.warn(`send-push: only sent ${sent}/${subscriptions.length} for notification ${notification_id}`);
+    }
     return new Response(JSON.stringify({ sent, total: subscriptions.length }), { status: 200 });
   } catch (err) {
     return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), { status: 500 });
