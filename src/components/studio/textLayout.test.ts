@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutText } from './textLayout';
+import { layoutText, measureRunText } from './textLayout';
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type TextLayerData } from './studioTypes';
 
 /** Mirrors createTextLayer's defaults (studioTypes.ts) minus x/y/width, which each test sets. */
@@ -102,5 +102,29 @@ describe('layoutText overflow', () => {
     const fitted = layoutText(text).height;
     const autoFit = { ...text, fixedHeight: fitted };
     expect(layoutText(autoFit).overflowing).toBe(false);
+  });
+});
+
+describe('layoutText width', () => {
+  it('box text (autoWidth false) stays pinned to its authored width when content fits', () => {
+    const text = makeText({ content: 'A short line that fits easily', width: 300, autoWidth: false });
+    expect(layoutText(text).width).toBe(300);
+  });
+
+  it('box text grows past its authored width when a single token cannot be wrapped to fit', () => {
+    const text = makeText({
+      content: 'ThisIsOneUnbreakablyLongTokenThatCannotWrapToFitTheBox',
+      width: 50,
+      autoWidth: false,
+    });
+    const layout = layoutText(text);
+    expect(layout.width).toBeGreaterThan(50);
+  });
+
+  it('point text (autoWidth true) width equals the full measured line width', () => {
+    const text = makeText({ content: 'Hello how are you today my friend', autoWidth: true });
+    const layout = layoutText(text);
+    const style = { fontFamily: text.fontFamily, fontSize: text.fontSize, fontWeight: 400, color: text.color, italic: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
+    expect(layout.width).toBeCloseTo(measureRunText(text.content, style), 5);
   });
 });
