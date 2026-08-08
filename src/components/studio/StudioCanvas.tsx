@@ -1786,10 +1786,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     if (!isPaintTool) return;
     // Quick Mask and layer-mask editing are legitimate alternate paint targets that bypass
     // paintLayerIdRef entirely (see getActivePaintCanvas) — only gate the plain "paint onto the
-    // active layer" path here. No layer selected, the Background layer, or a locked layer are all
-    // covered by paintLayerIdRef being null (see its assignment above).
+    // active layer" path here. No layer selected, a placed-image/Background layer, or a locked
+    // layer are all covered by paintLayerIdRef being null (see its assignment above).
     if (!editingMaskLayer && !quickMaskActive && !paintLayerIdRef.current) {
-      if (activeLayer?.type === 'clean-patch' && !canPaintLayer(activeLayer)) {
+      if (activeLayer?.type === 'placed-image') {
+        swalToast({ icon: 'info', title: 'Rasterize this layer to paint on it', text: 'Right-click the layer in the Layers panel → Rasterize Layer' });
+      } else if (activeLayer?.type === 'background') {
+        swalToast({ icon: 'info', title: 'Convert Background to a layer to paint on it', text: 'Double-click Background in the Layers panel' });
+      } else if (activeLayer?.type === 'clean-patch' && !canPaintLayer(activeLayer)) {
         swalToast({ icon: 'warning', title: "This layer's pixels are locked" });
       } else {
         swalToast({ icon: 'warning', title: 'Select a layer to paint on' });
