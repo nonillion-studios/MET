@@ -2,9 +2,28 @@
  *  `AdjustmentPanel.tsx` and `BlendingOptionsDialog.tsx`, which both need the exact same compact
  *  slider/checkbox/color-swatch/channel-tab-row shapes. */
 
+import { useEffect, useRef, useState } from 'react';
+
 export function Slider({ label, min, max, step = 1, value, onChange }: {
   label: string; min: number; max: number; step?: number; value: number; onChange: (v: number) => void;
 }) {
+  // `onChange` typically flows straight into a full layer-tree state update (e.g. adjustment
+  // layers, StudioCanvas.tsx's filter pipeline), which is too heavy to run on every single
+  // pointermove tick of a drag. The readout (`display`) still updates every tick for a responsive
+  // feel; the real `onChange` call is coalesced to at most once per animation frame, with the
+  // exact final value always flushed synchronously on release so nothing is ever lost between frames.
+  const [display, setDisplay] = useState(value);
+  useEffect(() => setDisplay(value), [value]);
+  const rafRef = useRef<number | null>(null);
+  const pendingRef = useRef<number | null>(null);
+
+  function flushPending() {
+    if (rafRef.current != null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    if (pendingRef.current != null) { onChange(pendingRef.current); pendingRef.current = null; }
+  }
+
+  useEffect(() => () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current); }, []);
+
   return (
     <label className="flex items-center gap-2 text-micro text-ink-faint">
       <span className="w-24 shrink-0">{label}</span>
@@ -13,11 +32,23 @@ export function Slider({ label, min, max, step = 1, value, onChange }: {
         min={min}
         max={max}
         step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={display}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setDisplay(v);
+          pendingRef.current = v;
+          if (rafRef.current == null) {
+            rafRef.current = requestAnimationFrame(() => {
+              rafRef.current = null;
+              if (pendingRef.current != null) { onChange(pendingRef.current); pendingRef.current = null; }
+            });
+          }
+        }}
+        onPointerUp={flushPending}
+        onBlur={flushPending}
         className="flex-1 accent-[var(--color-accent)]"
       />
-      <span className="w-12 text-right tabular-nums">{value}</span>
+      <span className="w-12 text-right tabular-nums">{display}</span>
     </label>
   );
 }
