@@ -1050,7 +1050,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => [...current, layer], 'Type Region');
     setActiveLayerId(layer.id);
     setActiveTool('select');
-    setSelection(NO_SELECTION);
+    // Deliberately not clearing the selection here — it should survive placement so the user can see
+    // what area was just filled and place another line into the same/adjacent shape. It only clears
+    // via an explicit Ctrl+D, drawing a new selection, or clicking away with a selection tool.
   }
 
   // Slice tool: draw a rect per slice (reuses the Rectangular-Marquee-style drag via MARQUEE_TOOLS),
