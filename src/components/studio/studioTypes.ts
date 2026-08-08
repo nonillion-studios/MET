@@ -202,6 +202,11 @@ export interface TextLayerData {
   fontSize: number;
   color: string;
   align: TextAlign;
+  /** Right-to-left reading direction. Absent/undefined means LTR — `align` alone remains what
+   *  drives box-text line positioning and the editing textarea's `dir` attribute; this field only
+   *  additionally anchors autoWidth (point) text growth to its right edge instead of its left. Set
+   *  automatically alongside `align` by the Arabic auto-detect and the Text menu's RTL/LTR actions. */
+  direction?: 'ltr' | 'rtl';
   bold: boolean;
   italic: boolean;
   lineHeight: number;

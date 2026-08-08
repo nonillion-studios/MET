@@ -2015,7 +2015,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       // hasn't already set an alignment, so it never fights a deliberate later change.
       let next = patch;
       if (patch.content && !l.text.content && patch.align === undefined && isArabicMajority(patch.content)) {
-        next = { ...patch, align: 'right' };
+        next = { ...patch, align: 'right', direction: patch.direction ?? 'rtl' };
+      }
+      const merged = { ...l.text, ...next };
+      // Point (autoWidth) text normally grows from its left edge as content is typed. RTL text
+      // should grow from its right edge instead, so shift the stored x by the width delta to keep
+      // that edge fixed — mirrors handleTextSizeStep's own before/after width-delta anchor below.
+      if (merged.autoWidth && merged.direction === 'rtl' && next.x === undefined) {
+        const before = layoutText(l.text);
+        const after = layoutText(merged);
+        if (after.width !== before.width) {
+          next = { ...next, x: l.text.x - (after.width - before.width) };
+        }
       }
       return { ...l, text: { ...l.text, ...next } };
     }), historyLabel);
@@ -2124,9 +2135,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const before = layoutText(activeLayer.text);
     const fontSize = Math.max(1, activeLayer.text.fontSize + delta * typerSizeStep);
     const after = layoutText({ ...activeLayer.text, fontSize });
+    // RTL point text anchors from its right edge (the full width delta), not centered like
+    // LTR point text or box text.
+    const isRtlPoint = activeLayer.text.autoWidth && activeLayer.text.direction === 'rtl';
     handleUpdateTextLayer(activeLayerId, {
       fontSize,
-      x: activeLayer.text.x - (after.width - before.width) / 2,
+      x: activeLayer.text.x - (after.width - before.width) * (isRtlPoint ? 1 : 0.5),
       y: activeLayer.text.y - (after.height - before.height) / 2,
     });
   }
@@ -2167,11 +2181,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handleUpdateTextLayer(activeLayer.id, { align });
   }
 
-  // RTL/LTR: this app has no separate `dir` field — right alignment is the existing proxy for "this
-  // layer is RTL" that the editing textarea's own `dir` attribute already keys off (StudioCanvas.tsx),
-  // so setting align is the whole, real implementation rather than a stub with nothing to back it.
-  function handleSetTextRtl() { handleSetTextAlign('right'); }
-  function handleSetTextLtr() { handleSetTextAlign('left'); }
+  // RTL/LTR: sets both the stored `direction` (drives point-text right-edge anchoring in
+  // handleUpdateTextLayer) and `align`, which remains what the editing textarea's own `dir`
+  // attribute keys off (StudioCanvas.tsx) and what box text uses for its line-offset math.
+  function handleSetTextRtl() { if (activeLayer?.text) handleUpdateTextLayer(activeLayer.id, { align: 'right', direction: 'rtl' }); }
+  function handleSetTextLtr() { if (activeLayer?.text) handleUpdateTextLayer(activeLayer.id, { align: 'left', direction: 'ltr' }); }
 
   function handleOpenFontPanel() {
     setRightOpen(true);
