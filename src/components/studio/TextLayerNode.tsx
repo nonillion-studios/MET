@@ -153,7 +153,17 @@ export function TextLayerNode({
         flushSync(() => onUpdate(
           text.autoWidth
             ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
-            : { width: Math.max(20, layout.width * scaleX), fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+            : {
+                width: Math.max(20, layout.width * scaleX),
+                // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
+                // one that's already explicitly fixed — a pure width-only side-handle drag
+                // (scaleY === 1) on a box that has never had an explicit height must leave
+                // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
+                // height and the reflowed extra lines would overflow instead of growing the box.
+                ...((scaleY !== 1 || text.fixedHeight != null)
+                  ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+                  : {}),
+              }
         ));
       }}
       onTransformEnd={(e) => {
@@ -173,7 +183,10 @@ export function TextLayerNode({
           width: Math.max(20, layout.width * scaleX),
           ...(text.autoWidth
             ? { fontSize: Math.max(6, text.fontSize * scaleY) }
-            : { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }),
+            // Same rule as `onTransform` above: don't introduce a fixed height from a width-only drag.
+            : (scaleY !== 1 || text.fixedHeight != null)
+              ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+              : {}),
         };
         // Permanent regression guard, not a temporary debug check: `fontSize` only ever appears in
         // the patch above via the `text.autoWidth` (point-text) branch, so its mere presence here
@@ -200,12 +213,21 @@ export function TextLayerNode({
         onMouseLeave={() => onHoverChange?.(false)}
       />
 
-      {/* Glyphs only — not clipped to the fixed-height frame: content past `fixedHeight` renders
-          visibly below it (the frame is an informational boundary, flagged by the ⊞ indicator, not
-          a hard mask). Scoped to its own inner Group rather than folded into the outer Group above
-          purely so `listening={false}` stays scoped to glyphs and doesn't affect the outer Group's
-          UI chrome (the W×H readout, the ⊞ indicator, per-line hit rects). */}
-      <Group listening={false}>
+      {/* Glyphs only — clipped to the fixed-height frame in fixed-height area-text mode (content
+          past `fixedHeight` is visually hidden but never destroyed: it's still fully present in
+          `text.content`/the editing textarea, and reappears the moment the box grows tall enough,
+          or the moment editing starts, since the whole outer Group is hidden then anyway). Auto-grow
+          area text and point text have no frame to clip to, so `clip` stays unset for them. Scoped
+          to its own inner Group rather than folded into the outer Group above purely so
+          `listening={false}` stays scoped to glyphs and doesn't affect the outer Group's UI chrome
+          (the W×H readout, the ⊞ indicator, per-line hit rects) — and so this clip nests inside,
+          without conflicting with, the outer Group's own Type Region `clipFunc`. */}
+      <Group
+        listening={false}
+        clip={!text.autoWidth && text.fixedHeight != null
+          ? { x: 0, y: 0, width: Math.max(layout.width, 4), height: text.fixedHeight }
+          : undefined}
+      >
         {warpedCanvas ? (
           // Warped: one rasterized (and warped) bitmap instead of per-run Konva.Text nodes — still
           // just a normal image inside this same clipped/positioned Group, so Type Region clipping,

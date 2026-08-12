@@ -3,7 +3,11 @@ import { Image as ImageIcon } from 'lucide-react';
 import { Stage, Layer, Group, Image as KonvaImage, Rect, Ellipse, Line, Text as KonvaText, Transformer, Shape, Arrow } from 'react-konva';
 import type Konva from 'konva';
 import type { Page, ProcessedImage } from '../../types';
-import { compositeOperationFor, hasAnyEnabledStyle, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type PlacedImageLayerData, type LayerSelectMode } from './studioTypes';
+import {
+  compositeOperationFor, hasAnyEnabledStyle, hasActiveBlendIf, isBlendIfRangeActive,
+  type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type PlacedImageLayerData, type LayerSelectMode,
+  type BlendIfChannel, type BlendIfRange,
+} from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
 import { FloatingTextToolbar } from './FloatingTextToolbar';
@@ -30,6 +34,7 @@ import {
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
 import { paintLiveEffectCanvases, hasLiveHaloEffects } from '../../lib/liveLayerEffects';
+import { applyBlendIf } from '../../lib/layerEffects';
 import { Menu } from './menu/Menu';
 import type { MenuItemDef } from './menu/menuDefinitions';
 import { snapSegmentToEdges } from './paint/magneticLasso';
@@ -719,10 +724,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, [editingMaskId, quickMaskActive]);
 
   /**
-   * Sets (or clears) a layer's mask filter to match its current `mask` field, reading the mask
-   * canvas's pixels fresh each call — safe to call again after every stroke, unlike re-running
-   * `.cache()` (see `maskAlphaFilter`'s doc comment for why compositing the mask as a cached
-   * sibling image instead went stale on a live-edited mask).
+   * Sets (or clears) a layer's mask + Blend If filters to match its current `mask`/`effects.blendIf`
+   * fields, reading the mask canvas's pixels fresh each call — safe to call again after every
+   * stroke, unlike re-running `.cache()` (see `maskAlphaFilter`'s doc comment for why compositing
+   * the mask as a cached sibling image instead went stale on a live-edited mask). Blend If's
+   * "This Layer" gate (`blendIfAlphaFilter`) is self-contained — no backdrop needed — so it belongs
+   * here too; "Underlying Layer" needs the composited backdrop a per-node Konva filter can't see,
+   * and stays export-only (see `studioTypes.ts`'s `LayerEffects.blendIf` doc comment). Order between
+   * the two filters doesn't matter: the mask filter only ever touches alpha (from an external mask
+   * canvas), and the blend-if filter only reads RGB and multiplies alpha, so they never fight over
+   * the same bytes.
    */
   const refreshMaskFilter = useCallback((layerId: string) => {
     const layer = findLayer(layersRef.current, layerId);
@@ -734,12 +745,15 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const node = layerNodeRefs.current[layerId];
     const img = imageRef.current;
     if (!node) return;
+    const filters: Array<(this: Konva.Node, imageData: ImageData) => void> = [];
     if (layer?.mask?.enabled && img) {
       const canvas = getOrCreateCanvasFor(maskCanvasRegistry.current, layer.mask.id, img.width, img.height);
-      node.filters([maskAlphaFilter(canvas)]);
-    } else {
-      node.filters([]);
+      filters.push(maskAlphaFilter(canvas));
     }
+    if (layer?.effects != null && isBlendIfRangeActive(layer.effects.blendIf.thisLayer)) {
+      filters.push(blendIfAlphaFilter(layer.effects.blendIf.thisLayer, layer.effects.blendIf.channel));
+    }
+    node.filters(filters);
   }, []);
 
   /** Redraws whatever the active tool is actually painting onto — a layer's mask, the active layer
@@ -1323,7 +1337,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    * itself never drifts between the two renderers even where the visual result still does.
    */
   const needsIsolation = useCallback((layer: StudioLayer) =>
-    layer.type === 'group' && (layer.opacity < 1 || layer.blendMode !== 'normal' || (layer.effects != null && hasAnyEnabledStyle(layer.effects))), []);
+    layer.type === 'group' && (layer.opacity < 1 || layer.blendMode !== 'normal'
+      || (layer.effects != null && (hasAnyEnabledStyle(layer.effects) || hasActiveBlendIf(layer.effects.blendIf)))), []);
 
   /** True when `layerId` is a clip base with layers riding on it — i.e. it renders as a clip run. */
   const hasClippedFollowers = useCallback((layerId: string) => {
@@ -1360,6 +1375,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // node inside the layer's own Group below) need the layer already rasterized to know what
       // "atop" means; the other style types isolate here for boolean parity with `exportImage.ts`'s
       // `isolatesGroup` even though they don't yet render live (see `needsIsolation`'s own comment).
+      // Blend If joins the same clause for the same parity reason — its `underlying` gate never
+      // renders live either (see `refreshMaskFilter`'s doc comment), but the isolation boolean
+      // itself must stay identical to what `exportImage.ts` would isolate, so both sides of Blend If
+      // count here even though only `thisLayer` actually paints through the filter below.
       // Must run BEFORE `.cache()` below, not after: caching snapshots whatever these Konva.Image
       // nodes currently show, so repainting their backing canvases afterward would have no visible
       // effect until the next unrelated structural change forces a re-cache.
@@ -1368,7 +1387,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         || (layer.type === 'adjustment' && layer.visible)
         || hasClippedFollowers(layer.id)
         || layer.mask?.enabled === true
-        || (layer.effects != null && hasAnyEnabledStyle(layer.effects));
+        || (layer.effects != null && (hasAnyEnabledStyle(layer.effects) || hasActiveBlendIf(layer.effects.blendIf)));
       if (isolate) {
         // pixelRatio 1 = page-space pixels. The stage scale is a transform above the cache, so
         // caching at devicePixelRatio would make cost (and memory) scale with zoom for no gain.
@@ -3292,6 +3311,18 @@ function maskAlphaFilter(maskCanvas: HTMLCanvasElement) {
     for (let i = 3; i < data.length; i += 4) {
       data[i] = (data[i] * maskData[i]) / 255;
     }
+  };
+}
+
+/**
+ * Blend If's live "This Layer" gate — the one Blend If side that needs no backdrop, so it's just a
+ * thin Konva-filter wrapper around `layerEffects.ts`'s `applyBlendIf` (no `underlying` argument;
+ * "Underlying Layer" stays export-only, see `refreshMaskFilter`'s own doc comment). Runs over the
+ * already-cached scene canvas exactly like `maskAlphaFilter` above.
+ */
+function blendIfAlphaFilter(range: BlendIfRange, channel: BlendIfChannel) {
+  return function (this: Konva.Node, imageData: ImageData) {
+    applyBlendIf(imageData.data, range, channel);
   };
 }
 

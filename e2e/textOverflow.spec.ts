@@ -364,7 +364,7 @@ test('point text never shows the overflow indicator, however long the content', 
   expect(await countIndicatorFillPixels(page)).toBe(0);
 });
 
-test('overflowing content renders visibly past the frame bottom, not clipped', async ({ page }) => {
+test('overflowing content is visually clipped at the frame bottom, but not destroyed', async ({ page }) => {
   const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
   const fh = await waitForFixedHeight(page);
   const lines = Array.from({ length: linesToOverflow(fh) + 5 }, () => 'XXXXXXXXXX');
@@ -373,10 +373,20 @@ test('overflowing content renders visibly past the frame bottom, not clipped', a
   await expect.poll(() => countIndicatorFillPixels(page), { timeout: 15_000 }).toBeGreaterThan(15);
   await deselect(page);
 
-  // Well below the box's bottom edge (y0 + h), where overflow content paints — dark default
-  // (#000000) text on the fixture's flat grey (#808080) page. The frame is an informational
-  // boundary (the ⊞ indicator above), not a hard mask, so the remaining "XXXXXXXXXX" lines paint
-  // straight through this band instead of being clipped away.
+  // Well below the box's bottom edge (y0 + h), where overflow content used to paint — dark default
+  // (#000000) text on the fixture's flat grey (#808080) page. The frame is a real clip boundary now
+  // (a Konva `clip` on the glyph Group in TextLayerNode.tsx), flagged by the ⊞ indicator above, so
+  // none of the "XXXXXXXXXX" lines past the frame paint into this band anymore.
   const darkPixels = await countPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60, 'dark');
-  expect(darkPixels).toBeGreaterThan(0);
+  expect(darkPixels).toBe(0);
+
+  // But the content itself is untouched, not deleted — re-entering edit mode and growing the box
+  // taller (via the ⊞ indicator's own double-click auto-fit) reveals the same overflow text again.
+  await page.mouse.dblclick(x0 + 80, y0 + 40);
+  await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
+    .toBeGreaterThan(fh + 5);
+  await expect.poll(() => countIndicatorFillPixels(page), { timeout: 15_000 }).toBe(0);
+  await deselect(page);
+  const darkPixelsAfterGrow = await countPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60, 'dark');
+  expect(darkPixelsAfterGrow).toBeGreaterThan(0);
 });

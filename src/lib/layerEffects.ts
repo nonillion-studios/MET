@@ -1,21 +1,26 @@
 import type {
-  ShadowStyleData, GlowStyleData, BevelEmbossData, SatinStyleData, StrokeStyleData,
+  ShadowStyleData, GlowStyleData, BevelEmbossData, SatinStyleData, StrokeStyleData, BlendIfChannel, BlendIfRange,
 } from '../components/studio/studioTypes';
 import { hexToRgb } from './color';
 
 /**
  * Real, pixel-based Layer Style effects — Drop/Inner Shadow, Outer/Inner Glow, Bevel & Emboss,
- * Satin, Stroke. Every function here takes a layer's own rendered *content* alpha (its silhouette)
- * and derives an effect layer from it via genuine, if deliberately simplified, image-processing
- * techniques (blur-based halo/dilation/erosion, directional-derivative relief, offset-difference
- * interference) — the same "real technique, honestly scoped" standard this codebase's Content-Aware
- * Fill and Shadows/Highlights already set, not a decorative approximation. Pure typed-array math, no
- * DOM — same convention as `adjustments.ts`/`filters.ts`, so this runs unmodified in vitest.
+ * Satin, Stroke, Blend If. Every function here takes a layer's own rendered *content* alpha (its
+ * silhouette) and derives an effect layer from it via genuine, if deliberately simplified,
+ * image-processing techniques (blur-based halo/dilation/erosion, directional-derivative relief,
+ * offset-difference interference) — the same "real technique, honestly scoped" standard this
+ * codebase's Content-Aware Fill and Shadows/Highlights already set, not a decorative approximation.
+ * Pure typed-array math, no DOM — same convention as `adjustments.ts`/`filters.ts`, so this runs
+ * unmodified in vitest.
  *
- * Wired into `exportImage.ts`'s flatten path only (see `studioTypes.ts`'s `LayerEffects.blendIf` doc
- * comment for why: Konva's per-node filter model has no backdrop access, and several of these
- * effects — shadows/glows extending past the layer's own bounds especially — are easiest to reason
- * about with straightforward sequential canvas compositing, which flatten export already has).
+ * Wired into `exportImage.ts`'s flatten path (see `studioTypes.ts`'s `LayerEffects.blendIf` doc
+ * comment for the backdrop-access reasoning: Konva's per-node filter model has no backdrop access,
+ * and several of these effects — shadows/glows extending past the layer's own bounds especially —
+ * are easiest to reason about with straightforward sequential canvas compositing, which flatten
+ * export already has). Blend If's `applyBlendIf` is the one exception to "export-only": its
+ * `thisLayer` gate needs no backdrop, so it's also wired live via `StudioCanvas.tsx`'s
+ * `blendIfAlphaFilter`, a per-node Konva filter built directly on top of the same function below —
+ * only `applyBlendIf`'s `underlying` gate stays export-only.
  */
 
 function clamp255(v: number): number {
@@ -238,6 +243,55 @@ export function paintHalo(ctx: CanvasRenderingContext2D, halo: Float32Array, wid
   ctx.globalCompositeOperation = blendMode;
   ctx.drawImage(scratch, 0, 0);
   ctx.restore();
+}
+
+/** Blend If's per-pixel luminance/channel read — Gray is the standard broadcast-luma weighting
+ *  (rounded to line up with integer 0-255 split points); R/G/B select a single raw channel byte,
+ *  matching Photoshop's own channel dropdown above the two split-point sliders. */
+export function blendIfChannelValue(r: number, g: number, b: number, channel: BlendIfChannel): number {
+  switch (channel) {
+    case 'r': return r;
+    case 'g': return g;
+    case 'b': return b;
+    default: return Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+  }
+}
+
+/** One Blend If split-point range's ramp, 0-1: 0 below `blackMin`, linear up to 1 across
+ *  black/blackMax, full 1 in the plateau, linear back down to 0 across white/whiteMax, 0 above
+ *  `whiteMax`. Pure — reused per-pixel by `applyBlendIf` for both "This Layer" and "Underlying
+ *  Layer" (they're the same math, just fed different source pixels). */
+export function blendIfRangeMask(value: number, range: BlendIfRange): number {
+  if (value < range.blackMin) return 0;
+  if (value < range.blackMax) return (value - range.blackMin) / Math.max(1, range.blackMax - range.blackMin);
+  if (value > range.whiteMax) return 0;
+  if (value > range.whiteMin) return 1 - (value - range.whiteMin) / Math.max(1, range.whiteMax - range.whiteMin);
+  return 1;
+}
+
+/**
+ * Mutates `data`'s alpha channel in place by Blend If's gate(s). `data` is this layer's own final
+ * rendered RGBA (post-mask, post every other Layer Style paint) — "This Layer" always applies.
+ * `underlying`, when given, is the pre-this-layer backdrop RGBA (same pixel count as `data`) plus
+ * its own range, used for the "Underlying Layer" gate — omit it entirely (rather than passing a
+ * no-op range) for the live Konva preview, which structurally cannot see the backdrop (see
+ * `studioTypes.ts`'s `LayerEffects.blendIf` doc comment), so the underlying gate is skipped outright
+ * rather than evaluated against nothing.
+ */
+export function applyBlendIf(
+  data: Uint8ClampedArray,
+  thisRange: BlendIfRange,
+  channel: BlendIfChannel,
+  underlying?: { data: Uint8ClampedArray; range: BlendIfRange },
+): void {
+  for (let i = 0; i < data.length; i += 4) {
+    let mask = blendIfRangeMask(blendIfChannelValue(data[i], data[i + 1], data[i + 2], channel), thisRange);
+    if (underlying) {
+      const u = underlying.data;
+      mask *= blendIfRangeMask(blendIfChannelValue(u[i], u[i + 1], u[i + 2], channel), underlying.range);
+    }
+    if (mask !== 1) data[i + 3] = Math.round(data[i + 3] * mask);
+  }
 }
 
 export type { ShadowStyleData, GlowStyleData };

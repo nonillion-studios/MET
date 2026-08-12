@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal, Button } from '../ui';
 import { Slider, CheckboxRow, ColorRow, ChannelTabs } from './panelControls';
+import { BlendIfSlider } from './BlendIfSlider';
 import { swal } from '../../lib/swalTheme';
 import { loadLayerStylePresets, saveLayerStylePresets, type LayerStylePreset } from '../../lib/layerStyleStore';
 import {
@@ -240,17 +241,15 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
                 Gray Level. "This Layer" and "Underlying Layer" gate compositing by luminance — real in
                 flattened export; "Underlying Layer" isn't live-previewed (see the Preview note below).
               </p>
+              <ChannelTabs
+                options={[{ id: 'gray', label: 'Gray' }, { id: 'r', label: 'Red' }, { id: 'g', label: 'Green' }, { id: 'b', label: 'Blue' }]}
+                value={effects.blendIf.channel}
+                onChange={(v) => patchEffects('blendIf', { channel: v })}
+              />
               {(['thisLayer', 'underlying'] as const).map((side) => (
                 <div key={side} className="flex flex-col gap-1.5">
                   <span className="text-micro text-ink-faint capitalize">{side === 'thisLayer' ? 'This Layer' : 'Underlying Layer'}</span>
-                  <Slider label="Black Min" min={0} max={255} value={effects.blendIf[side].blackMin}
-                    onChange={(v) => patchEffects('blendIf', { [side]: { ...effects.blendIf[side], blackMin: Math.min(v, effects.blendIf[side].blackMax) } } as never)} />
-                  <Slider label="Black Max" min={0} max={255} value={effects.blendIf[side].blackMax}
-                    onChange={(v) => patchEffects('blendIf', { [side]: { ...effects.blendIf[side], blackMax: Math.max(v, effects.blendIf[side].blackMin) } } as never)} />
-                  <Slider label="White Min" min={0} max={255} value={effects.blendIf[side].whiteMin}
-                    onChange={(v) => patchEffects('blendIf', { [side]: { ...effects.blendIf[side], whiteMin: Math.min(v, effects.blendIf[side].whiteMax) } } as never)} />
-                  <Slider label="White Max" min={0} max={255} value={effects.blendIf[side].whiteMax}
-                    onChange={(v) => patchEffects('blendIf', { [side]: { ...effects.blendIf[side], whiteMax: Math.max(v, effects.blendIf[side].whiteMin) } } as never)} />
+                  <BlendIfSlider range={effects.blendIf[side]} onChange={(next) => patchEffects('blendIf', { [side]: next } as never)} />
                 </div>
               ))}
             </>
