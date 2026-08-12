@@ -3,12 +3,16 @@ import { ToolRail } from '../components/studio/ToolRail';
 import { LayersPanel } from '../components/studio/LayersPanel';
 import { createLayer, createAdjustmentLayer, type LayerSelectMode, type AdjustmentKind, type StudioLayer } from '../components/studio/studioTypes';
 import { moveWithinParent } from '../components/studio/layerTree';
+import { NO_SELECTION, type Selection } from '../components/studio/paint/selection';
+import type { PaintSettings } from '../components/studio/paint/paintEngine';
 import type { SerializedStudioLayer } from '../lib/studioProjectStore';
+import { BUILTIN_BRUSHES } from '../lib/brushStore';
 import { useDesignModeStore, type DesignImage } from './designModeStore';
 import { DesignModeTopBar, type DesignExportFormat } from './DesignModeTopBar';
 import { NewCanvasDialog } from './NewCanvasDialog';
 import { DesignImageTabs } from './DesignImageTabs';
 import { DesignCanvas, type DesignCanvasHandle } from './DesignCanvas';
+import { DesignBrushOptionsBar } from './DesignBrushOptionsBar';
 import { exportDesignImage } from './exportDesignImage';
 import { useDesignHistory } from './useDesignHistory';
 import { useDesignShortcuts } from './useDesignShortcuts';
@@ -16,6 +20,8 @@ import { loadAllDesignImageIds, loadDesignImage, saveDesignImage, deleteDesignIm
 import { swalToast } from '../lib/swalTheme';
 
 const SAVE_DEBOUNCE_MS = 1000;
+const BRUSH_TOOLS = new Set(['brush', 'pencil', 'eraser']);
+const DEFAULT_BRUSH = BUILTIN_BRUSHES[0];
 
 /** Strips `raster`/`maskRaster` back off a loaded SerializedStudioLayer tree — the live `StudioLayer`
  *  the store holds carries no pixels of its own (those live in DesignCanvas's registry, restored
@@ -54,6 +60,32 @@ export function DesignMode() {
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [expandedLayerId, setExpandedLayerId] = useState<string | null>(null);
+
+  // Minimal brush settings — the fields with a control below. Everything else PaintSettings needs
+  // comes from BUILTIN_BRUSHES[0] (Hard Round) as a fixed default; those fields are inert this
+  // session since no tool Design Mode dispatches into usePaintLayer reads them (clone/heal/liquify/
+  // background-eraser/magic-eraser/content-aware aren't wired up here).
+  const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH.size);
+  const [brushColor, setBrushColor] = useState('#000000');
+  const [brushHardness, setBrushHardness] = useState(DEFAULT_BRUSH.hardness);
+  const [brushOpacity, setBrushOpacity] = useState(1);
+  const [brushFlow, setBrushFlow] = useState(1);
+
+  const paintSettings: PaintSettings = {
+    size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
+    color: brushColor, bgColor: '#ffffff', tolerance: 32, liquifyMode: 'push', symmetry: 'none',
+    spacing: DEFAULT_BRUSH.spacing, brushShape: DEFAULT_BRUSH.shape, angle: DEFAULT_BRUSH.angle,
+    roundness: DEFAULT_BRUSH.roundness, scatter: DEFAULT_BRUSH.scatter, smoothing: DEFAULT_BRUSH.smoothing,
+    pressureSize: DEFAULT_BRUSH.pressureSize, pressureOpacity: DEFAULT_BRUSH.pressureOpacity,
+    contentAwareMode: 'proximity', sampleMode: 'current',
+    backgroundEraserSampling: 'continuous', backgroundEraserLimits: 'contiguous', backgroundEraserProtectForeground: false,
+    magicEraserAntiAlias: true, magicEraserContiguous: true, magicEraserSampleAllLayers: false, magicEraserOpacity: 1,
+  };
+
+  // Selection is wired for real in Phase 3 (store-backed, per-image); until then usePaintLayer still
+  // requires both props, so a no-op stub keeps DesignCanvas's paint pipeline functional.
+  const selection: Selection = NO_SELECTION;
+  const handleSelectionChange = useCallback((_sel: Selection) => {}, []);
 
   useEffect(() => {
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
@@ -320,6 +352,16 @@ export function DesignMode() {
         onNewCanvas={store.openNewCanvasDialog}
       />
 
+      {BRUSH_TOOLS.has(activeTool) && (
+        <DesignBrushOptionsBar
+          size={brushSize} onSizeChange={setBrushSize}
+          color={brushColor} onColorChange={setBrushColor}
+          hardness={brushHardness} onHardnessChange={setBrushHardness}
+          opacity={brushOpacity} onOpacityChange={setBrushOpacity}
+          flow={brushFlow} onFlowChange={setBrushFlow}
+        />
+      )}
+
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />
         <DesignCanvas
@@ -328,6 +370,9 @@ export function DesignMode() {
           selectedLayerIds={selectedLayerIds}
           onSelectLayer={handleSelectLayer}
           onUpdateLayers={handleUpdateLayers}
+          paintSettings={paintSettings}
+          selection={selection}
+          onSelectionChange={handleSelectionChange}
           onZoomChange={setZoomPercent}
           onFillBackgroundConsumed={() => { if (store.activeImageId) store.clearPendingBackgroundFill(store.activeImageId); }}
           onRequestToolChange={setActiveTool}

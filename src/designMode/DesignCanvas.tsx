@@ -10,15 +10,15 @@ import { getOrCreateCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from
 import { cloneSubtree } from '../components/studio/layerTree';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
 import { useCanvasViewport } from '../components/studio/canvasViewport';
+import { usePaintLayer } from '../components/studio/paint/usePaintLayer';
+import type { PaintSettings } from '../components/studio/paint/paintEngine';
+import type { Selection } from '../components/studio/paint/selection';
 import type { SerializedStudioLayer } from '../lib/studioProjectStore';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
 import type { CanvasSnapshots } from './useDesignHistory';
 import { DESIGN_SCHEMA_VERSION, type DesignImageData } from './designModePersistence';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
-
-const BRUSH_COLOR = '#000000';
-const BRUSH_SIZE = 14;
 
 export interface DesignCanvasHandle {
   zoomIn: () => void;
@@ -50,6 +50,9 @@ interface DesignCanvasProps {
   selectedLayerIds: string[];
   onSelectLayer: (id: string | null, mode?: LayerSelectMode) => void;
   onUpdateLayers: (updater: (layers: StudioLayer[]) => StudioLayer[]) => void;
+  paintSettings: PaintSettings;
+  selection: Selection;
+  onSelectionChange: (sel: Selection) => void;
   onZoomChange?: (percent: number) => void;
   onFillBackgroundConsumed?: () => void;
   onRequestToolChange?: (tool: string) => void;
@@ -65,13 +68,15 @@ interface DesignCanvasProps {
  * else for Design Mode to share.
  *
  * Implements the "focused subset" of tools this pass: Select/Move, Free Transform (automatic on
- * selecting text/placed-image, matching Studio), Text, and a minimal Brush/Eraser. Marquee/lasso/
- * gradient/crop/eyedropper/clone/healing are not implemented — selecting one of those tools from the
- * (reused, unforked) ToolRail simply has no effect on this canvas.
+ * selecting text/placed-image, matching Studio), Text, and Brush/Pencil/Eraser via Studio's real
+ * `usePaintLayer`/`paintEngine.ts` (same stamp/flow/opacity engine Studio's own brush uses, not a
+ * hand-rolled `ctx.stroke()`). Marquee/lasso/gradient/crop/eyedropper/clone/healing are not
+ * implemented — selecting one of those tools from the (reused, unforked) ToolRail simply has no
+ * effect on this canvas.
  */
 export function DesignCanvas({
-  image, activeTool, selectedLayerIds, onSelectLayer, onUpdateLayers, onZoomChange,
-  onFillBackgroundConsumed, onRequestToolChange, canvasHandleRef,
+  image, activeTool, selectedLayerIds, onSelectLayer, onUpdateLayers, paintSettings, selection, onSelectionChange,
+  onZoomChange, onFillBackgroundConsumed, onRequestToolChange, canvasHandleRef,
 }: DesignCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -86,7 +91,6 @@ export function DesignCanvas({
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const isPaintingRef = useRef(false);
-  const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
   const textClickPendingRef = useRef(false);
 
   const viewport: CanvasViewport = { scale, pos };
@@ -143,31 +147,30 @@ export function DesignCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image?.id, image?.pendingBackgroundFill]);
 
-  // ── Brush / Eraser ──────────────────────────────────────────────────────────────────────────
-  const paintAt = useCallback((imgX: number, imgY: number) => {
-    if (!image?.activeLayerId) return;
+  // ── Brush / Pencil / Eraser — Studio's real paint engine, not a hand-rolled ctx.stroke() ────────
+  const getPaintCanvas = useCallback((): HTMLCanvasElement | null => {
+    if (!image?.activeLayerId) return null;
     const layer = image.layers.find(l => l.id === image.activeLayerId);
-    if (!layer || layer.type !== 'clean-patch' || layer.locked) return;
-    const canvas = getOrCreateCanvasFor(paintRegistry.current, layer.id, image.width, image.height);
-    const ctx = canvas.getContext('2d')!;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = BRUSH_SIZE;
-    if (activeTool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.strokeStyle = 'rgba(0,0,0,1)';
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = BRUSH_COLOR;
-    }
-    const last = lastPaintPointRef.current;
-    ctx.beginPath();
-    if (last) { ctx.moveTo(last.x, last.y); ctx.lineTo(imgX, imgY); }
-    else { ctx.moveTo(imgX, imgY); ctx.lineTo(imgX, imgY); }
-    ctx.stroke();
-    lastPaintPointRef.current = { x: imgX, y: imgY };
-    paintNodeRefs.current[layer.id]?.getLayer()?.batchDraw();
-  }, [image, activeTool]);
+    if (!layer || layer.type !== 'clean-patch' || layer.locked) return null;
+    return getOrCreateCanvasFor(paintRegistry.current, layer.id, image.width, image.height);
+  }, [image]);
+
+  const redrawActiveLayer = useCallback(() => {
+    if (image?.activeLayerId) paintNodeRefs.current[image.activeLayerId]?.getLayer()?.batchDraw();
+  }, [image?.activeLayerId]);
+
+  const paint = usePaintLayer({
+    getCanvas: getPaintCanvas,
+    settings: paintSettings,
+    selection,
+    onSelectionChange,
+    // Konva only repaints a node when told to — without this, a click-no-drag stamp (pointerDown
+    // immediately followed by pointerUp, no pointerMove between) would mutate the canvas's pixels
+    // but never redraw the node until an unrelated re-render. History needs no hook here: the
+    // identity onUpdateLayers dispatch below (still fired at pointer-down, before paint.pointerDown)
+    // already captures the pre-stroke snapshot via useDesignHistory's coalescing window.
+    onStrokeEnd: () => { redrawActiveLayer(); },
+  });
 
   // ── Add Image (placed-image Smart Object, or PSD-as-layers) ────────────────────────────────────
   const handlePlaceImageFile = useCallback(async (file: File) => {
@@ -328,7 +331,9 @@ export function DesignCanvas({
     if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
   }, []);
 
-  const isPaintTool = activeTool === 'brush' || activeTool === 'eraser';
+  const isPaintTool = activeTool === 'brush' || activeTool === 'pencil' || activeTool === 'eraser';
+  const paintTool = () => activeTool as 'brush' | 'pencil' | 'eraser';
+  const pointerPressure = (evt: PointerEvent) => (evt.pointerType === 'pen' ? evt.pressure || 0.5 : 1);
 
   const handleStagePointerDown = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
     if (spaceDown) {
@@ -355,7 +360,6 @@ export function DesignCanvas({
       const pointer = stage?.getPointerPosition();
       if (!pointer) return;
       isPaintingRef.current = true;
-      lastPaintPointRef.current = null;
       // Paint strokes mutate the registry canvas directly and never touch the layers array, so
       // without this the history push in onUpdateLayers would never fire for a stroke at all — an
       // identity update is enough to trigger it (and its accompanying canvas snapshot) once, here,
@@ -364,7 +368,7 @@ export function DesignCanvas({
       // site.
       onUpdateLayers(layers => layers);
       const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
-      paintAt(imgPoint.x, imgPoint.y);
+      paint.pointerDown(paintTool(), imgPoint.x, imgPoint.y, e.evt.altKey, pointerPressure(e.evt));
       return;
     }
     if (activeTool === 'select') {
@@ -372,7 +376,7 @@ export function DesignCanvas({
       const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
       if (onEmpty) onSelectLayer(null);
     }
-  }, [spaceDown, startPan, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paintAt]);
+  }, [spaceDown, startPan, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paint]);
 
   const handleStagePointerMove = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
     if (isPanning()) return;
@@ -381,13 +385,21 @@ export function DesignCanvas({
       const pointer = stage?.getPointerPosition();
       if (!pointer) return;
       const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
-      paintAt(imgPoint.x, imgPoint.y);
+      paint.pointerMove(paintTool(), imgPoint.x, imgPoint.y, pointerPressure(e.evt));
+      redrawActiveLayer();
     }
-  }, [isPanning, viewport, isPaintTool, paintAt]);
+  }, [isPanning, viewport, isPaintTool, paint, redrawActiveLayer]);
 
   const handleStagePointerUp = useCallback(() => {
-    isPaintingRef.current = false;
-    lastPaintPointRef.current = null;
+    if (isPaintingRef.current) {
+      isPaintingRef.current = false;
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (pointer) {
+        const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
+        paint.pointerUp(paintTool(), imgPoint.x, imgPoint.y);
+      }
+    }
     if (textClickPendingRef.current) {
       textClickPendingRef.current = false;
       if (image) {
@@ -402,7 +414,7 @@ export function DesignCanvas({
         }
       }
     }
-  }, [image, viewport, onUpdateLayers, onSelectLayer]);
+  }, [image, viewport, onUpdateLayers, onSelectLayer, paint]);
 
   const updateLayerPatch = useCallback((layerId: string, patch: Partial<StudioLayer>) => {
     onUpdateLayers(layers => layers.map(l => (l.id === layerId ? { ...l, ...patch } : l)));
