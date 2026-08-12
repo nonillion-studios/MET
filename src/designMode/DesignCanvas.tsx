@@ -9,6 +9,7 @@ import { layoutText } from '../components/studio/textLayout';
 import { getOrCreateCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
 import { cloneSubtree } from '../components/studio/layerTree';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
+import { useCanvasViewport } from '../components/studio/canvasViewport';
 import type { SerializedStudioLayer } from '../lib/studioProjectStore';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
@@ -16,9 +17,6 @@ import type { CanvasSnapshots } from './useDesignHistory';
 import { DESIGN_SCHEMA_VERSION, type DesignImageData } from './designModePersistence';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
 
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 8;
-const clampScale = (s: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 const BRUSH_COLOR = '#000000';
 const BRUSH_SIZE = 14;
 
@@ -83,10 +81,9 @@ export function DesignCanvas({
   const paintNodeRefs = useRef<Record<string, Konva.Image | null>>({});
   const paintRegistry = useRef<PaintCanvasRegistry>({});
 
-  const [scale, setScale] = useState(1);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const canvasViewport = useCanvasViewport({ minScale: 0.05, maxScale: 8 });
+  const { scale, pos, spaceDown, isPanning, startPan } = canvasViewport;
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [spaceDown, setSpaceDown] = useState(false);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const isPaintingRef = useRef(false);
   const lastPaintPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -108,50 +105,14 @@ export function DesignCanvas({
 
   // ── Fit-to-screen whenever the active image changes ────────────────────────────────────────────
   const fit = useCallback(() => {
-    if (!image || containerSize.width === 0 || containerSize.height === 0) return;
-    const pad = 40;
-    const s = clampScale(Math.min(
-      (containerSize.width - pad * 2) / image.width,
-      (containerSize.height - pad * 2) / image.height,
-    ));
-    setScale(s);
-    setPos({
-      x: (containerSize.width - image.width * s) / 2,
-      y: (containerSize.height - image.height * s) / 2,
-    });
+    if (!image) return;
+    canvasViewport.fit(image.width, image.height, containerSize, { padding: 40 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image, containerSize]);
 
   useEffect(() => { fit(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [image?.id, containerSize.width, containerSize.height]);
 
   useEffect(() => { onZoomChange?.(scale * 100); }, [scale, onZoomChange]);
-
-  // ── Space+drag pan ──────────────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !e.repeat) setSpaceDown(true);
-    };
-    const onKeyUp = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceDown(false); };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, []);
-
-  const panStateRef = useRef<{ startClientX: number; startClientY: number; startPos: { x: number; y: number } } | null>(null);
-
-  // ── Wheel zoom ──────────────────────────────────────────────────────────────────────────────
-  const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault();
-    const stage = stageRef.current;
-    const pointer = stage?.getPointerPosition();
-    if (!stage || !pointer) return;
-    const oldScale = scale;
-    const direction = e.evt.deltaY > 0 ? -1 : 1;
-    const zoomFactor = 1.08;
-    const newScale = clampScale(direction > 0 ? oldScale * zoomFactor : oldScale / zoomFactor);
-    const pointTo = screenToImage(pointer.x, pointer.y, { scale: oldScale, pos });
-    setScale(newScale);
-    setPos({ x: pointer.x - pointTo.x * newScale, y: pointer.y - pointTo.y * newScale });
-  }, [scale, pos]);
 
   // ── Free Transform: bind the shared Transformer to selected text/placed-image nodes ───────────
   useEffect(() => {
@@ -339,10 +300,10 @@ export function DesignCanvas({
   useEffect(() => {
     if (!canvasHandleRef) return;
     canvasHandleRef.current = {
-      zoomIn: () => setScale(s => clampScale(s * 1.25)),
-      zoomOut: () => setScale(s => clampScale(s / 1.25)),
+      zoomIn: () => canvasViewport.zoomIn(containerSize),
+      zoomOut: () => canvasViewport.zoomOut(containerSize),
       fit,
-      zoomTo100: () => setScale(1),
+      zoomTo100: () => canvasViewport.zoomTo100(containerSize),
       getZoom: () => scale,
       placeImageFile: handlePlaceImageFile,
       duplicateLayer,
@@ -353,8 +314,8 @@ export function DesignCanvas({
       loadSerializedCanvases,
     };
   }, [
-    canvasHandleRef, fit, scale, handlePlaceImageFile, duplicateLayer, exportSnapshot, snapshotCanvases,
-    restoreCanvases, serializeForSave, loadSerializedCanvases,
+    canvasHandleRef, fit, scale, containerSize, canvasViewport, handlePlaceImageFile, duplicateLayer, exportSnapshot,
+    snapshotCanvases, restoreCanvases, serializeForSave, loadSerializedCanvases,
   ]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -371,7 +332,7 @@ export function DesignCanvas({
 
   const handleStagePointerDown = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
     if (spaceDown) {
-      panStateRef.current = { startClientX: e.evt.clientX, startClientY: e.evt.clientY, startPos: pos };
+      startPan(e.evt.clientX, e.evt.clientY);
       return;
     }
     if (activeTool === 'text') {
@@ -411,15 +372,10 @@ export function DesignCanvas({
       const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
       if (onEmpty) onSelectLayer(null);
     }
-  }, [spaceDown, pos, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paintAt]);
+  }, [spaceDown, startPan, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paintAt]);
 
   const handleStagePointerMove = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
-    if (panStateRef.current) {
-      const dx = e.evt.clientX - panStateRef.current.startClientX;
-      const dy = e.evt.clientY - panStateRef.current.startClientY;
-      setPos({ x: panStateRef.current.startPos.x + dx, y: panStateRef.current.startPos.y + dy });
-      return;
-    }
+    if (isPanning()) return;
     if (isPaintingRef.current && isPaintTool) {
       const stage = stageRef.current;
       const pointer = stage?.getPointerPosition();
@@ -427,10 +383,9 @@ export function DesignCanvas({
       const imgPoint = screenToImage(pointer.x, pointer.y, viewport);
       paintAt(imgPoint.x, imgPoint.y);
     }
-  }, [viewport, isPaintTool, paintAt]);
+  }, [isPanning, viewport, isPaintTool, paintAt]);
 
   const handleStagePointerUp = useCallback(() => {
-    panStateRef.current = null;
     isPaintingRef.current = false;
     lastPaintPointRef.current = null;
     if (textClickPendingRef.current) {
@@ -489,7 +444,7 @@ export function DesignCanvas({
             scaleY={scale}
             x={pos.x}
             y={pos.y}
-            onWheel={handleWheel}
+            onWheel={canvasViewport.handleWheel}
             onPointerDown={handleStagePointerDown}
             onPointerMove={handleStagePointerMove}
             onPointerUp={handleStagePointerUp}

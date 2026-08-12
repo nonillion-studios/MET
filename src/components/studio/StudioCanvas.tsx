@@ -22,6 +22,7 @@ import {
 } from './layerTree';
 import { layoutText } from './textLayout';
 import { screenToImage, imageToScreen } from './canvasCoords';
+import { useCanvasViewport } from './canvasViewport';
 import { reflowRunsForContent } from './textRuns';
 import { swalToast } from '../../lib/swalTheme';
 import { getOrCreateCanvasFor, deleteCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from './paint/paintCanvasRegistry';
@@ -63,8 +64,6 @@ export interface ExportSnapshot {
   layers: SerializedStudioLayer[];
 }
 
-const MIN_SCALE = 0.1;
-const MAX_SCALE = 8;
 const GRID_SIZE = 100;
 const RULER_SIZE = 20;
 const RULER_STEP = 100;
@@ -404,8 +403,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const layersRef = useRef(layers);
   layersRef.current = layers;
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [scale, setScale] = useState(1);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const viewport = useCanvasViewport({ minScale: 0.1, maxScale: 8 });
+  const { scale, pos, spaceDown, isPanning, startPan } = viewport;
   // Status bar / minimap mirror pan+zoom into their own owner's state via this — pos/scale live
   // here, not lifted, so this is the only way anything outside this component learns they changed.
   useEffect(() => { onViewportChange?.({ pos, scale, containerSize }); }, [pos, scale, containerSize, onViewportChange]);
@@ -605,28 +604,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, [selectionContextMenu]);
 
   // Spacebar-hold and middle-mouse-button pan, available regardless of the active tool (Photoshop-style).
-  const [spaceDown, setSpaceDown] = useState(false);
-  const panRef = useRef<{ active: boolean; lastX: number; lastY: number } | null>(null);
-  useEffect(() => {
-    function isTextInputFocused() {
-      const el = document.activeElement;
-      if (!el) return false;
-      const tag = el.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || (el as HTMLElement).isContentEditable;
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.code === 'Space' && !isTextInputFocused()) { e.preventDefault(); setSpaceDown(true); }
-    }
-    function onKeyUp(e: KeyboardEvent) {
-      if (e.code === 'Space') setSpaceDown(false);
-    }
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-    };
-  }, []);
+  // spaceDown/isPanning/startPan come from the shared useCanvasViewport hook above.
 
   // Live Shift/Alt state for the Transformer's corner-drag behavior (Shift = constrain
   // proportions, Alt = resize from center) — Konva's `keepRatio`/`centeredScaling` are plain
@@ -899,20 +877,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       return scale;
     },
     zoomTo(nextScale: number) {
-      const clamped = clampScale(nextScale);
-      const cx = containerSize.width / 2, cy = containerSize.height / 2;
-      const pointTo = screenToImage(cx, cy, { scale, pos });
-      setScale(clamped);
-      setPos({ x: cx - pointTo.x * clamped, y: cy - pointTo.y * clamped });
+      viewport.zoomTo(nextScale, containerSize);
     },
     zoomIn() {
-      this.zoomTo(scale * 1.25);
+      viewport.zoomIn(containerSize);
     },
     zoomOut() {
-      this.zoomTo(scale / 1.25);
+      viewport.zoomOut(containerSize);
     },
     centerOn(x: number, y: number) {
-      setPos({ x: containerSize.width / 2 - x * scale, y: containerSize.height / 2 - y * scale });
+      viewport.centerOn(x, y, containerSize);
     },
     centerTextLayerInBubble(id: string) {
       const layer = findLayer(layersRef.current, id);
@@ -1132,7 +1106,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true,
       }));
     },
-  }), [onUpdateTextLayer, scale, pos, containerSize, page, selection]);
+  }), [onUpdateTextLayer, scale, pos, containerSize, page, selection, viewport]);
 
   const activeSource = showCleaned && page?.cleaned ? page.cleaned : page?.original ?? null;
   // Only meaningful when the cleaned page is the base — overlaying the original above itself is a no-op.
@@ -1247,19 +1221,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, []);
 
   const fitToScreen = useCallback(() => {
-    if (!image || containerSize.width === 0 || containerSize.height === 0) return;
-    const padding = 32;
-    const scaleX = (containerSize.width - padding * 2) / image.width;
-    const scaleY = (containerSize.height - padding * 2) / image.height;
+    if (!image) return;
     // A container briefly shorter/narrower than the padding (a transient layout state during a
-    // panel/dock animation, say) makes scaleX/scaleY negative — clamp so a bad measurement can
-    // never jump the view to a nonsensical or negative zoom.
-    const next = clampScale(Math.min(scaleX, scaleY, 1.5));
-    setScale(next);
-    setPos({
-      x: (containerSize.width - image.width * next) / 2,
-      y: (containerSize.height - image.height * next) / 2,
-    });
+    // panel/dock animation, say) makes the raw scaleX/scaleY negative — viewport.fit's own
+    // clampScale floors that at minScale, so a bad measurement can never jump the view to a
+    // nonsensical or negative zoom.
+    viewport.fit(image.width, image.height, containerSize, { padding: 32, maxScale: 1.5 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [image, containerSize]);
 
   // Only auto-fit once per page (or on an explicit Fit-to-Screen command via fitSignal) — not on
@@ -1538,11 +1506,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       const pointer = stage?.getPointerPosition();
       if (!stage || !pointer) return;
       const factor = e.evt.altKey ? 1 / 1.5 : 1.5;
-      const oldScale = scale;
-      const newScale = clampScale(oldScale * factor);
-      const pointTo = { x: (pointer.x - pos.x) / oldScale, y: (pointer.y - pos.y) / oldScale };
-      setScale(newScale);
-      setPos({ x: pointer.x - pointTo.x * newScale, y: pointer.y - pointTo.y * newScale });
+      viewport.zoomAtScreenPoint(scale * factor, pointer);
       return;
     }
 
@@ -1625,7 +1589,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // Middle-mouse-button drag, or left-click while Space is held, pans regardless of the active tool.
     if (e.evt.button === 1 || (e.evt.button === 0 && spaceDown)) {
       e.evt.preventDefault();
-      panRef.current = { active: true, lastX: e.evt.clientX, lastY: e.evt.clientY };
+      startPan(e.evt.clientX, e.evt.clientY);
       return;
     }
     // While transforming the selection box, only its own Konva drag/Transformer should respond —
@@ -1834,30 +1798,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     else suspendAncestorCaches(paintLayerIdRef.current);
     paint.pointerDown(activeTool as Parameters<typeof paint.pointerDown>[0], p.x, p.y, e.evt.altKey, pressure);
   };
-  // Window-level mousemove/mouseup for middle-mouse/space-drag panning, so the drag keeps
-  // tracking even if the pointer leaves the canvas bounds.
-  useEffect(() => {
-    function onMouseMove(e: MouseEvent) {
-      const p = panRef.current;
-      if (!p?.active) return;
-      const dx = e.clientX - p.lastX;
-      const dy = e.clientY - p.lastY;
-      panRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
-      setPos(prev => ({ x: prev.x + dx, y: prev.y + dy }));
-    }
-    function onMouseUp() {
-      if (panRef.current?.active) panRef.current = null;
-    }
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-    };
-  }, []);
+  // Window-level mousemove/mouseup for middle-mouse/space-drag panning (so the drag keeps tracking
+  // even if the pointer leaves the canvas bounds) now lives inside useCanvasViewport.
 
   const handlePaintPointerMove = (e: Konva.KonvaEventObject<PointerEvent>) => {
-    if (panRef.current?.active) return;
+    if (isPanning()) return;
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
     if (transformingSelection) return;
     // Live cursor chrome tracking — runs regardless of which gesture branch below (if any) also
@@ -1998,7 +1943,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   };
   const handlePaintPointerUp = (e: Konva.KonvaEventObject<PointerEvent>) => {
     if (e.evt.pointerType === 'touch' && touchCount >= 2) return;
-    if (panRef.current?.active) { panRef.current = null; return; }
+    if (isPanning()) return;
     if (transformingSelection) return;
     if (penPlacingRef.current) {
       // The anchor was already committed into penDraft on pointerdown and kept up to date live on
@@ -2237,27 +2182,6 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     onTextSelectionChange?.({ layerId: editingLayerId, start: el.selectionStart, end: el.selectionEnd });
   }, [editingLayerId, onTextSelectionChange]);
 
-  const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault();
-    const stage = stageRef.current;
-    if (!stage) return;
-    const pointer = stage.getPointerPosition();
-    if (!pointer) return;
-
-    const oldScale = scale;
-    const direction = e.evt.deltaY > 0 ? -1 : 1;
-    const zoomFactor = 1.08;
-    const newScale = clampScale(direction > 0 ? oldScale * zoomFactor : oldScale / zoomFactor);
-
-    const mousePointTo = screenToImage(pointer.x, pointer.y, { scale: oldScale, pos });
-
-    setScale(newScale);
-    setPos({
-      x: pointer.x - mousePointTo.x * newScale,
-      y: pointer.y - mousePointTo.y * newScale,
-    });
-  };
-
   const handleTouchMove = (e: Konva.KonvaEventObject<TouchEvent>) => {
     const touches = e.evt.touches;
     if (touches.length !== 2) return;
@@ -2281,7 +2205,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
 
     const oldScale = scale;
-    const newScale = clampScale(oldScale * (dist / pinchDistRef.current));
+    const newScale = viewport.clampScale(oldScale * (dist / pinchDistRef.current));
     pinchDistRef.current = dist;
 
     // Anchor on the previous frame's pinch center (not the current one) so that a plain
@@ -2289,8 +2213,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     const prevCenter = prevPinchCenterRef.current;
     prevPinchCenterRef.current = stagePoint;
     const anchorWorld = screenToImage(prevCenter.x, prevCenter.y, { scale: oldScale, pos });
-    setScale(newScale);
-    setPos({
+    viewport.setScale(newScale);
+    viewport.setPos({
       x: stagePoint.x - anchorWorld.x * newScale,
       y: stagePoint.y - anchorWorld.y * newScale,
     });
@@ -2304,14 +2228,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     setTouchCount(e.evt.touches.length);
   };
 
-  // Space/middle-mouse panning is handled manually via panRef (see handlePaintPointerDown and the
-  // window mousemove/mouseup effect) so it works uniformly across tools without fighting Konva's
-  // own native drag-handling for the Pan/Select tools.
+  // Space/middle-mouse panning is handled by useCanvasViewport (see handlePaintPointerDown and the
+  // hook's own window mousemove/mouseup tracking) so it works uniformly across tools without
+  // fighting Konva's own native drag-handling for the Pan/Select tools.
   // Only the Pan tool drags the stage natively. The Select tool's drag is the object marquee
   // (Part E), so panning while it's active goes through the same Space-hold / middle-drag path
   // every other tool already uses.
   const draggable = activeTool === 'pan' && !spaceDown;
-  const panning = panRef.current?.active || spaceDown;
+  const panning = isPanning() || spaceDown;
   // Hide the OS cursor while an overlay-chrome tool is armed — the ToolCursorOverlay ring/glyph
   // below *is* the cursor, and showing both reads as a doubled pointer.
   const showToolOverlay = !panning && SVG_OVERLAY_TOOLS.has(activeTool) && brushCursorPos !== null;
@@ -2695,8 +2619,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           // caught: dragging a placed image snapped the whole canvas view to a seemingly random
           // spot the instant the drag ended. Only the Stage's own drag (e.target === the stage
           // itself) should ever update the pan position here.
-          onDragEnd={(e) => { if (e.target === e.target.getStage()) setPos({ x: e.target.x(), y: e.target.y() }); }}
-          onWheel={handleWheel}
+          onDragEnd={(e) => { if (e.target === e.target.getStage()) viewport.setPos({ x: e.target.x(), y: e.target.y() }); }}
+          onWheel={viewport.handleWheel}
           onTouchMove={handleTouchMove}
           onTouchStart={(e) => setTouchCount(e.evt.touches.length)}
           onTouchEnd={handleTouchEnd}
@@ -3336,8 +3260,4 @@ function waitForImage(imageRef: { current: HTMLImageElement | null }, timeoutMs 
     }
     check();
   });
-}
-
-function clampScale(value: number) {
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
 }
