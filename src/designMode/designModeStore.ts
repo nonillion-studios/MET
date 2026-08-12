@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import type { StudioLayer } from '../components/studio/studioTypes';
+import type { Selection } from '../components/studio/paint/selection';
 
 /**
  * Design Mode reuses `StudioLayer` directly as its layer type (rather than a parallel `DesignLayer`
@@ -22,6 +23,11 @@ export interface DesignImage {
    *  canvas, then clears it. Absent for a transparent background (no layer created at all) or once
    *  the fill has already happened. */
   pendingBackgroundFill?: 'white' | 'black';
+  /** Marquee/lasso/wand selection — per-image so switching tabs doesn't reset or leak it, mirroring
+   *  activeLayerId's own per-image placement. Transient UI state: not persisted
+   *  (designModePersistence.ts's DesignImageData carries no selection field) and not covered by
+   *  useDesignHistory's undo/redo this session, matching activeLayerId's own non-historied precedent. */
+  selection?: Selection;
 }
 
 export interface DesignModeState {
@@ -42,6 +48,7 @@ export interface UseDesignModeStore {
   setActiveImageId: (imageId: string | null) => void;
   updateImageLayers: (imageId: string, updater: (layers: StudioLayer[]) => StudioLayer[]) => void;
   setActiveLayerId: (imageId: string, layerId: string | null) => void;
+  setSelection: (imageId: string, selection: Selection) => void;
   setThumbnail: (imageId: string, thumbnail: string) => void;
   clearPendingBackgroundFill: (imageId: string) => void;
   openNewCanvasDialog: () => void;
@@ -99,6 +106,10 @@ export function useDesignModeStore(): UseDesignModeStore {
     setImages(images => images.map(img => (img.id === imageId ? { ...img, activeLayerId: layerId } : img)));
   }, [setImages]);
 
+  const setSelection = useCallback((imageId: string, selection: Selection) => {
+    setImages(images => images.map(img => (img.id === imageId ? { ...img, selection } : img)));
+  }, [setImages]);
+
   const setThumbnail = useCallback((imageId: string, thumbnail: string) => {
     setImages(images => images.map(img => (img.id === imageId ? { ...img, thumbnail } : img)));
   }, [setImages]);
@@ -128,6 +139,7 @@ export function useDesignModeStore(): UseDesignModeStore {
     setActiveImageId,
     updateImageLayers,
     setActiveLayerId,
+    setSelection,
     setThumbnail,
     clearPendingBackgroundFill,
     openNewCanvasDialog,

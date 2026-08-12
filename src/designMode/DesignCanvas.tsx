@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Stage, Layer as KonvaLayer, Image as KonvaImage, Transformer } from 'react-konva';
+import { Stage, Layer as KonvaLayer, Image as KonvaImage, Rect, Ellipse, Line, Transformer } from 'react-konva';
 import type Konva from 'konva';
 import type { StudioLayer, LayerSelectMode, TextLayerData } from '../components/studio/studioTypes';
 import { createTextLayer } from '../components/studio/studioTypes';
@@ -12,13 +12,19 @@ import { screenToImage, imageToScreen, type CanvasViewport } from '../components
 import { useCanvasViewport } from '../components/studio/canvasViewport';
 import { usePaintLayer } from '../components/studio/paint/usePaintLayer';
 import type { PaintSettings } from '../components/studio/paint/paintEngine';
-import type { Selection } from '../components/studio/paint/selection';
+import { combineModeFromModifiers, combineSelections, type Selection, type SelectionCombineMode } from '../components/studio/paint/selection';
 import type { SerializedStudioLayer } from '../lib/studioProjectStore';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { DesignImage } from './designModeStore';
 import type { CanvasSnapshots } from './useDesignHistory';
 import { DESIGN_SCHEMA_VERSION, type DesignImageData } from './designModePersistence';
 import { placeRasterImageFile, placePsdFile } from './placeImage';
+
+// Bounded subset of Studio's own MARQUEE_TOOLS/LASSO_TOOLS (StudioCanvas.tsx) — row/col/crop/slice
+// and polygon/magnetic lasso are deferred; selecting them from the (reused) ToolRail stays a no-op.
+const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse']);
+const LASSO_TOOLS = new Set(['lasso-freehand']);
+const DRAG_DEAD_ZONE_PX = 4;
 
 export interface DesignCanvasHandle {
   zoomIn: () => void;
@@ -68,9 +74,12 @@ interface DesignCanvasProps {
  * else for Design Mode to share.
  *
  * Implements the "focused subset" of tools this pass: Select/Move, Free Transform (automatic on
- * selecting text/placed-image, matching Studio), Text, and Brush/Pencil/Eraser via Studio's real
+ * selecting text/placed-image, matching Studio), Text, Brush/Pencil/Eraser via Studio's real
  * `usePaintLayer`/`paintEngine.ts` (same stamp/flow/opacity engine Studio's own brush uses, not a
- * hand-rolled `ctx.stroke()`). Marquee/lasso/gradient/crop/eyedropper/clone/healing are not
+ * hand-rolled `ctx.stroke()`), and Rectangular/Elliptical Marquee, Lasso (freehand), and Magic Wand
+ * via Studio's `paint/selection.ts` — a direct, bounded port of StudioCanvas.tsx's own marquee/lasso
+ * pointer-drag pattern (see MARQUEE_TOOLS/LASSO_TOOLS above). Marquee row/col, polygon/magnetic
+ * lasso, crop, slice, gradient, eyedropper, clone/healing, and selection transform are not
  * implemented — selecting one of those tools from the (reused, unforked) ToolRail simply has no
  * effect on this canvas.
  */
@@ -92,6 +101,12 @@ export function DesignCanvas({
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const isPaintingRef = useRef(false);
   const textClickPendingRef = useRef(false);
+  const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
+  const combineBaseRef = useRef<Selection>({ kind: 'none' });
+  const combineModeRef = useRef<SelectionCombineMode>('replace');
+  const marqueeDraggedRef = useRef(false);
+  const lassoDraggedRef = useRef(false);
 
   const viewport: CanvasViewport = { scale, pos };
 
@@ -340,6 +355,36 @@ export function DesignCanvas({
       startPan(e.evt.clientX, e.evt.clientY);
       return;
     }
+    if (activeTool === 'wand' && image) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const p = screenToImage(pointer.x, pointer.y, viewport);
+      paint.pickMagicWand(p.x, p.y, combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey));
+      return;
+    }
+    if (MARQUEE_TOOLS.has(activeTool) && image) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const p = screenToImage(pointer.x, pointer.y, viewport);
+      combineBaseRef.current = selection;
+      combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
+      marqueeStartRef.current = p;
+      marqueeDraggedRef.current = false;
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool) && image) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const p = screenToImage(pointer.x, pointer.y, viewport);
+      combineBaseRef.current = selection;
+      combineModeRef.current = combineModeFromModifiers(e.evt.shiftKey, e.evt.altKey);
+      lassoPointsRef.current = [p];
+      lassoDraggedRef.current = false;
+      return;
+    }
     if (activeTool === 'text') {
       // Text layer creation itself happens on pointerUP, not here — creating it (and focusing its
       // editing textarea) on pointerDOWN loses the race against the browser's own native default
@@ -376,10 +421,40 @@ export function DesignCanvas({
       const onEmpty = e.target === e.target.getStage() || targetClass === 'Image';
       if (onEmpty) onSelectLayer(null);
     }
-  }, [spaceDown, startPan, activeTool, image, viewport, onUpdateLayers, onSelectLayer, isPaintTool, paint]);
+  }, [spaceDown, startPan, activeTool, image, viewport, selection, onUpdateLayers, onSelectLayer, isPaintTool, paint]);
 
   const handleStagePointerMove = useCallback((e: Konva.KonvaEventObject<PointerEvent>) => {
     if (isPanning()) return;
+    if (MARQUEE_TOOLS.has(activeTool) && marqueeStartRef.current) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const p = screenToImage(pointer.x, pointer.y, viewport);
+      const start = marqueeStartRef.current;
+      if (!marqueeDraggedRef.current) {
+        if (Math.hypot(p.x - start.x, p.y - start.y) * scale < DRAG_DEAD_ZONE_PX) return;
+        marqueeDraggedRef.current = true;
+      }
+      let width = Math.abs(p.x - start.x), height = Math.abs(p.y - start.y);
+      if (e.evt.shiftKey) { const side = Math.max(width, height); width = side; height = side; }
+      const rect = { x: p.x >= start.x ? start.x : start.x - width, y: p.y >= start.y ? start.y : start.y - height, width, height };
+      onSelectionChange(activeTool === 'marquee-ellipse' ? { kind: 'ellipse', ...rect } : { kind: 'rect', ...rect });
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool) && lassoPointsRef.current) {
+      const stage = stageRef.current;
+      const pointer = stage?.getPointerPosition();
+      if (!pointer) return;
+      const p = screenToImage(pointer.x, pointer.y, viewport);
+      if (!lassoDraggedRef.current) {
+        const start = lassoPointsRef.current[0];
+        if (Math.hypot(p.x - start.x, p.y - start.y) * scale < DRAG_DEAD_ZONE_PX) return;
+        lassoDraggedRef.current = true;
+      }
+      lassoPointsRef.current = [...lassoPointsRef.current, p];
+      onSelectionChange({ kind: 'polygon', points: lassoPointsRef.current });
+      return;
+    }
     if (isPaintingRef.current && isPaintTool) {
       const stage = stageRef.current;
       const pointer = stage?.getPointerPosition();
@@ -388,9 +463,24 @@ export function DesignCanvas({
       paint.pointerMove(paintTool(), imgPoint.x, imgPoint.y, pointerPressure(e.evt));
       redrawActiveLayer();
     }
-  }, [isPanning, viewport, isPaintTool, paint, redrawActiveLayer]);
+  }, [isPanning, activeTool, scale, viewport, onSelectionChange, isPaintTool, paint, redrawActiveLayer]);
 
   const handleStagePointerUp = useCallback(() => {
+    if (MARQUEE_TOOLS.has(activeTool)) {
+      if (marqueeStartRef.current && marqueeDraggedRef.current && combineModeRef.current !== 'replace' && image) {
+        onSelectionChange(combineSelections(combineBaseRef.current, selection, combineModeRef.current, image.width, image.height));
+      }
+      marqueeStartRef.current = null;
+      return;
+    }
+    if (LASSO_TOOLS.has(activeTool)) {
+      if (lassoPointsRef.current && lassoDraggedRef.current) {
+        const finalShape: Selection = { kind: 'polygon', points: lassoPointsRef.current };
+        onSelectionChange(combineModeRef.current === 'replace' || !image ? finalShape : combineSelections(combineBaseRef.current, finalShape, combineModeRef.current, image.width, image.height));
+      }
+      lassoPointsRef.current = null;
+      return;
+    }
     if (isPaintingRef.current) {
       isPaintingRef.current = false;
       const stage = stageRef.current;
@@ -414,7 +504,7 @@ export function DesignCanvas({
         }
       }
     }
-  }, [image, viewport, onUpdateLayers, onSelectLayer, paint]);
+  }, [activeTool, image, selection, onSelectionChange, viewport, onUpdateLayers, onSelectLayer, paint]);
 
   const updateLayerPatch = useCallback((layerId: string, patch: Partial<StudioLayer>) => {
     onUpdateLayers(layers => layers.map(l => (l.id === layerId ? { ...l, ...patch } : l)));
@@ -510,6 +600,23 @@ export function DesignCanvas({
                 }
                 return null;
               })}
+              {selection.kind === 'rect' && (
+                <Rect x={selection.x} y={selection.y} width={selection.width} height={selection.height}
+                  stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} listening={false} />
+              )}
+              {selection.kind === 'ellipse' && (
+                <Ellipse x={selection.x + selection.width / 2} y={selection.y + selection.height / 2}
+                  radiusX={Math.abs(selection.width) / 2} radiusY={Math.abs(selection.height) / 2}
+                  stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} listening={false} />
+              )}
+              {selection.kind === 'polygon' && selection.points.length > 1 && (
+                <Line points={selection.points.flatMap(p => [p.x, p.y])} closed
+                  stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} listening={false} />
+              )}
+              {selection.kind === 'mask' && (
+                <Rect x={selection.bounds.x} y={selection.bounds.y} width={selection.bounds.width} height={selection.bounds.height}
+                  stroke="#ffffff" strokeWidth={1 / scale} dash={[6 / scale, 4 / scale]} opacity={0.8} listening={false} />
+              )}
               <Transformer
                 ref={transformerRef}
                 keepRatio={false}

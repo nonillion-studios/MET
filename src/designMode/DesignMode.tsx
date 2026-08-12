@@ -82,10 +82,12 @@ export function DesignMode() {
     magicEraserAntiAlias: true, magicEraserContiguous: true, magicEraserSampleAllLayers: false, magicEraserOpacity: 1,
   };
 
-  // Selection is wired for real in Phase 3 (store-backed, per-image); until then usePaintLayer still
-  // requires both props, so a no-op stub keeps DesignCanvas's paint pipeline functional.
-  const selection: Selection = NO_SELECTION;
-  const handleSelectionChange = useCallback((_sel: Selection) => {}, []);
+  // Store-backed, per-image (mirrors activeLayerId) so each tab keeps its own selection across
+  // tab switches — see designModeStore.ts's DesignImage.selection doc comment.
+  const selection: Selection = store.activeImage?.selection ?? NO_SELECTION;
+  const handleSelectionChange = useCallback((sel: Selection) => {
+    if (store.activeImageId) store.setSelection(store.activeImageId, sel);
+  }, [store]);
 
   useEffect(() => {
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === rootRef.current);
