@@ -103,7 +103,9 @@ export function autoTypesetBubble(bubble: TranslatedBubble, pageWidth: number, p
 
   const arabic = isArabicMajority(bubble.text);
   const fontFamily = bubble.isSfx ? style.sfxFontFamily : style.dialogueFontFamily;
-  const maxFontSize = bubble.isSfx ? MAX_FONT_SIZE_SFX : MAX_FONT_SIZE_DIALOGUE;
+  // "emphasis" (shouted/impact lettering) raises the ceiling the autofit loop below starts
+  // shrinking from — the real rendered size still ends up whatever actually fits the bubble.
+  const maxFontSize = (bubble.isSfx ? MAX_FONT_SIZE_SFX : MAX_FONT_SIZE_DIALOGUE) * (bubble.emphasis ? 1.4 : 1);
 
   const layer = createTextLayer(centerX - boxWidth / 2, centerY - boxHeight / 2, boxWidth, boxHeight);
   layer.name = `Text: ${bubble.text.slice(0, 20)}`;
@@ -111,9 +113,17 @@ export function autoTypesetBubble(bubble: TranslatedBubble, pageWidth: number, p
     ...layer.text!,
     content: bubble.text,
     fontFamily,
-    color: style.color,
-    strokeColor: style.strokeColor,
-    strokeWidth: style.strokeWidth,
+    bold: bubble.bold ?? bubble.emphasis ?? false,
+    italic: bubble.italic ?? false,
+    // Gemini's own per-bubble read of what's legible against *this* bubble's art wins when it
+    // gave one; the Typesetting stage's color/stroke fields are only the fallback for bubbles it
+    // left unstyled (see TranslatedBubble's doc comment).
+    color: bubble.color ?? style.color,
+    strokeColor: bubble.strokeColor ?? style.strokeColor,
+    strokeWidth: bubble.strokeWidth ?? style.strokeWidth,
+    shadow: bubble.shadowEnabled !== undefined || bubble.shadowColor
+      ? { ...layer.text!.shadow, enabled: bubble.shadowEnabled ?? true, color: bubble.shadowColor ?? layer.text!.shadow.color }
+      : layer.text!.shadow,
     rotation: bubble.rotation,
     align: arabic ? 'right' : 'center',
     direction: arabic ? 'rtl' : 'ltr',

@@ -3137,7 +3137,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             // page's viewport zoom to somewhere else on screen.
             top: editingTextScreenPos!.y,
             left: editingTextScreenPos!.x,
-            width: editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width,
+            // Point text (autoWidth) is documented as "grows to fit content and never wraps" —
+            // Math.ceil plus a couple px of slack absorbs the gap between canvas measureText()
+            // (what layoutText uses) and the browser's own textarea font metrics, which are close
+            // but not pixel-identical. Without it, a width that's even a fraction of a px too
+            // narrow makes the browser soft-wrap a word the moment you lower the font size (the
+            // new, smaller measureText width lands right at that knife-edge far more often than a
+            // large one does), which is what was reported as text "stretching"/gaining stray line
+            // breaks on resize: each spurious wrap grows the box a line taller, which looks like
+            // stretching since it's happening on every keystroke/size change rather than settling.
+            width: Math.ceil((editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width) + (editingLayer.text.autoWidth ? 3 : 0)),
             // No explicit height/rows means a native textarea falls back to a ~2-row default and
             // clips (overflow-hidden above was the other half of that) anything typed past it, even
             // though the underlying content is intact — this grows the box to fit the frame and any
@@ -3148,7 +3157,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             // unbreakably-long tokens mid-word — layoutText()'s wrapParagraph never does that (a
             // too-long token just overflows the line instead). Normal here keeps live-typing wraps
             // closer to what layoutText() will lay out once you exit edit mode.
-            whiteSpace: 'pre-wrap',
+            // Point text never wraps by definition (see the width comment above) — 'pre' means only
+            // an explicit \n breaks a line, so the box can only ever grow/shrink from real content
+            // changes, never from the browser's own soft-wrap guessing differently than layoutText.
+            whiteSpace: editingLayer.text.autoWidth ? 'pre' : 'pre-wrap',
             overflowWrap: 'normal',
             wordBreak: 'normal',
             fontSize: editingLayer.text.fontSize,

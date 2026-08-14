@@ -10,7 +10,11 @@ export interface InpaintStageConfig {
   branch: InpaintBranch;
   /** User-editable Gemini prompt; falls back to AUTOMATION_DEFAULT_INPAINT_PROMPT when blank. */
   geminiPrompt: string;
-  /** Page ids this run covers, in run order. */
+  /** User-editable Gemini model id; falls back to AUTOMATION_DEFAULT_INPAINT_MODEL when blank —
+   *  any Gemini model that supports image editing/output, not just the one this app defaults to. */
+  model: string;
+  /** Page ids this run covers, in run order — user-selected via InpaintStagePanel's checklist, not
+   *  automatically "every page". */
   pageIds: string[];
 }
 
@@ -24,6 +28,11 @@ export interface TranslateStageConfig {
   /** Tells Gemini to suggest no color info — the manga stays black & white; only relevant when the
    *  Coloring stage is off, but kept on this stage's config since it's a translation-time hint. */
   blackAndWhiteOnly: boolean;
+  /** Branch 'text-editor' only (TextEditorSyncModal.tsx): already-translated paragraphs from a
+   *  Text Editor document, keyed by which Studio page they were manually assigned to. Injected into
+   *  Gemini's prompt (aiPlaceBubbles.ts) so it only has to find *where* each already-translated line
+   *  goes, never translate anything itself. */
+  pageParagraphs?: Record<string, string[]>;
 }
 
 /** No branch choice here — Typesetting always runs the same flood-fill-correct-and-autofit

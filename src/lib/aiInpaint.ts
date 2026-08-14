@@ -14,10 +14,12 @@ export class AiInpaintError extends Error {
   }
 }
 
-/** Gemini's image-editing-capable model ("nano banana") — independent of whatever text/vision
+/** Default Gemini image-editing-capable model ("nano banana") — independent of whatever text/vision
  *  model the user has picked in Settings for translation, since this call specifically needs an
- *  image part back in the response, not text. */
-const GEMINI_IMAGE_MODEL = 'gemini-2.5-flash-image';
+ *  image part back in the response, not text. User-overridable per run (InpaintStagePanel.tsx) —
+ *  Google's image-model lineup moves fast enough that a single hardcoded id goes stale (this one
+ *  itself replaced a since-retired 'gemini-2.0-flash' default elsewhere in this pipeline). */
+export const AUTOMATION_DEFAULT_INPAINT_MODEL = 'gemini-2.5-flash-image';
 
 export const AUTOMATION_DEFAULT_INPAINT_PROMPT = [
   'Remove all non-Japanese text from this manga page (speech bubbles, sound effects, captions).',
@@ -45,14 +47,15 @@ async function readErrorDetail(res: Response): Promise<string> {
 /** Sends one manga page image to Gemini's image-editing endpoint with an inpainting prompt and
  *  returns the edited page as a `data:` URL. Throws `AiInpaintError` on any failure so the
  *  automation run loop can record a per-page error and continue rather than aborting the run. */
-export async function inpaintPageWithGemini(imageDataUrl: string, prompt: string, apiKey: string): Promise<string> {
+export async function inpaintPageWithGemini(imageDataUrl: string, prompt: string, apiKey: string, model?: string): Promise<string> {
   if (!apiKey) throw new AiInpaintError('no-key', 'No Gemini API key configured — add one in Settings.');
   const { mimeType, base64 } = parseDataUrl(imageDataUrl);
+  const resolvedModel = model?.trim() || AUTOMATION_DEFAULT_INPAINT_MODEL;
 
   let res: Response;
   try {
     res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_IMAGE_MODEL)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolvedModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

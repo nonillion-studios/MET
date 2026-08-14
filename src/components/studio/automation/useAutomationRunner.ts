@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { swal, swalToast } from '../../../lib/swalTheme';
 import { inpaintPageWithGemini, AiInpaintError } from '../../../lib/aiInpaint';
 import { translatePageBubbles, AiTranslateBubblesError, type TranslatedBubble, type PageContext } from '../../../lib/aiTranslateBubbles';
+import { placeTranslatedBubbles, AiPlaceBubblesError } from '../../../lib/aiPlaceBubbles';
 import { colorPageWithGemini, AiColorError } from '../../../lib/aiColor';
 import { loadAiTranslationSettings } from '../../../lib/aiSettingsStore';
 import { loadAutomationRun, saveAutomationRun, clearAutomationRun } from './automationRunStore';
@@ -117,21 +118,28 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
       try {
         let inpaintedDataUrl: string | null = null;
         if (inpaint.branch === 'gemini') {
-          inpaintedDataUrl = await inpaintPageWithGemini(source.dataUrl, inpaint.geminiPrompt, apiKey);
+          inpaintedDataUrl = await inpaintPageWithGemini(source.dataUrl, inpaint.geminiPrompt, apiKey, inpaint.model);
           await depsRef.current.insertInpaintLayer(pageId, inpaintedDataUrl);
         }
 
         if (translate.enabled && (translate.branch === 'gemini' || translate.branch === 'text-editor')) {
           setStage('translate');
-          // "From Text Editor" reuses the exact same JSON-bubble call as the Gemini branch — the
-          // difference is purely the prompt: page-index/page-count continuity phrasing, the same
-          // context the real Text Editor gives its own per-page AI translation, since a doc-style
-          // "translate page by page in order" workflow benefits from knowing dialogue can continue
-          // across a page break. The Gemini branch stays continuity-free/single-page by design.
-          const pageContext: PageContext | undefined = translate.branch === 'text-editor' ? { pageIndex: i, pageCount: pageIds.length } : undefined;
-          const bubbles = isLongPage(source.width, source.height)
-            ? await translateLongPageBubbles(source, translate, apiKey, pageContext)
-            : await translatePageBubbles(source.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, apiKey, pageContext);
+          let bubbles: TranslatedBubble[];
+          if (translate.branch === 'text-editor') {
+            // No translation call — the text is already translated (TextEditorSyncModal). Gemini
+            // only finds *where* each given paragraph goes; long-page splitting isn't applied here
+            // since there's no clean way to know which paragraphs belong in which segment ahead of
+            // time, unlike the Gemini branch which discovers everything from the image alone.
+            const paragraphs = translate.pageParagraphs?.[pageId] ?? [];
+            const placed = paragraphs.length > 0
+              ? await placeTranslatedBubbles(source.dataUrl, paragraphs, translate.prompt, apiKey)
+              : [];
+            bubbles = placed.map(p => ({ ...p, text: paragraphs[p.paragraphIndex] }));
+          } else {
+            bubbles = isLongPage(source.width, source.height)
+              ? await translateLongPageBubbles(source, translate, apiKey)
+              : await translatePageBubbles(source.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, apiKey);
+          }
 
           if (typeset.enabled && bubbles.length > 0) {
             setStage('typeset');
@@ -163,7 +171,7 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
         const after = runStateRef.current!;
         updateRunState({ ...after, perPage: { ...after.perPage, [pageId]: { status: 'done' } } });
       } catch (err) {
-        const message = err instanceof AiInpaintError || err instanceof AiTranslateBubblesError || err instanceof AiColorError || err instanceof Error
+        const message = err instanceof AiInpaintError || err instanceof AiTranslateBubblesError || err instanceof AiPlaceBubblesError || err instanceof AiColorError || err instanceof Error
           ? err.message : 'Automation failed on this page.';
         const after = runStateRef.current!;
         updateRunState({ ...after, perPage: { ...after.perPage, [pageId]: { status: 'error', error: message } } });

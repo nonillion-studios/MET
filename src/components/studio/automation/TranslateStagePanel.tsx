@@ -1,10 +1,13 @@
-import { Sparkles, FileText, PenLine } from 'lucide-react';
+import { Sparkles, FileText, PenLine, FolderSync } from 'lucide-react';
 import type { TranslateBranch, TranslateStageConfig } from './automationTypes';
-import { Switch } from '../../ui';
+import { Switch, Button } from '../../ui';
 
 interface TranslateStagePanelProps {
   config: TranslateStageConfig;
   onChange: (config: TranslateStageConfig) => void;
+  /** Opens TextEditorSyncModal — picks a Text Editor document and lets the user assign each of its
+   *  own pages to a Studio page. */
+  onOpenTextEditorSync: () => void;
 }
 
 const BRANCHES: { id: TranslateBranch; label: string; icon: typeof Sparkles; disabled?: boolean }[] = [
@@ -13,12 +16,7 @@ const BRANCHES: { id: TranslateBranch; label: string; icon: typeof Sparkles; dis
   { id: 'custom', label: 'Custom', icon: PenLine, disabled: true },
 ];
 
-const BRANCH_DESCRIPTION: Record<'gemini' | 'text-editor', string> = {
-  gemini: 'Reads the whole page at once, no continuity between pages.',
-  'text-editor': "Same engine the Text Editor's own AI translation uses, page by page in chapter order — each page's prompt gets told it's page N of M, so dialogue/SFX that continues across a page break stays coherent.",
-};
-
-export function TranslateStagePanel({ config, onChange }: TranslateStagePanelProps) {
+export function TranslateStagePanel({ config, onChange, onOpenTextEditorSync }: TranslateStagePanelProps) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -49,9 +47,9 @@ export function TranslateStagePanel({ config, onChange }: TranslateStagePanelPro
             ))}
           </div>
 
-          {(config.branch === 'gemini' || config.branch === 'text-editor') && (
+          {config.branch === 'gemini' && (
             <div className="flex flex-col gap-3">
-              <p className="text-micro text-ink-faint">{BRANCH_DESCRIPTION[config.branch]}</p>
+              <p className="text-micro text-ink-faint">Gemini reads each page's bubbles/SFX and translates them — no manual work needed, runs as part of Start Automation.</p>
               <label className="flex flex-col gap-1 text-micro text-ink-faint">
                 <span>Target language</span>
                 <input
@@ -79,6 +77,25 @@ export function TranslateStagePanel({ config, onChange }: TranslateStagePanelPro
                 />
                 This manga is black &amp; white — don't suggest color
               </label>
+            </div>
+          )}
+
+          {config.branch === 'text-editor' && (
+            <div className="flex flex-col gap-3">
+              <p className="text-micro text-ink-faint">
+                Uses text you already translated in the Text Editor instead of having Gemini translate — Gemini's
+                only job here is finding *where* each already-translated line goes on the page (it's told not to
+                translate or rewrite anything). Pick a document, then assign each of its pages to a Studio page.
+                Runs as part of Start Automation, same as the Gemini branch.
+              </p>
+              <Button variant="secondary" size="sm" onClick={onOpenTextEditorSync} className="self-start">
+                <FolderSync size={13} /> Choose chapter &amp; sync pages
+              </Button>
+              {config.pageParagraphs && (
+                <p className="text-micro text-success">
+                  {Object.keys(config.pageParagraphs).length} page{Object.keys(config.pageParagraphs).length === 1 ? '' : 's'} synced.
+                </p>
+              )}
             </div>
           )}
         </>
