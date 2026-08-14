@@ -94,8 +94,6 @@ import {
   loadChapterStudioData, saveChapterStudioData, pushVersionSnapshot, STUDIO_SCHEMA_VERSION,
   type ChapterStudioData, type SerializedStudioLayer,
 } from '../../lib/studioProjectStore';
-import { loadStudioModeState, saveStudioModeState } from './studioModeCache';
-import { screenToImage } from './canvasCoords';
 
 const AUTOSAVE_DEBOUNCE_MS = 1200;
 
@@ -1124,9 +1122,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => [...current, layer], 'Type Region');
     setActiveLayerId(layer.id);
     setActiveTool('select');
-    // Deliberately not clearing the selection here — it should survive placement so the user can see
-    // what area was just filled and place another line into the same/adjacent shape. It only clears
-    // via an explicit Ctrl+D, drawing a new selection, or clicking away with a selection tool.
+    setSelection(NO_SELECTION);
   }
 
   // Slice tool: draw a rect per slice (reuses the Rectangular-Marquee-style drag via MARQUEE_TOOLS),
@@ -1220,22 +1216,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   ignoreTagsRef.current = ignoreTags;
   const defaultStyleIdRef = useRef(defaultStyleId);
   defaultStyleIdRef.current = defaultStyleId;
-  // Mirrors for the mode-switch state cache below (studioModeCache.ts) — read from the unmount-only
-  // flush effect, which (empty dep array) would otherwise see stale values from its initial render.
-  const activePageIdRef = useRef(activePageId);
-  activePageIdRef.current = activePageId;
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
-  const selectedLayerIdsRef = useRef(selectedLayerIds);
-  selectedLayerIdsRef.current = selectedLayerIds;
-  const activeToolRef = useRef(activeTool);
-  activeToolRef.current = activeTool;
-  const viewportRef = useRef(viewport);
-  viewportRef.current = viewport;
-  /** Set by the chapter-load effect when a cached viewport needs restoring; consumed by
-   *  `onViewportChange` once `StudioCanvas` reports a real (non-zero) container size — its own
-   *  `containerSize` isn't known yet at this component's mount time, since it mounts as a sibling. */
-  const pendingViewportRestoreRef = useRef<{ scale: number; centerX: number; centerY: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1246,8 +1226,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     (async () => {
       const saved = await loadChapterStudioData(chapterId);
       if (cancelled) return;
-      let nextLayersByPage: Record<string, StudioLayer[]> = {};
       if (saved) {
+        const nextLayersByPage: Record<string, StudioLayer[]> = {};
         const nextRasterByPage: Record<string, Record<string, string>> = {};
         const nextMaskByPage: Record<string, { layerId: string; maskId: string; dataUrl: string }[]> = {};
         for (const [pageId, serialized] of Object.entries(saved.layersByPage)) {
@@ -1273,30 +1253,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         setDefaultStyleId(saved.defaultStyleId ?? null);
         rasterByPageRef.current = nextRasterByPage;
         maskByPageRef.current = nextMaskByPage;
-      }
-      // Restore the transient UI state (viewport/selection/active layer/tool/page) that's lost every
-      // time this component unmounts (e.g. a Studio <-> Design Mode switch, a plain tab swap with no
-      // keep-alive in App.tsx) — layers themselves already survive that via the load above, which
-      // this deliberately runs after, so a restored selection/active-layer id never points at a
-      // layer that hasn't loaded yet.
-      const cachedMode = loadStudioModeState(chapterId);
-      if (cachedMode) {
-        selectionByPageRef.current = { ...cachedMode.selectionByPage };
-        const restoredPageId = cachedMode.activePageId && pages.some(p => p.id === cachedMode.activePageId)
-          ? cachedMode.activePageId
-          : null;
-        if (restoredPageId) {
-          // The page-switch effect below only reacts to activePageId *changing* — if the restored
-          // page happens to equal the initial pages[0] default, it won't fire, so set selection
-          // explicitly here too (redundant, not incorrect, when it does also fire).
-          setActivePageId(restoredPageId);
-          setSelection(selectionByPageRef.current[restoredPageId] ?? NO_SELECTION);
-        }
-        const validLayerIds = new Set(flattenTree(nextLayersByPage[restoredPageId ?? ''] ?? []).map(l => l.id));
-        const restoredLayerIds = cachedMode.selectedLayerIds.filter(id => validLayerIds.has(id));
-        if (restoredLayerIds.length > 0) setSelectedLayerIds(restoredLayerIds);
-        if (cachedMode.activeTool) setActiveTool(cachedMode.activeTool);
-        pendingViewportRestoreRef.current = cachedMode.viewport;
       }
       loadedRef.current = true;
     })();
@@ -1398,27 +1354,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   useEffect(() => () => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     flushAutosave();
-    // Snapshot the transient UI state layers don't carry (viewport/selection/active layer/tool/
-    // page) so a Studio <-> Design Mode switch (or any other unmount with no keep-alive) restores
-    // it on return instead of resetting to defaults. Reads refs, not state, since this cleanup only
-    // runs once per mount (empty dep array) and would otherwise see stale initial-render values.
-    const activePage = activePageIdRef.current;
-    const vp = viewportRef.current;
-    let restoreViewport: { scale: number; centerX: number; centerY: number } | null = null;
-    if (vp.containerSize.width > 0) {
-      const center = screenToImage(vp.containerSize.width / 2, vp.containerSize.height / 2, vp);
-      restoreViewport = { scale: vp.scale, centerX: center.x, centerY: center.y };
-    }
-    saveStudioModeState(chapterId, {
-      activePageId: activePage,
-      viewport: restoreViewport,
-      selectionByPage: {
-        ...selectionByPageRef.current,
-        ...(activePage ? { [activePage]: selectionRef.current } : {}),
-      },
-      selectedLayerIds: selectedLayerIdsRef.current,
-      activeTool: activeToolRef.current,
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2150,18 +2085,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       // hasn't already set an alignment, so it never fights a deliberate later change.
       let next = patch;
       if (patch.content && !l.text.content && patch.align === undefined && isArabicMajority(patch.content)) {
-        next = { ...patch, align: 'right', direction: patch.direction ?? 'rtl' };
-      }
-      const merged = { ...l.text, ...next };
-      // Point (autoWidth) text normally grows from its left edge as content is typed. RTL text
-      // should grow from its right edge instead, so shift the stored x by the width delta to keep
-      // that edge fixed — mirrors handleTextSizeStep's own before/after width-delta anchor below.
-      if (merged.autoWidth && merged.direction === 'rtl' && next.x === undefined) {
-        const before = layoutText(l.text);
-        const after = layoutText(merged);
-        if (after.width !== before.width) {
-          next = { ...next, x: l.text.x - (after.width - before.width) };
-        }
+        next = { ...patch, align: 'right' };
       }
       return { ...l, text: { ...l.text, ...next } };
     }), historyLabel);
@@ -2270,12 +2194,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const before = layoutText(activeLayer.text);
     const fontSize = Math.max(1, activeLayer.text.fontSize + delta * typerSizeStep);
     const after = layoutText({ ...activeLayer.text, fontSize });
-    // RTL point text anchors from its right edge (the full width delta), not centered like
-    // LTR point text or box text.
-    const isRtlPoint = activeLayer.text.autoWidth && activeLayer.text.direction === 'rtl';
     handleUpdateTextLayer(activeLayerId, {
       fontSize,
-      x: activeLayer.text.x - (after.width - before.width) * (isRtlPoint ? 1 : 0.5),
+      x: activeLayer.text.x - (after.width - before.width) / 2,
       y: activeLayer.text.y - (after.height - before.height) / 2,
     });
   }
@@ -2316,11 +2237,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handleUpdateTextLayer(activeLayer.id, { align });
   }
 
-  // RTL/LTR: sets both the stored `direction` (drives point-text right-edge anchoring in
-  // handleUpdateTextLayer) and `align`, which remains what the editing textarea's own `dir`
-  // attribute keys off (StudioCanvas.tsx) and what box text uses for its line-offset math.
-  function handleSetTextRtl() { if (activeLayer?.text) handleUpdateTextLayer(activeLayer.id, { align: 'right', direction: 'rtl' }); }
-  function handleSetTextLtr() { if (activeLayer?.text) handleUpdateTextLayer(activeLayer.id, { align: 'left', direction: 'ltr' }); }
+  // RTL/LTR: this app has no separate `dir` field — right alignment is the existing proxy for "this
+  // layer is RTL" that the editing textarea's own `dir` attribute already keys off (StudioCanvas.tsx),
+  // so setting align is the whole, real implementation rather than a stub with nothing to back it.
+  function handleSetTextRtl() { handleSetTextAlign('right'); }
+  function handleSetTextLtr() { handleSetTextAlign('left'); }
 
   function handleOpenFontPanel() {
     setRightOpen(true);
@@ -3069,15 +2990,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       typerPreviewLine={typerPreviewLine}
       onLiveCursorMove={isHostingLive ? (p) => { if (p) collabHandleRef.current?.broadcastCursor(p.x, p.y); } : undefined}
       onCursorImagePosChange={setCursorImagePos}
-      onViewportChange={(v) => {
-        setViewport(v);
-        const pending = pendingViewportRestoreRef.current;
-        if (pending && v.containerSize.width > 0) {
-          pendingViewportRestoreRef.current = null;
-          canvasRef.current?.zoomTo(pending.scale);
-          canvasRef.current?.centerOn(pending.centerX, pending.centerY);
-        }
-      }}
+      onViewportChange={setViewport}
     />
   );
 
