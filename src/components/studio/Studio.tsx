@@ -48,6 +48,11 @@ import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
+import { AutomationModal } from './automation/AutomationModal';
+import { AiAutomationCursor } from './automation/AiAutomationCursor';
+import { useAutomationRunner } from './automation/useAutomationRunner';
+import { loadAiTranslationSettings } from '../../lib/aiSettingsStore';
+import { genId } from '../../lib/id';
 import { exportPsd } from '../../lib/exportPsd';
 import { parsePsdFile } from '../../lib/importPsd';
 import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../../lib/exportImage';
@@ -152,6 +157,8 @@ export function Studio(props: StudioProps) {
 function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript, onConsumePendingTyperScript, onPagesChange, onExportMsp, onOpenTextEditor, viewOnlySession, viewerPrefs, onActivePageChange, autoStartLiveSession, onConsumeAutoStartLiveSession, cc, workspaces, onImportWorkspace, automationEngine }: StudioProps) {
   const [teamChatOpen, setTeamChatOpen] = useState(false);
   const [cloudStorageOpen, setCloudStorageOpen] = useState(false);
+  const [automationModalOpen, setAutomationModalOpen] = useState(false);
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const canvasRef = useRef<StudioCanvasHandle>(null);
   const placeImageInputRef = useRef<HTMLInputElement>(null);
   const placePsdInputRef = useRef<HTMLInputElement>(null);
@@ -1461,6 +1468,75 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     }
     setActiveTool('select');
   }
+
+/** Shared by Automation's Inpainting and Coloring (above-inpaint placement) stages: inserts one
+   *  AI-generated page image as a `placed-image` layer on `pageId`, same construction
+   *  `handlePlaceImageFiles` uses for a user-picked file — just fed a `data:` URL instead of a File,
+   *  targeting whichever page the automation run is currently on rather than always the active page. */
+  async function insertAiImageLayer(pageId: string, dataUrl: string, label: string) {
+    const page = pages.find(p => p.id === pageId);
+    if (!page) return;
+    const source = showCleaned && page.cleaned ? page.cleaned : page.original;
+    const img = await loadImageFromSrc(dataUrl);
+    const scale = Math.min(1, source.width / img.naturalWidth, source.height / img.naturalHeight);
+    const layer = createPlacedImageLayer(`${label} — ${page.original.filename || page.id}`, img.naturalWidth, img.naturalHeight, source.width / 2, source.height / 2, scale);
+    updateLayersOnPage(pageId, current => [...current, layer], label);
+    const canvas = canvasRef.current?.getOrCreatePlacedImageCanvas(layer.id, img.naturalWidth, img.naturalHeight);
+    const ctx = canvas?.getContext('2d');
+    if (canvas && ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      canvasRef.current?.redrawLayer(layer.id);
+    }
+  }
+
+  const insertAiInpaintLayer = (pageId: string, dataUrl: string) => insertAiImageLayer(pageId, dataUrl, 'AI Inpaint');
+
+  /** Automation's Typesetting stage: drops the already-fitted text layers `autoTypeset.ts` built
+   *  straight onto `pageId`'s stack, same as any other bulk layer add. */
+  function insertAutomationTextLayers(pageId: string, textLayers: StudioLayer[]) {
+    if (textLayers.length === 0) return;
+    updateLayersOnPage(pageId, current => [...current, ...textLayers], 'AI Typeset');
+  }
+
+  /** Automation's Coloring stage: either drops the colorized page in as a layer above the inpaint
+   *  (reusing insertAiImageLayer), or — placement: 'new-page-beneath' — inserts a brand-new Page
+   *  directly after `pageId` in chapter order, mirroring PagesManagePanel's own
+   *  `createPagesFromOriginals` construction, so the colored version becomes its own page instead of
+   *  a layer riding on the original. */
+  async function insertAiColorResult(pageId: string, dataUrl: string, placement: 'above-inpaint' | 'new-page-beneath') {
+    if (placement === 'above-inpaint') {
+      await insertAiImageLayer(pageId, dataUrl, 'AI Color');
+      return;
+    }
+    const sourceIndex = pages.findIndex(p => p.id === pageId);
+    const sourcePage = pages[sourceIndex];
+    if (!sourcePage || !onPagesChange) return;
+    const img = await loadImageFromSrc(dataUrl);
+    const newPage: Page = {
+      id: genId('page'),
+      order: sourcePage.order,
+      original: { id: genId('img'), filename: `${sourcePage.original.filename} (colored)`, dataUrl, mimeType: 'image/png', width: img.naturalWidth, height: img.naturalHeight },
+      cleaned: null,
+    };
+    const next = [...pages];
+    next.splice(sourceIndex + 1, 0, newPage);
+    onPagesChange(next.map((p, i) => ({ ...p, order: i })));
+  }
+
+  const automationRunner = useAutomationRunner({
+    chapterId, pages, showCleaned,
+    insertInpaintLayer: insertAiInpaintLayer,
+    insertTextLayers: insertAutomationTextLayers,
+    insertColorResult: insertAiColorResult,
+    detectBubbleBounds: (x, y) => canvasRef.current?.detectBubbleBounds(x, y) ?? null,
+    setActivePageId,
+  });
+
+  useEffect(() => {
+    if (!automationModalOpen) return;
+    loadAiTranslationSettings().then(settings => setHasGeminiKey(!!settings?.apiKey)).catch(() => setHasGeminiKey(false));
+  }, [automationModalOpen]);
 
   function handleUpdatePlacedImage(id: string, patch: Partial<PlacedImageLayerData>) {
     updateLayers(current => updateLayer(current, id, l => (
@@ -3107,6 +3183,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onOpenTextEditor={onOpenTextEditor ? handleOpenTextEditorClick : undefined}
         onOpenTeamChat={cc ? () => setTeamChatOpen(true) : undefined}
         onOpenCloudStorage={cc ? () => setCloudStorageOpen(true) : undefined}
+        onOpenAutomation={() => setAutomationModalOpen(true)}
       />
 
       {!panelsHidden && optionsBarVisible && (
@@ -3395,6 +3472,25 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           automationEngine={automationEngine}
         />
       )}
+      <AutomationModal
+        open={automationModalOpen}
+        onClose={() => setAutomationModalOpen(false)}
+        pages={pages}
+        layersByPage={layersByPage}
+        hasGeminiKey={hasGeminiKey}
+        onOpenSettings={() => swalToast({ icon: 'info', title: "Open the app's Settings tab to add a Gemini API key" })}
+        activePageId={activePageId}
+        onJumpToPage={setActivePageId}
+        runState={automationRunner.runState}
+        onStart={automationRunner.start}
+        onResume={automationRunner.resume}
+        onStop={automationRunner.requestStop}
+        onDismiss={automationRunner.dismiss}
+        onInsertTextLayers={insertAutomationTextLayers}
+        detectBubbleBounds={(x, y) => canvasRef.current?.detectBubbleBounds(x, y) ?? null}
+        onOpenFontsPanel={() => { setRightOpen(true); panelLayout.reveal('fonts'); }}
+      />
+      <AiAutomationCursor runState={automationRunner.runState} onStop={automationRunner.requestStop} />
       {blendingOptionsLayerId && (() => {
         const target = findLayer(layers, blendingOptionsLayerId);
         if (!target) return null;

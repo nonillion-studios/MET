@@ -1,4 +1,4 @@
-import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText, Radio, Users, FileText, ScreenShare, ScreenShareOff, MessagesSquare, Cloud } from 'lucide-react';
+import { Home, Maximize2, Minimize2, PanelLeft, PanelRight, MessageSquareText, Radio, Users, FileText, ScreenShare, ScreenShareOff, MessagesSquare, Cloud, Sparkles } from 'lucide-react';
 import { IconButton } from '../ui';
 import type { WorkflowStage } from './WorkflowBar';
 import { MusicPlayerToggleButton } from '../musicPlayer/MusicPlayer';
@@ -42,13 +42,15 @@ interface StudioToolbarProps {
    *  CloudClient available yet). */
   onOpenTeamChat?: () => void;
   onOpenCloudStorage?: () => void;
+  /** Opens the Automation modal (pipeline builder + AI run). */
+  onOpenAutomation?: () => void;
 }
 
 export function StudioToolbar({
   chapterName, showCleaned, onToggleCleaned, overlayOpacity, onOverlayOpacityChange,
   onFit, onBack, onToggleLeftSidebar, onToggleRightSidebar, hasCleaned, isFullscreen, onToggleFullscreen, workflowStages,
   typeRegionArmed, onToggleTypeRegion, isLive, goingLive, liveViewerCount = 0, onToggleLive,
-  isSharingScreen, onToggleScreenShare, onOpenTextEditor, onOpenTeamChat, onOpenCloudStorage,
+  isSharingScreen, onToggleScreenShare, onOpenTextEditor, onOpenTeamChat, onOpenCloudStorage, onOpenAutomation,
 }: StudioToolbarProps) {
   return (
     <div className="liquid-glass-bar flex items-center gap-2 px-2.5 sm:px-4 h-12 shrink-0 border-b border-hairline">
@@ -101,6 +103,18 @@ export function StudioToolbar({
       >
         <MessageSquareText size={15} />
       </IconButton>
+
+      {onOpenAutomation && (
+        <IconButton
+          size="sm"
+          aria-label="Automation"
+          title="Automation — build an AI pipeline to run across pages"
+          onClick={onOpenAutomation}
+          className="!bg-transparent shrink-0 max-lg:!w-11 max-lg:!h-11"
+        >
+          <Sparkles size={15} />
+        </IconButton>
+      )}
 
       <div className="w-px h-6 bg-hairline mx-1 shrink-0 hidden lg:block" />
 
