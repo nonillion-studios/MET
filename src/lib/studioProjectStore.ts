@@ -8,7 +8,9 @@ import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, createDefaultAdjustmentData
  *  AdjustmentLayerData field backfills from createDefaultAdjustmentData(a.kind), see migrateLayer.
  *  v9 added StudioLayer.effects (Blending Options) — optional, and absent is precisely the pre-v9
  *  behaviour (no styles applied), the same reasoning v5's `mask`/`clipped`/`collapsed` already used.
- *  No backfill of its own. */
+ *  No backfill of its own.
+ *  `effects.blendIf.channel` was added later within v9 (Gray/R/G/B selector) — no version bump per
+ *  this file's own "new field is one more `??`" rule below, backfilled to 'gray' in migrateLayer. */
 export const STUDIO_SCHEMA_VERSION = 9;
 const SCHEMA_VERSION = STUDIO_SCHEMA_VERSION;
 const MAX_VERSIONS = 10;
@@ -110,6 +112,16 @@ function migrateLayer(l: SerializedStudioLayer): SerializedStudioLayer {
         shadowsHighlights: { ...d.shadowsHighlights, ...a.shadowsHighlights },
         hdrToning: { ...d.hdrToning, ...a.hdrToning },
       },
+    };
+  }
+
+  // Blend If's `channel` selector, added alongside its pre-existing thisLayer/underlying ranges —
+  // old persisted effects have the ranges but no channel, defaulting to Gray (Photoshop's own
+  // default) exactly as `createDefaultLayerEffects` already does for a brand-new layer.
+  if (l.effects) {
+    migrated = {
+      ...migrated,
+      effects: { ...l.effects, blendIf: { ...l.effects.blendIf, channel: l.effects.blendIf.channel ?? 'gray' } },
     };
   }
 

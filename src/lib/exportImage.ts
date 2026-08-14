@@ -1,5 +1,5 @@
 import {
-  compositeOperationFor, CUSTOM_BLEND_MODES, hasAnyEnabledStyle,
+  compositeOperationFor, CUSTOM_BLEND_MODES, hasAnyEnabledStyle, hasActiveBlendIf, isBlendIfRangeActive,
   type TextLayerData, type PathLayerData, type LayerEffects, type GradientOverlayStyleData,
 } from '../components/studio/studioTypes';
 import { traceAnchors } from '../components/studio/pathGeometry';
@@ -10,7 +10,7 @@ import { rasterizeWarpedTextLocal } from '../components/studio/textWarpRender';
 import { partitionAdjustments, groupClipRuns, type RenderNode, type ClipRun } from '../components/studio/layerTree';
 import { filterForAdjustment, withStrength } from './adjustments';
 import { applyCustomBlend } from './customBlendModes';
-import { extractAlpha, outerHalo, innerShadowHalo, innerGlowHalo, strokeRing, bevelMasks, satinMask, paintHalo } from './layerEffects';
+import { extractAlpha, outerHalo, innerShadowHalo, innerGlowHalo, strokeRing, bevelMasks, satinMask, paintHalo, applyBlendIf } from './layerEffects';
 import type { ExportSnapshot } from '../components/studio/StudioCanvas';
 import type { SerializedStudioLayer } from './studioProjectStore';
 
@@ -127,7 +127,8 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
  * normal blend already do.
  */
 export const isolatesGroup = (layer: { opacity: number; blendMode: SerializedStudioLayer['blendMode']; effects?: LayerEffects }) =>
-  layer.opacity < 1 || layer.blendMode !== 'normal' || (layer.effects != null && hasAnyEnabledStyle(layer.effects));
+  layer.opacity < 1 || layer.blendMode !== 'normal'
+  || (layer.effects != null && (hasAnyEnabledStyle(layer.effects) || hasActiveBlendIf(layer.effects.blendIf)));
 
 /**
  * Composites `layers` (bottom-to-top) onto `ctx`: adjustments become wrappers around what's below
@@ -384,6 +385,7 @@ async function compositeLeaf(
   // A disabled mask has no effect at all, matching PSD's own `disabled` flag and the live canvas.
   const activeMaskRaster = layer.mask?.enabled ? layer.maskRaster : undefined;
   const hasEffects = layer.effects != null && hasAnyEnabledStyle(layer.effects);
+  const hasBlendIf = layer.effects != null && hasActiveBlendIf(layer.effects.blendIf);
   const isCustomBlend = CUSTOM_BLEND_MODES.has(layer.blendMode);
 
   if (layer.type === 'group' && !isolatesGroup(layer) && !activeMaskRaster) {
@@ -391,7 +393,7 @@ async function compositeLeaf(
     return;
   }
 
-  if (!activeMaskRaster && !hasEffects && !isCustomBlend) {
+  if (!activeMaskRaster && !hasEffects && !hasBlendIf && !isCustomBlend) {
     // The common, fast path — no scratch canvas needed at all.
     ctx.save();
     ctx.globalAlpha = layer.opacity;
@@ -417,7 +419,27 @@ async function compositeLeaf(
     sctx.globalCompositeOperation = 'destination-in';
     sctx.drawImage(maskImg, 0, 0, width, height);
   }
+  // Underlying Layer's backdrop must be read now, before `applyLeafEffects` below — that call paints
+  // this same layer's own Drop Shadow/Outer Glow directly onto `ctx` (they render behind the layer),
+  // so capturing any later would leak this layer's own halo into what's supposed to be a clean read
+  // of "everything beneath this layer". Deliberately not shared with `isCustomBlend`'s own, later
+  // `ctx.getImageData` read below — that one runs after effects for an unrelated reason, and
+  // unifying the two would break one or the other's correctness.
+  const needsUnderlyingBlendIf = hasBlendIf && isBlendIfRangeActive(layer.effects!.blendIf.underlying);
+  const underlyingSnapshot = needsUnderlyingBlendIf ? ctx.getImageData(0, 0, width, height) : null;
   if (hasEffects) applyLeafEffects(ctx, sctx, layer.effects!, width, height);
+  if (hasBlendIf) {
+    // Read `sctx` after `applyLeafEffects`, not before — This Layer gates on the layer's true final
+    // rendered appearance, and Inner Shadow/Inner Glow/Bevel/Satin/Color+Gradient Overlay/Stroke all
+    // paint onto `sctx` inside that call.
+    const { channel, thisLayer, underlying } = layer.effects!.blendIf;
+    const thisSnapshot = sctx.getImageData(0, 0, width, height);
+    applyBlendIf(
+      thisSnapshot.data, thisLayer, channel,
+      underlyingSnapshot ? { data: underlyingSnapshot.data, range: underlying } : undefined,
+    );
+    sctx.putImageData(thisSnapshot, 0, 0);
+  }
 
   if (isCustomBlend) {
     const backdrop = ctx.getImageData(0, 0, width, height);

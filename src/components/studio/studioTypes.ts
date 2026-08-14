@@ -781,6 +781,9 @@ export interface StrokeStyleData {
  * the same way here means the dialog never needs "construct defaults on first open" logic — opening
  * any style pane just reads what's already there.
  */
+export type BlendIfChannel = 'gray' | 'r' | 'g' | 'b';
+export interface BlendIfRange { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number; }
+
 export interface LayerEffects {
   advancedBlending: {
     fillOpacity: number; // 0-100
@@ -800,10 +803,13 @@ export interface LayerEffects {
    * much deeper rendering-pipeline surgery than this feature warrants — real in flattened export
    * (`exportImage.ts`, which already composites sequentially with the backdrop naturally at hand)
    * but not live-previewed on screen; the Blending Options dialog says so next to the control.
+   * `channel` selects the luminance source both ranges read (Gray by default, or a single R/G/B
+   * byte), matching Photoshop's own single channel dropdown above both sliders.
    */
   blendIf: {
-    thisLayer: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
-    underlying: { blackMin: number; blackMax: number; whiteMin: number; whiteMax: number };
+    channel: BlendIfChannel;
+    thisLayer: BlendIfRange;
+    underlying: BlendIfRange;
   };
   dropShadow: ShadowStyleData;
   innerShadow: ShadowStyleData;
@@ -830,6 +836,7 @@ export function createDefaultLayerEffects(): LayerEffects {
       vectorMaskHidesEffects: false,
     },
     blendIf: {
+      channel: 'gray',
       thisLayer: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
       underlying: { blackMin: 0, blackMax: 0, whiteMin: 255, whiteMax: 255 },
     },
@@ -864,6 +871,20 @@ export function hasAnyEnabledStyle(effects: LayerEffects): boolean {
     || effects.innerGlow.enabled || effects.bevelEmboss.enabled || effects.satin.enabled
     || effects.colorOverlay.enabled || effects.gradientOverlay.enabled || effects.patternOverlay.enabled
     || effects.stroke.enabled;
+}
+
+/** Whether a single Blend If range departs from its no-op default (0/0/255/255, i.e. every pixel
+ *  passes through unmasked). Deliberately separate from `hasAnyEnabledStyle` — Blend If has no
+ *  `enabled` flag of its own, it's always structurally present and "on" once its split points move. */
+export function isBlendIfRangeActive(range: BlendIfRange): boolean {
+  return range.blackMin > 0 || range.blackMax > 0 || range.whiteMin < 255 || range.whiteMax < 255;
+}
+
+/** True if either side of Blend If is non-default — used for isolation/caching gates, which must
+ *  stay in sync between the live canvas and `exportImage.ts` even though only `thisLayer` renders
+ *  live (see the `blendIf` field's own doc comment above). */
+export function hasActiveBlendIf(blendIf: LayerEffects['blendIf']): boolean {
+  return isBlendIfRangeActive(blendIf.thisLayer) || isBlendIfRangeActive(blendIf.underlying);
 }
 
 export interface StudioLayer {
