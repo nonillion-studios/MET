@@ -15,6 +15,33 @@ export interface TranslatedBubble {
   seedX: number;
   seedY: number;
   rotation: number;
+  /**
+   * Per-bubble style choices Gemini makes by looking at *this* bubble's own art (e.g. a bubble
+   * sitting on a dark panel needs a white stroke to stay readable; one on flat white needs none) —
+   * every field is optional and falls back to the Typesetting stage's own defaults
+   * (`AutoTypesetStyle`) when Gemini omits it or the value doesn't parse as a real color.
+   * Deliberately does NOT include a font choice: `isSfx` already drives font selection from the
+   * Typesetting stage's own two configured (available, uploaded) fonts, keeping "same font for
+   * every bubble except SFX" true regardless of what Gemini says here.
+   */
+  color?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  shadowEnabled?: boolean;
+  shadowColor?: string;
+  /** Whole-bubble emphasis — mirrors the bold/italic distinction aiTranslate.ts's plain-markup
+   *  translator already asks for (shouted text vs. whispered/internal-thought text). */
+  bold?: boolean;
+  italic?: boolean;
+  /** Shouted/oversized lettering (a common SFX/emphasis convention) — bumps autoTypeset.ts's font
+   *  size ceiling for this bubble rather than trying to guess an absolute point size, since the
+   *  real size is still whatever fits the detected bubble. */
+  emphasis?: boolean;
+}
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+function parseHexColor(v: unknown): string | undefined {
+  return typeof v === 'string' && HEX_COLOR_RE.test(v.trim()) ? v.trim() : undefined;
 }
 
 // 'gemini-2.0-flash' was retired by Google (confirmed live: now 404s "no longer available") — a
@@ -37,9 +64,15 @@ function buildPrompt(prompt: string, targetLanguage: string, blackAndWhiteOnly: 
     prompt.trim() ? `Additional instructions from the translator: ${prompt.trim()}` : '',
     blackAndWhiteOnly ? 'This page is black-and-white manga — do not suggest any color; typesetting will stay black/white.' : '',
     'Reply with ONLY a raw JSON array (no markdown fences, no commentary), one object per bubble/SFX, in natural reading order:',
-    '[{ "text": string, "isSfx": boolean, "seedX": number, "seedY": number, "rotation": number }]',
+    '[{ "text": string, "isSfx": boolean, "seedX": number, "seedY": number, "rotation": number, "bold": boolean, "italic": boolean, "emphasis": boolean, "color": string, "strokeColor": string, "strokeWidth": number, "shadowEnabled": boolean, "shadowColor": string }]',
     '"seedX"/"seedY" are a rough point INSIDE that bubble/SFX (0..1, fraction of page width/height) — approximate is fine.',
     '"rotation" is degrees clockwise the text should be tilted (usually 0; SFX is sometimes angled with the art).',
+    '"bold": true for shouted/stressed lines (mirrors **bold** in the original). "italic": true for whispered/internal-thought lines (mirrors //italic// in the original). "emphasis": true for oversized/impact lettering (typical for SFX) — this only requests larger text, the exact size still fits whatever the bubble/SFX region actually is.',
+    'Look at what\'s actually behind/around each bubble and choose readable styling for it:',
+    '- "color"/"strokeColor" are #rrggbb hex. Pick a stroke color that contrasts with the bubble\'s own fill so text stays legible (e.g. white stroke on a colored/dark bubble, no stroke needed on plain white).',
+    '- "strokeWidth" in px, roughly 0-6 — 0 (or omit strokeColor) means no stroke at all.',
+    '- "shadowEnabled"/"shadowColor": a soft drop shadow, mainly for SFX sitting directly on busy art rather than inside a bubble.',
+    'These style fields are all optional — omit any you\'re not confident about rather than guessing.',
     'Skip bubbles/SFX with no legible text. If the page has no text at all, reply with an empty array [].',
   ].filter(Boolean).join('\n');
 }
@@ -114,6 +147,14 @@ export function parseBubblesFromJsonText(text: string): TranslatedBubble[] {
       seedX: Math.min(1, Math.max(0, Number(o.seedX) || 0.5)),
       seedY: Math.min(1, Math.max(0, Number(o.seedY) || 0.5)),
       rotation: Number.isFinite(o.rotation) ? Number(o.rotation) : 0,
+      color: parseHexColor(o.color),
+      strokeColor: parseHexColor(o.strokeColor),
+      strokeWidth: Number.isFinite(o.strokeWidth) ? Math.min(10, Math.max(0, Number(o.strokeWidth))) : undefined,
+      shadowEnabled: typeof o.shadowEnabled === 'boolean' ? o.shadowEnabled : undefined,
+      shadowColor: parseHexColor(o.shadowColor),
+      bold: typeof o.bold === 'boolean' ? o.bold : undefined,
+      italic: typeof o.italic === 'boolean' ? o.italic : undefined,
+      emphasis: typeof o.emphasis === 'boolean' ? o.emphasis : undefined,
     });
   }
   return bubbles;

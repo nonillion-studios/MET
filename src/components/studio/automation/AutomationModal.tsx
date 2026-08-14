@@ -8,11 +8,12 @@ import { TranslateStagePanel } from './TranslateStagePanel';
 import { TypesetStagePanel } from './TypesetStagePanel';
 import { ColorStagePanel } from './ColorStagePanel';
 import { JsonHandoffPanel } from './JsonHandoffPanel';
+import { TextEditorSyncModal } from './TextEditorSyncModal';
 import {
   defaultColorStageConfig, defaultTranslateStageConfig, defaultTypesetStageConfig,
   type AutomationConfig, type AutomationRunState, type InpaintStageConfig,
 } from './automationTypes';
-import { AUTOMATION_DEFAULT_INPAINT_PROMPT } from '../../../lib/aiInpaint';
+import { AUTOMATION_DEFAULT_INPAINT_PROMPT, AUTOMATION_DEFAULT_INPAINT_MODEL } from '../../../lib/aiInpaint';
 import type { DetectBubbleBoundsFn } from './autoTypeset';
 
 type StageKey = 'inpaint' | 'translate' | 'typeset' | 'color' | 'jsonHandoff' | 'run';
@@ -46,22 +47,31 @@ interface AutomationModalProps {
   onDismiss: () => void;
   onInsertTextLayers: (pageId: string, layers: StudioLayer[]) => void;
   detectBubbleBounds: DetectBubbleBoundsFn;
-  onOpenFontsPanel: () => void;
+  customFontFamilies: string[];
+  onCustomFontFamiliesChange: (families: string[]) => void;
 }
 
 export function AutomationModal({
   open, onClose, pages, layersByPage, hasGeminiKey, onOpenSettings, activePageId, onJumpToPage,
-  runState, onStart, onResume, onStop, onDismiss, onInsertTextLayers, detectBubbleBounds, onOpenFontsPanel,
+  runState, onStart, onResume, onStop, onDismiss, onInsertTextLayers, detectBubbleBounds,
+  customFontFamilies, onCustomFontFamiliesChange,
 }: AutomationModalProps) {
   const [stage, setStage] = useState<StageKey>('inpaint');
   const [inpaint, setInpaint] = useState<InpaintStageConfig>({
     branch: 'gemini',
     geminiPrompt: AUTOMATION_DEFAULT_INPAINT_PROMPT,
+    model: AUTOMATION_DEFAULT_INPAINT_MODEL,
     pageIds: pages.map(p => p.id),
   });
   const [translate, setTranslate] = useState(defaultTranslateStageConfig);
   const [typeset, setTypeset] = useState(defaultTypesetStageConfig);
   const [color, setColor] = useState(defaultColorStageConfig);
+  const [textEditorSyncOpen, setTextEditorSyncOpen] = useState(false);
+
+  function handleTextEditorSyncConfirm(pageParagraphs: Record<string, string[]>) {
+    setTranslate(prev => ({ ...prev, enabled: true, branch: 'text-editor', pageParagraphs }));
+    setTextEditorSyncOpen(false);
+  }
 
   const running = runState?.status === 'running';
   const canRun = inpaint.branch === 'gemini' && hasGeminiKey && inpaint.pageIds.length > 0;
@@ -76,6 +86,7 @@ export function AutomationModal({
   }
 
   return (
+    <>
     <Modal open={open} onClose={handleClose} title="Automation" size="xl" dismissible={!running}>
       <div className="flex gap-5 min-h-[24rem]">
         <div className="flex flex-col gap-1 w-40 shrink-0 border-r border-hairline pr-4">
@@ -107,8 +118,16 @@ export function AutomationModal({
             />
           )}
 
-          {stage === 'translate' && <TranslateStagePanel config={translate} onChange={setTranslate} />}
-          {stage === 'typeset' && <TypesetStagePanel config={typeset} onChange={setTypeset} translateEnabled={translate.enabled} onOpenFontsPanel={onOpenFontsPanel} />}
+          {stage === 'translate' && <TranslateStagePanel config={translate} onChange={setTranslate} onOpenTextEditorSync={() => setTextEditorSyncOpen(true)} />}
+          {stage === 'typeset' && (
+            <TypesetStagePanel
+              config={typeset}
+              onChange={setTypeset}
+              translateEnabled={translate.enabled}
+              customFontFamilies={customFontFamilies}
+              onCustomFontFamiliesChange={onCustomFontFamiliesChange}
+            />
+          )}
           {stage === 'color' && <ColorStagePanel config={color} onChange={setColor} />}
           {stage === 'jsonHandoff' && (
             <JsonHandoffPanel
@@ -182,5 +201,12 @@ export function AutomationModal({
         </div>
       </div>
     </Modal>
+    <TextEditorSyncModal
+      open={textEditorSyncOpen}
+      onClose={() => setTextEditorSyncOpen(false)}
+      pages={pages}
+      onConfirm={handleTextEditorSyncConfirm}
+    />
+    </>
   );
 }

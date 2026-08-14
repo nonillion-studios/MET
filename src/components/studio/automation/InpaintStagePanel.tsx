@@ -3,7 +3,7 @@ import { Sparkles, PenLine, CheckCircle2, AlertTriangle, Key } from 'lucide-reac
 import type { Page } from '../../../types';
 import type { StudioLayer } from '../studioTypes';
 import type { InpaintBranch, InpaintStageConfig } from './automationTypes';
-import { AUTOMATION_DEFAULT_INPAINT_PROMPT } from '../../../lib/aiInpaint';
+import { AUTOMATION_DEFAULT_INPAINT_PROMPT, AUTOMATION_DEFAULT_INPAINT_MODEL } from '../../../lib/aiInpaint';
 
 interface InpaintStagePanelProps {
   pages: Page[];
@@ -81,6 +81,17 @@ export function InpaintStagePanel({ pages, layersByPage, config, onChange, hasGe
             </button>
           )}
           <label className="flex flex-col gap-1 text-micro text-ink-faint">
+            <span>Model</span>
+            <input
+              type="text"
+              value={config.model}
+              onChange={(e) => onChange({ ...config, model: e.target.value })}
+              placeholder={AUTOMATION_DEFAULT_INPAINT_MODEL}
+              className="studio-interactive bg-ink/5 border border-hairline rounded-control px-2.5 py-1.5 text-ink text-ui font-mono"
+            />
+            <span className="text-micro text-ink-faint">Any Gemini model that supports image editing — e.g. gemini-2.5-flash-image, gemini-3.1-flash-image, nano-banana-pro-preview.</span>
+          </label>
+          <label className="flex flex-col gap-1 text-micro text-ink-faint">
             <span>Prompt</span>
             <textarea
               value={config.geminiPrompt}
@@ -90,9 +101,34 @@ export function InpaintStagePanel({ pages, layersByPage, config, onChange, hasGe
               className="studio-interactive bg-ink/5 border border-hairline rounded-control px-2.5 py-2 text-ink text-ui resize-none"
             />
           </label>
-          <p className="text-micro text-ink-faint">
-            {config.pageIds.length} of {pages.length} page{pages.length === 1 ? '' : 's'} selected for this run.
-          </p>
+
+          <div className="flex items-center justify-between text-micro text-ink-faint">
+            <span>{config.pageIds.length} of {pages.length} page{pages.length === 1 ? '' : 's'} selected</span>
+            <span className="flex gap-2">
+              <button type="button" className="hover:text-ink" onClick={() => onChange({ ...config, pageIds: pages.map(p => p.id) })}>All</button>
+              <button type="button" className="hover:text-ink" onClick={() => onChange({ ...config, pageIds: [] })}>None</button>
+              <button type="button" className="hover:text-ink" onClick={() => onChange({ ...config, pageIds: pages.filter(p => !checkPageRegistered(layersByPage[p.id] ?? [], p)).map(p => p.id) })}>Not yet inpainted</button>
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 max-h-56 overflow-y-auto rounded-control border border-hairline p-1.5">
+            {registration.map(({ page, registered }) => {
+              const checked = config.pageIds.includes(page.id);
+              return (
+                <label key={page.id} className="flex items-center gap-2 px-1.5 py-1 rounded-control hover:bg-ink/5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => onChange({
+                      ...config,
+                      pageIds: e.target.checked ? [...config.pageIds, page.id] : config.pageIds.filter(id => id !== page.id),
+                    })}
+                  />
+                  <span className="text-ui text-ink truncate flex-1">{page.original.filename || page.id}</span>
+                  {registered && <span className="flex items-center gap-1 text-micro text-success shrink-0" title="Already has an inpainted/clean layer on this page"><CheckCircle2 size={12} /> Already inpainted</span>}
+                </label>
+              );
+            })}
+          </div>
         </div>
       )}
 

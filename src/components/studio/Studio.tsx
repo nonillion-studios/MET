@@ -3488,7 +3488,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         onDismiss={automationRunner.dismiss}
         onInsertTextLayers={insertAutomationTextLayers}
         detectBubbleBounds={(x, y) => canvasRef.current?.detectBubbleBounds(x, y) ?? null}
-        onOpenFontsPanel={() => { setRightOpen(true); panelLayout.reveal('fonts'); }}
+        customFontFamilies={customFontFamilies}
+        onCustomFontFamiliesChange={setCustomFontFamilies}
       />
       <AiAutomationCursor runState={automationRunner.runState} onStop={automationRunner.requestStop} />
       {blendingOptionsLayerId && (() => {

@@ -1,35 +1,64 @@
-import { useEffect, useState } from 'react';
-import { UploadCloud } from 'lucide-react';
-import { Switch, Button } from '../../ui';
+import { useRef, useState } from 'react';
+import { UploadCloud, Loader2 } from 'lucide-react';
+import { Switch } from '../../ui';
 import { FONT_FAMILIES } from '../studioTypes';
-import { loadStoredFonts } from '../../../lib/fontsStore';
+import { loadCustomFont } from '../../../lib/fontLoader';
+import { loadStoredFonts, saveStoredFonts, type StoredFont } from '../../../lib/fontsStore';
+import { genId } from '../../../lib/id';
+import { swalToast } from '../../../lib/swalTheme';
 import type { TypesetStageConfig } from './automationTypes';
 
 interface TypesetStagePanelProps {
   config: TypesetStageConfig;
   onChange: (config: TypesetStageConfig) => void;
   translateEnabled: boolean;
-  /** Reveals the Fonts panel (right dock) so the user can upload a font — e.g. an Arabic typeface
-   *  like Marhey — that then shows up in the dropdowns below. This app's font system is
-   *  deliberately offline/upload-only (see FontsPanel.tsx), so nothing here can fetch or bundle a
-   *  font on its own; typesetting only ever picks from what's actually loaded. */
-  onOpenFontsPanel: () => void;
+  /** Studio's live custom-font list (`Studio.tsx`'s `customFontFamilies`) — kept here instead of
+   *  re-reading storage independently so an upload from this panel is instantly reflected in every
+   *  other font picker in the app (Text/TypeR panels) without needing a reload. */
+  customFontFamilies: string[];
+  onCustomFontFamiliesChange: (families: string[]) => void;
 }
 
-export function TypesetStagePanel({ config, onChange, translateEnabled, onOpenFontsPanel }: TypesetStagePanelProps) {
-  const [customFonts, setCustomFonts] = useState<string[]>([]);
+/** Uploads happen inline, right here — not via a link out to the (separate, dock-hidden-behind-
+ *  this-modal) Fonts panel, which is unreachable while this modal is open. Same upload mechanics as
+ *  FontsPanel.tsx (FontFace API + opentype.js metadata + idb-keyval persistence via fontsStore.ts),
+ *  just relocated so "upload a font for this pipeline" doesn't require leaving the wizard. */
+export function TypesetStagePanel({ config, onChange, translateEnabled, customFontFamilies, onCustomFontFamiliesChange }: TypesetStagePanelProps) {
+  const [uploading, setUploading] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadStoredFonts().then(fonts => {
-      if (!cancelled) setCustomFonts(fonts.map(f => f.family));
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+  const availableFonts = [...FONT_FAMILIES, ...customFontFamilies.filter(f => !FONT_FAMILIES.includes(f))];
 
-  // Every font the pipeline is allowed to pick from — built-in plus whatever the user has uploaded
-  // — so typesetting can never reference a font that isn't actually loaded in the app.
-  const availableFonts = [...FONT_FAMILIES, ...customFonts.filter(f => !FONT_FAMILIES.includes(f))];
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setUploading(true);
+    try {
+      const existing = await loadStoredFonts();
+      const added: StoredFont[] = [];
+      for (const file of files) {
+        try {
+          const { family, dataUrl } = await loadCustomFont(file);
+          added.push({ id: genId('font'), family, dataUrl });
+        } catch (err) {
+          console.error(err);
+          swalToast({ icon: 'error', title: `Couldn't load "${file.name}"` });
+        }
+      }
+      if (added.length > 0) {
+        const next = [...existing, ...added];
+        await saveStoredFonts(next);
+        onCustomFontFamiliesChange(next.map(f => f.family));
+        // Default the just-uploaded font straight into the picker it was most likely meant for —
+        // saves a second trip through the dropdown for the common "just uploaded Marhey" case.
+        onChange({ ...config, dialogueFontFamily: added[0].family });
+        swalToast({ icon: 'success', title: `Installed ${added.length} font${added.length === 1 ? '' : 's'}` });
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -52,12 +81,19 @@ export function TypesetStagePanel({ config, onChange, translateEnabled, onOpenFo
         <>
           <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-control border border-hairline bg-ink/5">
             <span className="text-micro text-ink-faint">
-              {customFonts.length > 0 ? `${customFonts.length} custom font${customFonts.length === 1 ? '' : 's'} available` : 'No custom fonts uploaded yet'} —
+              {customFontFamilies.length > 0 ? `${customFontFamilies.length} custom font${customFontFamilies.length === 1 ? '' : 's'} available` : 'No custom fonts uploaded yet'} —
               only fonts already loaded in Studio can be used here.
             </span>
-            <Button variant="secondary" size="sm" onClick={onOpenFontsPanel} className="shrink-0">
-              <UploadCloud size={13} /> Upload a font
-            </Button>
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => inputRef.current?.click()}
+              className="shrink-0 flex items-center gap-1.5 h-8 px-3 rounded-control border border-hairline bg-ink/5 text-ui font-medium text-ink hover:bg-ink/10 transition-colors disabled:opacity-50"
+            >
+              {uploading ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
+              Upload a font
+            </button>
+            <input ref={inputRef} type="file" accept=".ttf,.otf,.woff,.woff2" multiple className="hidden" onChange={handleUpload} />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -82,15 +118,15 @@ export function TypesetStagePanel({ config, onChange, translateEnabled, onOpenFo
               </select>
             </label>
             <label className="flex flex-col gap-1 text-micro text-ink-faint">
-              <span>Text color</span>
+              <span>Default text color <span className="opacity-70">(Gemini may override per bubble)</span></span>
               <input type="color" value={config.color} onChange={(e) => onChange({ ...config, color: e.target.value })} className="h-8 w-full rounded-control border border-hairline" />
             </label>
             <label className="flex flex-col gap-1 text-micro text-ink-faint">
-              <span>Stroke color</span>
+              <span>Default stroke color <span className="opacity-70">(Gemini may override per bubble)</span></span>
               <input type="color" value={config.strokeColor} onChange={(e) => onChange({ ...config, strokeColor: e.target.value })} className="h-8 w-full rounded-control border border-hairline" />
             </label>
             <label className="flex flex-col gap-1 text-micro text-ink-faint sm:col-span-2">
-              <span className="flex items-center justify-between"><span>Stroke width</span><span className="tabular-nums">{config.strokeWidth}px</span></span>
+              <span className="flex items-center justify-between"><span>Default stroke width <span className="opacity-70">(Gemini may override per bubble)</span></span><span className="tabular-nums">{config.strokeWidth}px</span></span>
               <input type="range" min={0} max={8} step={0.5} value={config.strokeWidth} onChange={(e) => onChange({ ...config, strokeWidth: Number(e.target.value) })} className="accent-accent" />
             </label>
           </div>
