@@ -15,6 +15,7 @@ import {
 } from './automationTypes';
 import { AUTOMATION_DEFAULT_INPAINT_PROMPT, AUTOMATION_DEFAULT_INPAINT_MODEL } from '../../../lib/aiInpaint';
 import type { DetectBubbleBoundsFn } from './autoTypeset';
+import type { AiProvider } from '../../../lib/aiTranslate';
 
 type StageKey = 'inpaint' | 'translate' | 'typeset' | 'color' | 'jsonHandoff' | 'run';
 
@@ -37,6 +38,7 @@ interface AutomationModalProps {
   pages: Page[];
   layersByPage: Record<string, StudioLayer[]>;
   hasGeminiKey: boolean;
+  activeProvider: AiProvider;
   onOpenSettings: () => void;
   activePageId: string | null;
   onJumpToPage: (pageId: string) => void;
@@ -52,7 +54,7 @@ interface AutomationModalProps {
 }
 
 export function AutomationModal({
-  open, onClose, pages, layersByPage, hasGeminiKey, onOpenSettings, activePageId, onJumpToPage,
+  open, onClose, pages, layersByPage, hasGeminiKey, activeProvider, onOpenSettings, activePageId, onJumpToPage,
   runState, onStart, onResume, onStop, onDismiss, onInsertTextLayers, detectBubbleBounds,
   customFontFamilies, onCustomFontFamiliesChange,
 }: AutomationModalProps) {
@@ -74,7 +76,13 @@ export function AutomationModal({
   }
 
   const running = runState?.status === 'running';
-  const canRun = inpaint.branch === 'gemini' && hasGeminiKey && inpaint.pageIds.length > 0;
+  // Gemini is only actually needed when some stage in this run will call it — "already inpainted"
+  // runs can start key-free as long as Translation/Coloring aren't also set to call Gemini.
+  const usesGemini = inpaint.branch === 'gemini'
+    || (translate.enabled && (translate.branch === 'gemini' || translate.branch === 'text-editor'))
+    || (color.enabled && color.branch === 'gemini');
+  const inpaintReady = inpaint.branch === 'gemini' || inpaint.branch === 'manual-verify';
+  const canRun = inpaintReady && inpaint.pageIds.length > 0 && (!usesGemini || hasGeminiKey);
 
   function handleClose() {
     if (running) return; // Run dialog stays non-dismissible while a run is actively going.
@@ -118,7 +126,15 @@ export function AutomationModal({
             />
           )}
 
-          {stage === 'translate' && <TranslateStagePanel config={translate} onChange={setTranslate} onOpenTextEditorSync={() => setTextEditorSyncOpen(true)} />}
+          {stage === 'translate' && (
+            <TranslateStagePanel
+              config={translate}
+              onChange={setTranslate}
+              onOpenTextEditorSync={() => setTextEditorSyncOpen(true)}
+              activeProvider={activeProvider}
+              onOpenSettings={onOpenSettings}
+            />
+          )}
           {stage === 'typeset' && (
             <TypesetStagePanel
               config={typeset}
@@ -146,15 +162,15 @@ export function AutomationModal({
               <div>
                 <h3 className="font-display text-ui font-semibold text-ink mb-1">Run</h3>
                 <p className="text-micro text-ink-faint">
-                  {inpaint.branch === 'gemini'
+                  {inpaintReady
                     ? [
-                        'Gemini will work through each selected page in order:',
-                        'inpaint',
+                        'Automation will work through each selected page in order:',
+                        inpaint.branch === 'gemini' ? 'inpaint' : 'skip inpaint (already inpainted)',
                         translate.enabled && (translate.branch === 'gemini' || translate.branch === 'text-editor') ? '→ translate' : '',
                         typeset.enabled && translate.enabled ? '→ typeset' : '',
                         color.enabled && color.branch === 'gemini' ? '→ color' : '',
                       ].filter(Boolean).join(' ')
-                    : 'Only the Gemini branch runs automatically — pick it under Inpainting to start a run.'}
+                    : 'Pick "Gemini API" or "I\'ve already inpainted these" under Inpainting to start a run.'}
                 </p>
               </div>
 

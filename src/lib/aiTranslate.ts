@@ -90,9 +90,26 @@ async function readErrorDetail(res: Response): Promise<string> {
   }
 }
 
-async function translateWithGemini({ apiKey, model, imageDataUrl, prompt, targetLanguage, pageIndex, pageCount }: TranslatePageParams): Promise<string> {
+/** Provider-agnostic "send this image + these instructions, get raw text back" call — shared by
+ *  `translatePageImage` (markup-mode text for the Text Editor's AI translation) and
+ *  `aiTranslateBubbles.ts`/`aiPlaceBubbles.ts` (JSON-mode instructions for the Automation
+ *  pipeline's bubble translator), so every consumer gets the same 9-provider support instead of
+ *  each one hardcoding Gemini's own REST shape. */
+export interface VisionCallParams {
+  provider: AiProvider;
+  apiKey: string;
+  /** Falls back to the provider's default model when blank. */
+  model: string;
+  /** A `data:<mime>;base64,<data>` URL. */
+  imageDataUrl: string;
+  /** Full prompt text — caller builds this (markup instructions, JSON-schema instructions, etc.). */
+  instructions: string;
+  /** Only used by OpenAI-compatible providers — see `openAiCompatible` on AiProviderInfo. */
+  baseUrl?: string;
+}
+
+async function callWithGemini({ apiKey, model, imageDataUrl, instructions }: VisionCallParams): Promise<string> {
   const { mimeType, base64 } = parseDataUrl(imageDataUrl);
-  const instructions = buildInstructions(prompt, targetLanguage, pageIndex, pageCount);
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     {
@@ -118,8 +135,7 @@ async function translateWithGemini({ apiKey, model, imageDataUrl, prompt, target
 /** Shared request builder for every provider that speaks the OpenAI `/chat/completions` shape
  *  (OpenAI itself, Ollama's OpenAI-compat endpoint, OpenRouter, Groq, Mistral, DeepSeek, xAI) —
  *  they differ only in base URL, default model and whether a key is required at all. */
-async function translateWithOpenAiCompatible({ apiKey, model, imageDataUrl, prompt, targetLanguage, pageIndex, pageCount, provider, baseUrl }: TranslatePageParams): Promise<string> {
-  const instructions = buildInstructions(prompt, targetLanguage, pageIndex, pageCount);
+async function callWithOpenAiCompatible({ apiKey, model, imageDataUrl, instructions, provider, baseUrl }: VisionCallParams): Promise<string> {
   const info = AI_PROVIDERS.find(p => p.id === provider);
   const resolvedBaseUrl = (baseUrl?.trim() || info?.defaultBaseUrl || '').replace(/\/+$/, '');
   if (!resolvedBaseUrl) throw new Error(`No base URL configured for ${info?.label ?? provider}.`);
@@ -145,9 +161,8 @@ async function translateWithOpenAiCompatible({ apiKey, model, imageDataUrl, prom
   return String(text).trim();
 }
 
-async function translateWithAnthropic({ apiKey, model, imageDataUrl, prompt, targetLanguage, pageIndex, pageCount }: TranslatePageParams): Promise<string> {
+async function callWithAnthropic({ apiKey, model, imageDataUrl, instructions }: VisionCallParams): Promise<string> {
   const { mimeType, base64 } = parseDataUrl(imageDataUrl);
-  const instructions = buildInstructions(prompt, targetLanguage, pageIndex, pageCount);
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -178,14 +193,15 @@ async function translateWithAnthropic({ apiKey, model, imageDataUrl, prompt, tar
   return text.trim();
 }
 
-/** Sends one manga page image to the configured provider's vision API and returns the translated
- *  markup text. Called directly from the browser with the user's own decrypted key — same
- *  client-side-call trust model this app already uses for Telegram (see aiSettingsStore.ts). */
-export async function translatePageImage(params: TranslatePageParams): Promise<string> {
-  const resolved: TranslatePageParams = { ...params, model: params.model.trim() || defaultModelFor(params.provider) };
+/** Sends one image + arbitrary instructions to the configured provider's vision API and returns
+ *  raw text — the one place that knows how to reach each of the 9 providers. Callers own their own
+ *  prompt format (markup for `translatePageImage`, JSON schema for the Automation pipeline's
+ *  bubble/placement calls) and their own response parsing. */
+export async function callVisionProvider(params: VisionCallParams): Promise<string> {
+  const resolved: VisionCallParams = { ...params, model: params.model.trim() || defaultModelFor(params.provider) };
   switch (resolved.provider) {
-    case 'gemini': return translateWithGemini(resolved);
-    case 'anthropic': return translateWithAnthropic(resolved);
+    case 'gemini': return callWithGemini(resolved);
+    case 'anthropic': return callWithAnthropic(resolved);
     case 'openai':
     case 'ollama':
     case 'openrouter':
@@ -193,6 +209,17 @@ export async function translatePageImage(params: TranslatePageParams): Promise<s
     case 'mistral':
     case 'deepseek':
     case 'xai':
-      return translateWithOpenAiCompatible(resolved);
+      return callWithOpenAiCompatible(resolved);
   }
+}
+
+/** Sends one manga page image to the configured provider's vision API and returns the translated
+ *  markup text. Called directly from the browser with the user's own decrypted key — same
+ *  client-side-call trust model this app already uses for Telegram (see aiSettingsStore.ts). */
+export async function translatePageImage(params: TranslatePageParams): Promise<string> {
+  const instructions = buildInstructions(params.prompt, params.targetLanguage, params.pageIndex, params.pageCount);
+  return callVisionProvider({
+    provider: params.provider, apiKey: params.apiKey, model: params.model,
+    imageDataUrl: params.imageDataUrl, instructions, baseUrl: params.baseUrl,
+  });
 }

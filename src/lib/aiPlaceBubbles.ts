@@ -1,10 +1,12 @@
-/** Gemini vision call for the Automation pipeline's Translation stage — "From Text Editor" branch.
- *  Unlike `aiTranslateBubbles.ts` (which translates AND places), this is placement-only: the text
- *  is already translated (it came from a Text Editor document the user wrote/synced), so this just
- *  asks Gemini to find where each already-translated line goes on the page and returns position/
+/** Vision call for the Automation pipeline's Translation stage — "From Text Editor" branch. Unlike
+ *  `aiTranslateBubbles.ts` (which translates AND places), this is placement-only: the text is
+ *  already translated (it came from a Text Editor document the user wrote/synced), so this just
+ *  asks the model to find where each already-translated line goes on the page and returns position/
  *  style JSON, keyed by index into the given paragraph list rather than echoing the text back —
- *  having Gemini retype a paragraph verbatim risks transcription drift on anything longer than a
- *  few words, whereas an index is unambiguous and costs nothing to get exactly right. */
+ *  having the model retype a paragraph verbatim risks transcription drift on anything longer than a
+ *  few words, whereas an index is unambiguous and costs nothing to get exactly right. Reaches any of
+ *  `aiTranslate.ts`'s supported providers through its shared `callVisionProvider`. */
+import { callVisionProvider, type AiProvider } from './aiTranslate';
 
 export class AiPlaceBubblesError extends Error {}
 
@@ -26,27 +28,9 @@ export interface PlacedBubble {
   shadowColor?: string;
 }
 
-const GEMINI_TEXT_MODEL = 'gemini-flash-latest';
-
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 function parseHexColor(v: unknown): string | undefined {
   return typeof v === 'string' && HEX_COLOR_RE.test(v.trim()) ? v.trim() : undefined;
-}
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) throw new AiPlaceBubblesError('Page image is not a base64 data URL.');
-  return { mimeType: match[1], base64: match[2] };
-}
-
-async function readErrorDetail(res: Response): Promise<string> {
-  const errText = await res.text().catch(() => '');
-  try {
-    const parsed = JSON.parse(errText);
-    return parsed?.error?.message || parsed?.message || errText;
-  } catch {
-    return errText;
-  }
 }
 
 function buildPrompt(paragraphs: string[], extraPrompt: string): string {
@@ -70,42 +54,39 @@ function parseJsonArray(raw: string): unknown[] {
   const stripped = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const start = stripped.indexOf('[');
   const end = stripped.lastIndexOf(']');
-  if (start === -1 || end === -1 || end < start) throw new AiPlaceBubblesError('Gemini reply was not a JSON array.');
+  if (start === -1 || end === -1 || end < start) throw new AiPlaceBubblesError('AI reply was not a JSON array.');
   const parsed = JSON.parse(stripped.slice(start, end + 1));
-  if (!Array.isArray(parsed)) throw new AiPlaceBubblesError('Gemini reply was not a JSON array.');
+  if (!Array.isArray(parsed)) throw new AiPlaceBubblesError('AI reply was not a JSON array.');
   return parsed;
+}
+
+export interface PlaceBubblesProvider {
+  provider: AiProvider;
+  apiKey: string;
+  /** Falls back to the provider's own default model when blank. */
+  model: string;
+  /** Only used by OpenAI-compatible providers — see `openAiCompatible` on AiProviderInfo. */
+  baseUrl?: string;
 }
 
 /** Places `paragraphs` (already-translated text, in whatever order the Text Editor document had
  *  them) onto `imageDataUrl`'s bubbles/SFX. Returns at most one entry per input paragraph, each
  *  with a valid, in-range, not-yet-used `paragraphIndex` — malformed or duplicate indices are
  *  dropped rather than failing the whole page. */
-export async function placeTranslatedBubbles(imageDataUrl: string, paragraphs: string[], extraPrompt: string, apiKey: string, model?: string): Promise<PlacedBubble[]> {
-  if (!apiKey) throw new AiPlaceBubblesError('No Gemini API key configured — add one in Settings.');
+export async function placeTranslatedBubbles(imageDataUrl: string, paragraphs: string[], extraPrompt: string, providerConfig: PlaceBubblesProvider): Promise<PlacedBubble[]> {
+  if (!providerConfig.apiKey && providerConfig.provider !== 'ollama') throw new AiPlaceBubblesError('No API key configured for this provider — add one in Settings.');
   if (paragraphs.length === 0) return [];
-  const { mimeType, base64 } = parseDataUrl(imageDataUrl);
-  const resolvedModel = model?.trim() || GEMINI_TEXT_MODEL;
   const instructions = buildPrompt(paragraphs, extraPrompt);
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(resolvedModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: instructions },
-            { inline_data: { mime_type: mimeType, data: base64 } },
-          ],
-        }],
-      }),
-    }
-  );
-  if (!res.ok) throw new AiPlaceBubblesError(`Gemini request failed (${res.status}): ${(await readErrorDetail(res)) || res.statusText}`);
-  const json = await res.json();
-  const parts = json?.candidates?.[0]?.content?.parts;
-  const text = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text ?? '').join('') : '';
+  let text: string;
+  try {
+    text = await callVisionProvider({
+      provider: providerConfig.provider, apiKey: providerConfig.apiKey, model: providerConfig.model,
+      imageDataUrl, instructions, baseUrl: providerConfig.baseUrl,
+    });
+  } catch (err) {
+    throw new AiPlaceBubblesError(err instanceof Error ? err.message : 'Placement request failed.');
+  }
   if (!text.trim()) return [];
 
   const rawItems = parseJsonArray(text);

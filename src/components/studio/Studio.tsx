@@ -52,6 +52,7 @@ import { AutomationModal } from './automation/AutomationModal';
 import { AiAutomationCursor } from './automation/AiAutomationCursor';
 import { useAutomationRunner } from './automation/useAutomationRunner';
 import { loadAiTranslationSettings } from '../../lib/aiSettingsStore';
+import type { AiProvider } from '../../lib/aiTranslate';
 import { genId } from '../../lib/id';
 import { exportPsd } from '../../lib/exportPsd';
 import { parsePsdFile } from '../../lib/importPsd';
@@ -159,6 +160,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [cloudStorageOpen, setCloudStorageOpen] = useState(false);
   const [automationModalOpen, setAutomationModalOpen] = useState(false);
   const [hasGeminiKey, setHasGeminiKey] = useState(false);
+  const [automationActiveProvider, setAutomationActiveProvider] = useState<AiProvider>('gemini');
   const canvasRef = useRef<StudioCanvasHandle>(null);
   const placeImageInputRef = useRef<HTMLInputElement>(null);
   const placePsdInputRef = useRef<HTMLInputElement>(null);
@@ -1531,11 +1533,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     insertColorResult: insertAiColorResult,
     detectBubbleBounds: (x, y) => canvasRef.current?.detectBubbleBounds(x, y) ?? null,
     setActivePageId,
+    setShowCleaned,
   });
 
   useEffect(() => {
     if (!automationModalOpen) return;
-    loadAiTranslationSettings().then(settings => setHasGeminiKey(!!settings?.apiKey)).catch(() => setHasGeminiKey(false));
+    loadAiTranslationSettings().then(settings => {
+      setHasGeminiKey(!!settings?.apiKey);
+      setAutomationActiveProvider(settings?.provider ?? 'gemini');
+    }).catch(() => setHasGeminiKey(false));
   }, [automationModalOpen]);
 
   function handleUpdatePlacedImage(id: string, patch: Partial<PlacedImageLayerData>) {
@@ -3478,7 +3484,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         pages={pages}
         layersByPage={layersByPage}
         hasGeminiKey={hasGeminiKey}
-        onOpenSettings={() => swalToast({ icon: 'info', title: "Open the app's Settings tab to add a Gemini API key" })}
+        activeProvider={automationActiveProvider}
+        onOpenSettings={() => swalToast({ icon: 'info', title: "Open the app's Settings tab to add or change your AI provider's API key" })}
         activePageId={activePageId}
         onJumpToPage={setActivePageId}
         runState={automationRunner.runState}
