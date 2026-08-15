@@ -1428,7 +1428,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         })
       : [];
     transformer.nodes(nodes);
-    transformer.getLayer()?.batchDraw();
+    // Deferred to the next frame rather than called synchronously here: this effect re-runs on
+    // every keystroke while typing (it depends on `layers`), and `batchDraw` synchronously drives
+    // Konva's own canvas redraw — calling it inline, in the same tick as whatever React commit
+    // triggered this effect, could race a state update still in flight elsewhere in the tree.
+    // requestAnimationFrame keeps the redraw guarantee (still happens before the next paint) while
+    // moving it off React's own commit tick.
+    const raf = requestAnimationFrame(() => transformer.getLayer()?.batchDraw());
+    return () => cancelAnimationFrame(raf);
   }, [selectionIds, activeTool, editingLayerId, layers]);
 
   // Double-clicking one of the Transformer's own resize handles auto-fits a single selected box
