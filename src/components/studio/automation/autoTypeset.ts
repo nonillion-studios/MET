@@ -125,8 +125,10 @@ export function autoTypesetBubble(bubble: TranslatedBubble, pageWidth: number, p
       ? { ...layer.text!.shadow, enabled: bubble.shadowEnabled ?? true, color: bubble.shadowColor ?? layer.text!.shadow.color }
       : layer.text!.shadow,
     rotation: bubble.rotation,
+    // `direction` only matters for point (autoWidth) text's own anchor edge — this layer is
+    // always box text (created with boxWidth/boxHeight above), so `align` alone already drives
+    // its RTL/LTR line positioning (see TextLayerData.direction's own doc comment).
     align: arabic ? 'right' : 'center',
-    direction: arabic ? 'rtl' : 'ltr',
   };
 
   let fontSize = maxFontSize;
