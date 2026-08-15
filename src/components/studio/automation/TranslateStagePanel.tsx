@@ -1,6 +1,7 @@
-import { Sparkles, FileText, PenLine, FolderSync } from 'lucide-react';
+import { Sparkles, FileText, PenLine, FolderSync, Settings as SettingsIcon } from 'lucide-react';
 import type { TranslateBranch, TranslateStageConfig } from './automationTypes';
 import { Switch, Button } from '../../ui';
+import { AI_PROVIDERS, type AiProvider } from '../../../lib/aiTranslate';
 
 interface TranslateStagePanelProps {
   config: TranslateStageConfig;
@@ -8,15 +9,20 @@ interface TranslateStagePanelProps {
   /** Opens TextEditorSyncModal — picks a Text Editor document and lets the user assign each of its
    *  own pages to a Studio page. */
   onOpenTextEditorSync: () => void;
+  /** Which provider Settings currently has configured — Translation always calls this one (see
+   *  aiSettingsStore.ts's single global provider/key slot); this stage can only override the model. */
+  activeProvider: AiProvider;
+  onOpenSettings: () => void;
 }
 
 const BRANCHES: { id: TranslateBranch; label: string; icon: typeof Sparkles; disabled?: boolean }[] = [
-  { id: 'gemini', label: 'Gemini API', icon: Sparkles },
+  { id: 'gemini', label: 'AI Provider', icon: Sparkles },
   { id: 'text-editor', label: 'From Text Editor', icon: FileText },
   { id: 'custom', label: 'Custom', icon: PenLine, disabled: true },
 ];
 
-export function TranslateStagePanel({ config, onChange, onOpenTextEditorSync }: TranslateStagePanelProps) {
+export function TranslateStagePanel({ config, onChange, onOpenTextEditorSync, activeProvider, onOpenSettings }: TranslateStagePanelProps) {
+  const providerInfo = AI_PROVIDERS.find(p => p.id === activeProvider);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -49,7 +55,25 @@ export function TranslateStagePanel({ config, onChange, onOpenTextEditorSync }: 
 
           {config.branch === 'gemini' && (
             <div className="flex flex-col gap-3">
-              <p className="text-micro text-ink-faint">Gemini reads each page's bubbles/SFX and translates them — no manual work needed, runs as part of Start Automation.</p>
+              <p className="text-micro text-ink-faint">Reads each page's bubbles/SFX and translates them — no manual work needed, runs as part of Start Automation.</p>
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                className="flex items-center gap-2 px-3 py-2 rounded-control border border-hairline hover:bg-ink/5 transition-colors text-left"
+              >
+                <SettingsIcon size={14} className="text-ink-faint shrink-0" />
+                <span className="text-ui text-ink">Using <strong>{providerInfo?.label ?? activeProvider}</strong> (configured in Settings)</span>
+              </button>
+              <label className="flex flex-col gap-1 text-micro text-ink-faint">
+                <span>Model (optional override)</span>
+                <input
+                  type="text"
+                  value={config.model}
+                  onChange={(e) => onChange({ ...config, model: e.target.value })}
+                  placeholder={providerInfo?.defaultModel ?? 'Uses the model set in Settings'}
+                  className="studio-interactive bg-ink/5 border border-hairline rounded-control px-2.5 py-1.5 text-ink text-ui font-mono"
+                />
+              </label>
               <label className="flex flex-col gap-1 text-micro text-ink-faint">
                 <span>Target language</span>
                 <input
@@ -83,10 +107,10 @@ export function TranslateStagePanel({ config, onChange, onOpenTextEditorSync }: 
           {config.branch === 'text-editor' && (
             <div className="flex flex-col gap-3">
               <p className="text-micro text-ink-faint">
-                Uses text you already translated in the Text Editor instead of having Gemini translate — Gemini's
+                Uses text you already translated in the Text Editor instead of translating again — the AI provider's
                 only job here is finding *where* each already-translated line goes on the page (it's told not to
                 translate or rewrite anything). Pick a document, then assign each of its pages to a Studio page.
-                Runs as part of Start Automation, same as the Gemini branch.
+                Runs as part of Start Automation, same as the AI Provider branch. Uses the same <strong>{providerInfo?.label ?? activeProvider}</strong> provider configured in Settings.
               </p>
               <Button variant="secondary" size="sm" onClick={onOpenTextEditorSync} className="self-start">
                 <FolderSync size={13} /> Choose chapter &amp; sync pages

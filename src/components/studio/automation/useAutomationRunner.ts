@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { swal, swalToast } from '../../../lib/swalTheme';
 import { inpaintPageWithGemini, AiInpaintError } from '../../../lib/aiInpaint';
-import { translatePageBubbles, AiTranslateBubblesError, type TranslatedBubble, type PageContext } from '../../../lib/aiTranslateBubbles';
+import { translatePageBubbles, AiTranslateBubblesError, type TranslatedBubble, type PageContext, type TranslateBubblesProvider } from '../../../lib/aiTranslateBubbles';
 import { placeTranslatedBubbles, AiPlaceBubblesError } from '../../../lib/aiPlaceBubbles';
 import { colorPageWithGemini, AiColorError } from '../../../lib/aiColor';
 import { loadAiTranslationSettings } from '../../../lib/aiSettingsStore';
+import { defaultModelFor } from '../../../lib/aiTranslate';
 import { loadAutomationRun, saveAutomationRun, clearAutomationRun } from './automationRunStore';
 import { createAutomationRunState, type AutomationConfig, type AutomationRunState, type AutomationStageKey, type TranslateStageConfig } from './automationTypes';
 import { autoTypesetPage, type DetectBubbleBoundsFn } from './autoTypeset';
@@ -20,12 +21,12 @@ import type { Page, ProcessedImage } from '../../../types';
  *  the one real page. Segments are translated sequentially, in top-to-bottom reading order, rather
  *  than in parallel — the same "don't hammer the API concurrently, and stay predictable to cancel"
  *  reasoning as the outer per-page loop. */
-async function translateLongPageBubbles(source: ProcessedImage, translate: TranslateStageConfig, apiKey: string, pageContext?: PageContext): Promise<TranslatedBubble[]> {
+async function translateLongPageBubbles(source: ProcessedImage, translate: TranslateStageConfig, providerConfig: TranslateBubblesProvider, pageContext?: PageContext): Promise<TranslatedBubble[]> {
   const img = await loadImageFromSrc(source.dataUrl);
   const segments = splitLongPage(img);
   const all: TranslatedBubble[] = [];
   for (const segment of segments) {
-    const bubbles = await translatePageBubbles(segment.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, apiKey, pageContext);
+    const bubbles = await translatePageBubbles(segment.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, providerConfig, pageContext);
     for (const b of bubbles) {
       all.push({ ...b, seedY: (segment.offsetY + b.seedY * segment.height) / source.height });
     }
@@ -48,6 +49,10 @@ export interface AutomationRunnerDeps {
    *  active, which is why the runner switches pages before calling it. */
   detectBubbleBounds: DetectBubbleBoundsFn;
   setActivePageId: (id: string) => void;
+  /** Toggles Studio's cleaned/original canvas view — the runner forces this on right before
+   *  detecting bubble bounds so `detectBubbleBounds` flood-fills the cleaned (text-removed) page,
+   *  regardless of whatever the user had toggled before starting the run. */
+  setShowCleaned: (show: boolean) => void;
 }
 
 /** Owns the Automation modal's per-page run: inpaint → translate → typeset → color (whichever
@@ -55,13 +60,13 @@ export interface AutomationRunnerDeps {
  *  paused run survives a reload. Only each stage's Gemini branch reaches this loop — "already
  *  inpainted"/Custom/"From Text Editor" are handled elsewhere (see their stage panels) with no run
  *  loop of their own. */
-export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId }: AutomationRunnerDeps) {
+export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId, setShowCleaned }: AutomationRunnerDeps) {
   const [runState, setRunState] = useState<AutomationRunState | null>(null);
   const runStateRef = useRef<AutomationRunState | null>(null);
   const cancelledRef = useRef(false);
   const confirmOpenRef = useRef(false);
-  const depsRef = useRef({ pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId });
-  depsRef.current = { pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId };
+  const depsRef = useRef({ pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId, setShowCleaned });
+  depsRef.current = { pages, showCleaned, insertInpaintLayer, insertTextLayers, insertColorResult, detectBubbleBounds, setActivePageId, setShowCleaned };
 
   const updateRunState = useCallback((next: AutomationRunState) => {
     runStateRef.current = next;
@@ -89,9 +94,22 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
     cancelledRef.current = false;
     const settings = await loadAiTranslationSettings();
     const apiKey = settings?.apiKey ?? '';
+    // Translate/"From Text Editor" reach whichever provider is configured in Settings (see
+    // aiSettingsStore.ts's single global provider/key slot) — Inpainting/Coloring stay hardcoded to
+    // Gemini's own endpoint below, since only Gemini is wired up for image editing in this app.
+    const translateProviderConfig: TranslateBubblesProvider = {
+      provider: settings?.provider ?? 'gemini',
+      apiKey,
+      model: '', // set per-call below (stage's own model override, falling back to Settings')
+      baseUrl: settings?.baseUrl,
+    };
     const { pageIds } = initial.config.inpaint;
     const { inpaint, translate, typeset, color } = initial.config;
-
+    translateProviderConfig.model = translate.model.trim() || settings?.model || defaultModelFor(translateProviderConfig.provider);
+    // Restored once the run stops/finishes so a paused/interrupted run doesn't leave the canvas
+    // stuck on cleaned view if the user had it off before starting.
+    const showCleanedBeforeRun = depsRef.current.showCleaned;
+    try {
     for (let i = initial.currentPageIndex; i < pageIds.length; i++) {
       if (cancelledRef.current) return;
       const current = runStateRef.current;
@@ -113,12 +131,15 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
         continue;
       }
 
-      const source = depsRef.current.showCleaned && page.cleaned ? page.cleaned : page.original;
+      // Inpaint and Translate always read the ORIGINAL page — the model needs the foreign-language
+      // text still present to erase or translate it. Only the Typesetting stage (bubble-bounds
+      // detection below) targets the cleaned page, since that's where the empty bubble fills are.
+      const original = page.original;
 
       try {
         let inpaintedDataUrl: string | null = null;
         if (inpaint.branch === 'gemini') {
-          inpaintedDataUrl = await inpaintPageWithGemini(source.dataUrl, inpaint.geminiPrompt, apiKey, inpaint.model);
+          inpaintedDataUrl = await inpaintPageWithGemini(original.dataUrl, inpaint.geminiPrompt, apiKey, inpaint.model);
           await depsRef.current.insertInpaintLayer(pageId, inpaintedDataUrl);
         }
 
@@ -132,18 +153,23 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
             // time, unlike the Gemini branch which discovers everything from the image alone.
             const paragraphs = translate.pageParagraphs?.[pageId] ?? [];
             const placed = paragraphs.length > 0
-              ? await placeTranslatedBubbles(source.dataUrl, paragraphs, translate.prompt, apiKey)
+              ? await placeTranslatedBubbles(original.dataUrl, paragraphs, translate.prompt, translateProviderConfig)
               : [];
             bubbles = placed.map(p => ({ ...p, text: paragraphs[p.paragraphIndex] }));
           } else {
-            bubbles = isLongPage(source.width, source.height)
-              ? await translateLongPageBubbles(source, translate, apiKey)
-              : await translatePageBubbles(source.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, apiKey);
+            bubbles = isLongPage(original.width, original.height)
+              ? await translateLongPageBubbles(original, translate, translateProviderConfig)
+              : await translatePageBubbles(original.dataUrl, translate.prompt, translate.targetLanguage, translate.blackAndWhiteOnly, translateProviderConfig);
           }
 
           if (typeset.enabled && bubbles.length > 0) {
             setStage('typeset');
-            const layers = autoTypesetPage(bubbles, source.width, source.height, depsRef.current.detectBubbleBounds, {
+            // Force the canvas onto the cleaned page (when one exists) right before flood-filling
+            // bubble bounds, regardless of the toggle the user had before starting this run — the
+            // JSON came from the original image, but it gets placed onto the cleaned one.
+            if (page.cleaned) depsRef.current.setShowCleaned(true);
+            const typesetTarget = page.cleaned ?? page.original;
+            const layers = autoTypesetPage(bubbles, typesetTarget.width, typesetTarget.height, depsRef.current.detectBubbleBounds, {
               dialogueFontFamily: typeset.dialogueFontFamily,
               sfxFontFamily: typeset.sfxFontFamily,
               color: typeset.color,
@@ -186,6 +212,9 @@ export function useAutomationRunner({ chapterId, pages, showCleaned, insertInpai
       const mins = Math.floor(elapsedMs / 60000);
       const secs = Math.round((elapsedMs % 60000) / 1000);
       swalToast({ icon: 'success', title: `Automation finished — ${pageIds.length} page${pageIds.length === 1 ? '' : 's'} in ${mins}m ${secs}s` });
+    }
+    } finally {
+      depsRef.current.setShowCleaned(showCleanedBeforeRun);
     }
   }, [chapterId, setStage, updateRunState]);
 

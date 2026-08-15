@@ -25,13 +25,17 @@ export interface TranslateStageConfig {
   branch: TranslateBranch;
   prompt: string;
   targetLanguage: string;
-  /** Tells Gemini to suggest no color info — the manga stays black & white; only relevant when the
-   *  Coloring stage is off, but kept on this stage's config since it's a translation-time hint. */
+  /** Tells the model to suggest no color info — the manga stays black & white; only relevant when
+   *  the Coloring stage is off, but kept on this stage's config since it's a translation-time hint. */
   blackAndWhiteOnly: boolean;
+  /** User-editable model id override for this stage; blank falls back to whichever provider/model
+   *  is configured in Settings (Settings also picks which provider/API key this stage calls — see
+   *  aiSettingsStore.ts's single global provider slot). */
+  model: string;
   /** Branch 'text-editor' only (TextEditorSyncModal.tsx): already-translated paragraphs from a
    *  Text Editor document, keyed by which Studio page they were manually assigned to. Injected into
-   *  Gemini's prompt (aiPlaceBubbles.ts) so it only has to find *where* each already-translated line
-   *  goes, never translate anything itself. */
+   *  the model's prompt (aiPlaceBubbles.ts) so it only has to find *where* each already-translated
+   *  line goes, never translate anything itself. */
   pageParagraphs?: Record<string, string[]>;
 }
 
@@ -92,7 +96,7 @@ export function createAutomationRunState(chapterId: string, config: AutomationCo
 }
 
 export function defaultTranslateStageConfig(): TranslateStageConfig {
-  return { enabled: false, branch: 'gemini', prompt: '', targetLanguage: 'English', blackAndWhiteOnly: true };
+  return { enabled: false, branch: 'gemini', prompt: '', targetLanguage: 'English', blackAndWhiteOnly: true, model: '' };
 }
 
 export function defaultTypesetStageConfig(): TypesetStageConfig {

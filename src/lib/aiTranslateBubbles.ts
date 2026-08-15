@@ -1,8 +1,9 @@
-/** Gemini vision call for the Automation pipeline's Translation stage — reads a manga/manhwa page
- *  and returns one structured entry per bubble/SFX instead of `aiTranslate.ts`'s plain markup, so
- *  the Typesetting stage (`autoTypeset.ts`) has enough to place and size each one without the user
- *  drawing a bubble rect by hand. Same REST shape as `aiTranslate.ts`/`aiInpaint.ts` (same
- *  `generativelanguage.googleapis.com` base, same key), just a JSON-mode request/response. */
+/** Vision call for the Automation pipeline's Translation stage — reads a manga/manhwa page and
+ *  returns one structured entry per bubble/SFX instead of `aiTranslate.ts`'s plain markup, so the
+ *  Typesetting stage (`autoTypeset.ts`) has enough to place and size each one without the user
+ *  drawing a bubble rect by hand. Reaches any of `aiTranslate.ts`'s supported providers through its
+ *  shared `callVisionProvider`, just with JSON-mode instructions instead of markup ones. */
+import { callVisionProvider, type AiProvider } from './aiTranslate';
 
 export class AiTranslateBubblesError extends Error {}
 
@@ -44,10 +45,6 @@ function parseHexColor(v: unknown): string | undefined {
   return typeof v === 'string' && HEX_COLOR_RE.test(v.trim()) ? v.trim() : undefined;
 }
 
-// 'gemini-2.0-flash' was retired by Google (confirmed live: now 404s "no longer available") — a
-// rolling alias instead of a dated snapshot, so this doesn't go stale the same way again.
-const GEMINI_TEXT_MODEL = 'gemini-flash-latest';
-
 export const AUTOMATION_DEFAULT_TRANSLATE_PROMPT = 'Translate naturally, preserving tone and any honorifics.';
 
 export interface PageContext {
@@ -77,56 +74,37 @@ function buildPrompt(prompt: string, targetLanguage: string, blackAndWhiteOnly: 
   ].filter(Boolean).join('\n');
 }
 
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) throw new AiTranslateBubblesError('Page image is not a base64 data URL.');
-  return { mimeType: match[1], base64: match[2] };
-}
-
-async function readErrorDetail(res: Response): Promise<string> {
-  const errText = await res.text().catch(() => '');
-  try {
-    const parsed = JSON.parse(errText);
-    return parsed?.error?.message || parsed?.message || errText;
-  } catch {
-    return errText;
-  }
-}
-
 function parseJsonArray(raw: string): unknown[] {
   const stripped = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
   const start = stripped.indexOf('[');
   const end = stripped.lastIndexOf(']');
-  if (start === -1 || end === -1 || end < start) throw new AiTranslateBubblesError('Gemini reply was not a JSON array.');
+  if (start === -1 || end === -1 || end < start) throw new AiTranslateBubblesError('AI reply was not a JSON array.');
   const parsed = JSON.parse(stripped.slice(start, end + 1));
-  if (!Array.isArray(parsed)) throw new AiTranslateBubblesError('Gemini reply was not a JSON array.');
+  if (!Array.isArray(parsed)) throw new AiTranslateBubblesError('AI reply was not a JSON array.');
   return parsed;
 }
 
-export async function translatePageBubbles(imageDataUrl: string, prompt: string, targetLanguage: string, blackAndWhiteOnly: boolean, apiKey: string, pageContext?: PageContext): Promise<TranslatedBubble[]> {
-  if (!apiKey) throw new AiTranslateBubblesError('No Gemini API key configured — add one in Settings.');
-  const { mimeType, base64 } = parseDataUrl(imageDataUrl);
-  const instructions = buildPrompt(prompt, targetLanguage, blackAndWhiteOnly, pageContext);
+export interface TranslateBubblesProvider {
+  provider: AiProvider;
+  apiKey: string;
+  /** Falls back to the provider's own default model when blank. */
+  model: string;
+  /** Only used by OpenAI-compatible providers — see `openAiCompatible` on AiProviderInfo. */
+  baseUrl?: string;
+}
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_TEXT_MODEL)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: instructions },
-            { inline_data: { mime_type: mimeType, data: base64 } },
-          ],
-        }],
-      }),
-    }
-  );
-  if (!res.ok) throw new AiTranslateBubblesError(`Gemini request failed (${res.status}): ${(await readErrorDetail(res)) || res.statusText}`);
-  const json = await res.json();
-  const parts = json?.candidates?.[0]?.content?.parts;
-  const text = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text ?? '').join('') : '';
+export async function translatePageBubbles(imageDataUrl: string, prompt: string, targetLanguage: string, blackAndWhiteOnly: boolean, providerConfig: TranslateBubblesProvider, pageContext?: PageContext): Promise<TranslatedBubble[]> {
+  if (!providerConfig.apiKey && providerConfig.provider !== 'ollama') throw new AiTranslateBubblesError('No API key configured for this provider — add one in Settings.');
+  const instructions = buildPrompt(prompt, targetLanguage, blackAndWhiteOnly, pageContext);
+  let text: string;
+  try {
+    text = await callVisionProvider({
+      provider: providerConfig.provider, apiKey: providerConfig.apiKey, model: providerConfig.model,
+      imageDataUrl, instructions, baseUrl: providerConfig.baseUrl,
+    });
+  } catch (err) {
+    throw new AiTranslateBubblesError(err instanceof Error ? err.message : 'Translation request failed.');
+  }
   if (!text.trim()) return [];
   return parseBubblesFromJsonText(text);
 }
