@@ -220,6 +220,11 @@ export interface TextLayerData {
    * it, which the canvas/panel surface as the ⊞ indicator rather than silently clipping.
    */
   fixedHeight?: number;
+  /** Area (box) text only, and only meaningful once `fixedHeight` is set: binary-searches fontSize
+   *  down from the layer's own `fontSize` (a ceiling, never a floor — auto-fit only shrinks) so the
+   *  laid-out content fits inside width × fixedHeight. See textLayout.ts's fitFontSizeToBox /
+   *  TextLayout.resolvedFontSize. */
+  autoFitFontSize?: boolean;
   /** Extra px between characters (Konva `letterSpacing`; canvas 2D letterSpacing on export). */
   letterSpacing: number;
   /** Drop shadow / glow — a glow is just a shadow at offset 0 with a wide blur. */

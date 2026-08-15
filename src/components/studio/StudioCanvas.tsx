@@ -2115,6 +2115,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const editingTextScreenPos = editingLayer?.text
     ? imageToScreen(editingLayer.text.x, editingLayer.text.y, { scale, pos })
     : null;
+  // Shared by the editing textarea and the floating toolbar below, both of which need the box's
+  // laid-out size/effective font size (not just its raw stored `fontSize`, which auto-fit text
+  // shrinks past) — computed once here instead of three times inline.
+  const editingLayout = editingLayer?.text ? layoutText(editingLayer.text) : null;
 
   /**
    * The Select tool's drag-a-box-over-empty-canvas object marquee. Distinct from `selection`, which
@@ -3085,13 +3089,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             // large one does), which is what was reported as text "stretching"/gaining stray line
             // breaks on resize: each spurious wrap grows the box a line taller, which looks like
             // stretching since it's happening on every keystroke/size change rather than settling.
-            width: Math.ceil((editingLayer.text.autoWidth ? layoutText(editingLayer.text).width : editingLayer.text.width) + (editingLayer.text.autoWidth ? 3 : 0)),
+            width: Math.ceil((editingLayer.text.autoWidth ? editingLayout!.width : editingLayer.text.width) + (editingLayer.text.autoWidth ? 3 : 0)),
             // No explicit height/rows means a native textarea falls back to a ~2-row default and
             // clips (overflow-hidden above was the other half of that) anything typed past it, even
             // though the underlying content is intact — this grows the box to fit the frame and any
             // typed overflow so it stays visible while editing, matching the rendered/exported state
             // (TextLayerNode.tsx / exportImage.ts) not clipping it either.
-            height: Math.max(20, editingLayer.text.fixedHeight ?? 0, layoutText(editingLayer.text).height),
+            height: Math.max(20, editingLayer.text.fixedHeight ?? 0, editingLayout!.height),
             // The browser's own textarea wrapping is UA-default word-break, which force-breaks
             // unbreakably-long tokens mid-word — layoutText()'s wrapParagraph never does that (a
             // too-long token just overflows the line instead). Normal here keeps live-typing wraps
@@ -3102,7 +3106,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             whiteSpace: editingLayer.text.autoWidth ? 'pre' : 'pre-wrap',
             overflowWrap: 'normal',
             wordBreak: 'normal',
-            fontSize: editingLayer.text.fontSize,
+            // The *resolved* size (not the raw stored ceiling) so a box with Auto-fit on shows text
+            // at the same shrunk size while typing that it renders at once editing ends.
+            fontSize: editingLayout!.resolvedFontSize,
             fontFamily: editingLayer.text.fontFamily,
             fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
             fontStyle: editingLayer.text.italic ? 'italic' : 'normal',
@@ -3117,12 +3123,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       )}
       {editingLayer?.text && (() => {
         const t = editingLayer.text!;
-        const w = t.autoWidth ? layoutText(t).width : t.width;
+        const w = t.autoWidth ? editingLayout!.width : t.width;
         // At least the frame height, but grows to the actual (now-visible-past-the-frame) content
         // height once it overflows — matches the editing textarea's own height below, so the
         // toolbar's below/above flip decision is based on the space the box really occupies on
         // screen rather than the frame alone, and never ends up positioned over the textarea.
-        const h = Math.max(t.fixedHeight ?? 0, layoutText(t).height);
+        const h = Math.max(t.fixedHeight ?? 0, editingLayout!.height);
         const boxScreenPos = imageToScreen(t.x, t.y, { scale, pos });
         return (
           <FloatingTextToolbar

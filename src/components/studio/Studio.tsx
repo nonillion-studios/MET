@@ -2199,7 +2199,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *  content it's currently holding, undoably — the height counterpart to the existing width
    *  auto-fit on a Transformer-handle dblclick (StudioCanvas.tsx), but a separate mechanism (fires
    *  on the indicator's own Konva node, not the Transformer). No-op for point text (autoWidth has
-   *  no fixedHeight concept). */
+   *  no fixedHeight concept).
+   *
+   *  Pulls in the opposite direction from `TextLayerData.autoFitFontSize` (which shrinks type to
+   *  match a *fixed* box) — with both on, `layoutText(layer.text).height` is already the
+   *  shrunk-to-fit height, so this becomes close to a no-op. A known, acceptable v1 quirk rather
+   *  than something worth reconciling. */
   function handleAutoFitTextHeight(id: string) {
     const layer = findLayer(layers, id);
     if (!layer || layer.type !== 'text' || !layer.text || layer.text.autoWidth) return;

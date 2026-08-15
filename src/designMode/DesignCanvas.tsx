@@ -516,6 +516,8 @@ export function DesignCanvas({
 
   const editingLayer = editingLayerId ? image?.layers.find(l => l.id === editingLayerId) ?? null : null;
   const editingTextScreenPos = editingLayer?.text ? imageToScreen(editingLayer.text.x, editingLayer.text.y, viewport) : null;
+  // Same "resolved size, not raw ceiling" concern as StudioCanvas.tsx's own editing textarea.
+  const editingLayout = editingLayer?.text ? layoutText(editingLayer.text) : null;
 
   const cursorClass = spaceDown ? 'cursor-grab' : activeTool === 'text' ? 'cursor-text' : isPaintTool ? 'cursor-crosshair' : 'cursor-default';
 
@@ -640,8 +642,8 @@ export function DesignCanvas({
               style={{
                 top: editingTextScreenPos.y,
                 left: editingTextScreenPos.x,
-                width: editingLayer.text.autoWidth ? Math.max(40, layoutText(editingLayer.text).width) : editingLayer.text.width,
-                fontSize: editingLayer.text.fontSize,
+                width: editingLayer.text.autoWidth ? Math.max(40, editingLayout!.width) : editingLayer.text.width,
+                fontSize: editingLayout!.resolvedFontSize,
                 fontFamily: editingLayer.text.fontFamily,
                 fontWeight: editingLayer.text.bold ? 'bold' : 'normal',
                 fontStyle: editingLayer.text.italic ? 'italic' : 'normal',

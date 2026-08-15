@@ -128,3 +128,47 @@ describe('layoutText width', () => {
     expect(layout.width).toBeCloseTo(measureRunText(text.content, style), 5);
   });
 });
+
+describe('layoutText auto-fit font size', () => {
+  const fourLines = 'Line one\nLine two\nLine three\nLine four';
+
+  it('leaves non-auto-fit text byte-identical: resolvedFontSize is the stored fontSize, overflow still happens', () => {
+    const text = makeText({ content: fourLines, fontSize: 40, fixedHeight: 60 });
+    const layout = layoutText(text);
+    expect(layout.resolvedFontSize).toBe(40);
+    expect(layout.overflowing).toBe(true);
+  });
+
+  it('adding fixedHeight alone (no autoFitFontSize) does not trigger the search', () => {
+    const text = makeText({ content: fourLines, fontSize: 40, fixedHeight: 60, autoFitFontSize: false });
+    expect(layoutText(text).resolvedFontSize).toBe(40);
+  });
+
+  it('is a no-op for point text (autoWidth), even with fixedHeight and autoFitFontSize both set', () => {
+    const text = makeText({ content: fourLines, fontSize: 40, autoWidth: true, fixedHeight: 60, autoFitFontSize: true });
+    const layout = layoutText(text);
+    expect(layout.resolvedFontSize).toBe(40);
+  });
+
+  it('search converges to a fontSize that fits — shrinks below the ceiling and clears overflow', () => {
+    const text = makeText({ content: fourLines, fontSize: 40, fixedHeight: 60, autoFitFontSize: true });
+    const layout = layoutText(text);
+    expect(layout.overflowing).toBe(false);
+    expect(layout.resolvedFontSize).toBeLessThan(40);
+    expect(layout.height).toBeLessThanOrEqual(60);
+  });
+
+  it('respects the ceiling: content that already fits at the authored fontSize never grows or shrinks', () => {
+    const text = makeText({ content: 'One short line', fontSize: 20, fixedHeight: 200, autoFitFontSize: true });
+    const layout = layoutText(text);
+    expect(layout.resolvedFontSize).toBe(20);
+    expect(layout.overflowing).toBe(false);
+  });
+
+  it('respects the floor: still overflows at the minimum size when the frame is too small for any size', () => {
+    const text = makeText({ content: fourLines, fontSize: 40, fixedHeight: 5, autoFitFontSize: true });
+    const layout = layoutText(text);
+    expect(layout.resolvedFontSize).toBe(6);
+    expect(layout.overflowing).toBe(true);
+  });
+});

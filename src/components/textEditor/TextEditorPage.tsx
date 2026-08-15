@@ -28,8 +28,8 @@ import {
 } from '../../lib/textEditorTables';
 import { markSelectionAs, stripStatusMarks, type MarkStatus } from '../../lib/textEditorMarks';
 import { pushTextEditorVersion, listTextEditorVersions, restoreTextEditorVersion, type TextEditorVersionSnapshot } from '../../lib/textEditorVersionStore';
-import { loadStoredFonts } from '../../lib/fontsStore';
-import { registerStoredFont, readFileAsDataUrl } from '../../lib/fontLoader';
+import { readFileAsDataUrl } from '../../lib/fontLoader';
+import { useRegisteredCustomFonts } from '../../hooks/useRegisteredCustomFonts';
 import { FONT_FAMILIES } from '../studio/studioTypes';
 import { TextEditorMenuBar } from './TextEditorMenuBar';
 import type { TextEditorMenuActions } from './textEditorMenuDefinitions';
@@ -453,13 +453,8 @@ export function TextEditorPage({ onSendToTyper, workspaces, activeChapterId, stu
   // Custom fonts are a page-global FontFace registration (document.fonts), but Studio's own
   // FontsPanel is what normally triggers loading them from storage — a user who opens the text
   // editor without ever opening Studio this session wouldn't otherwise have them registered.
-  const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
-  useEffect(() => {
-    loadStoredFonts().then((fonts) => {
-      fonts.forEach((f) => { registerStoredFont(f.family, f.dataUrl).catch(console.error); });
-      setCustomFontFamilies(fonts.map(f => f.family));
-    });
-  }, []);
+  // useRegisteredCustomFonts owns that load-and-register-on-mount logic (shared with FontsPanel.tsx).
+  const { familyNames: customFontFamilies } = useRegisteredCustomFonts();
 
   const activeDoc = docs.find(d => d.id === activeDocId) ?? null;
 
