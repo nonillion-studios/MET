@@ -251,7 +251,8 @@ function layoutAt(text: TextLayerData): TextLayout {
     // measuring, and this only positions a visual guide.
     firstBaselineY: text.fontSize * 0.8,
     lines: lineMetrics,
-    overflowing: !text.autoWidth && text.fixedHeight != null && naturalHeight > text.fixedHeight,
+    overflowing: !text.autoWidth && text.fixedHeight != null
+      && naturalHeight > text.fixedHeight * (text.autoFitFontSize ? AUTO_FIT_HEIGHT_BUFFER : 1),
     resolvedFontSize: text.fontSize,
   };
 }
@@ -259,6 +260,13 @@ function layoutAt(text: TextLayerData): TextLayout {
 /** Font size never searched below this — matches TextPanel's own font-size input `min`, so the
  *  ceiling (the stored `fontSize`) and the floor stay in the same visible range as manual editing. */
 const MIN_AUTO_FIT_FONT_SIZE = 6;
+
+/** Auto-fit only: 8%/4% slack so a fixed frame drawn to a curved speech-bubble's rectangular
+ *  bounding box doesn't force text to shrink tighter than the bubble's own curved edges need. Only
+ *  ever applied when `autoFitFontSize` is on (see the `overflowing` computation above and
+ *  `fitFontSizeToBox` below) — a plain fixed-height box with auto-fit off is unaffected. */
+export const AUTO_FIT_HEIGHT_BUFFER = 1.08;
+const AUTO_FIT_WIDTH_BUFFER = 1.04;
 
 /**
  * Binary-searches the largest fontSize at or below the layer's own `fontSize` (a ceiling, never a
@@ -279,7 +287,7 @@ function fitFontSizeToBox(text: TextLayerData): number {
 
   const fits = (size: number) => {
     const probe = layoutAt({ ...text, fontSize: size });
-    return !probe.overflowing && probe.width <= text.width;
+    return !probe.overflowing && probe.width <= text.width * AUTO_FIT_WIDTH_BUFFER;
   };
 
   if (fits(max)) return max;

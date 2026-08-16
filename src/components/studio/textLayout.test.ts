@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutText, measureRunText } from './textLayout';
+import { layoutText, measureRunText, AUTO_FIT_HEIGHT_BUFFER } from './textLayout';
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type TextLayerData } from './studioTypes';
 
 /** Mirrors createTextLayer's defaults (studioTypes.ts) minus x/y/width, which each test sets. */
@@ -156,7 +156,9 @@ describe('layoutText auto-fit font size', () => {
     const layout = layoutText(text);
     expect(layout.overflowing).toBe(false);
     expect(layout.resolvedFontSize).toBeLessThan(40);
-    expect(layout.height).toBeLessThanOrEqual(60);
+    // 8% buffer: auto-fit tolerates text slightly taller than the fixed frame (curved
+    // speech-bubble edges have real slack there) rather than shrinking tighter than it needs to.
+    expect(layout.height).toBeLessThanOrEqual(60 * AUTO_FIT_HEIGHT_BUFFER);
   });
 
   it('respects the ceiling: content that already fits at the authored fontSize never grows or shrinks', () => {
