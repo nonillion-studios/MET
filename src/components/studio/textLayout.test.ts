@@ -176,6 +176,46 @@ describe('layoutText auto-fit font size', () => {
   });
 });
 
+describe('layoutText bidi reordering', () => {
+  it('reorders a style-split RTL line visually while keeping runs[] in original logical/typed order', () => {
+    const arabic = 'الجملة ';
+    const latin = 'Hello';
+    // Two TextRuns (different style overrides) so paragraphsOf produces two separate LinePieces on
+    // one line, simulating a bold/italic override splitting otherwise-uniform RTL content — the
+    // actual trigger for this bug (see textLayout.ts's bidi-resolution comment).
+    const text = makeText({
+      content: arabic + latin,
+      autoWidth: true,
+      runs: [
+        { length: arabic.length },
+        { length: latin.length, bold: true },
+      ],
+    });
+    const layout = layoutText(text);
+
+    // runs[] stays in logical/typed order — critical for autoTypeset.ts's linesFromLayout, which
+    // concatenates run.text in array order to reconstruct line content.
+    expect(layout.runs.map(r => r.text)).toEqual([arabic, latin]);
+
+    // But visually, the Arabic piece (typed first, read right-to-left) sits to the RIGHT of the
+    // embedded Latin word rather than simply "after" it in typed/x order.
+    const [arabicRun, latinRun] = layout.runs;
+    expect(arabicRun.x).toBeGreaterThan(latinRun.x);
+  });
+
+  it('leaves plain Latin content completely untouched (identity fast path)', () => {
+    const text = makeText({
+      content: 'Hello World',
+      autoWidth: true,
+      runs: [{ length: 6 }, { length: 5, bold: true }],
+    });
+    const layout = layoutText(text);
+    expect(layout.runs.map(r => r.text)).toEqual(['Hello ', 'World']);
+    expect(layout.runs[0].x).toBeLessThan(layout.runs[1].x);
+    expect(layout.runs.every(r => r.drawText === undefined)).toBe(true);
+  });
+});
+
 describe('layoutText verticalAlign', () => {
   it('defaults to top (unaffected) when verticalAlign is absent', () => {
     const text = makeText({ content: 'One line', fixedHeight: 200 });

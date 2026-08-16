@@ -42,15 +42,16 @@ export function rasterizeTextLocal(text: TextLayerData, layout: TextLayout): HTM
   }
 
   for (const run of layout.runs) {
+    const drawText = run.drawText ?? run.text;
     ctx.font = runFontString(run.style);
     applyLetterSpacing(ctx, run.style.letterSpacing);
     if (text.strokeWidth > 0) {
       ctx.strokeStyle = text.strokeColor;
       ctx.lineWidth = text.strokeWidth;
-      ctx.strokeText(run.text, run.x, run.y);
+      ctx.strokeText(drawText, run.x, run.y);
     }
     ctx.fillStyle = gradientFill ?? run.style.color;
-    ctx.fillText(run.text, run.x, run.y);
+    ctx.fillText(drawText, run.x, run.y);
   }
 
   return canvas;
