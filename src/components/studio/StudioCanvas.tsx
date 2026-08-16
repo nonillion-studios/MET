@@ -21,6 +21,7 @@ import {
   type RenderNode, type ClipRun,
 } from './layerTree';
 import { layoutText } from './textLayout';
+import { useFontsReadyTick } from '../../hooks/useFontsReadyTick';
 import { screenToImage, imageToScreen } from './canvasCoords';
 import { useCanvasViewport } from './canvasViewport';
 import { reflowRunsForContent } from './textRuns';
@@ -1415,6 +1416,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     }
   }, [activeLayerId]);
 
+  // Bumps when a font finishes loading — re-renders this component (refreshing the inline
+  // `editingLayout` computation below) and re-runs the Transformer-bind effect (recomputing the
+  // bounding box from TextLayerNode's now-corrected layout) once fallback-font metrics are replaced
+  // with the real font's.
+  const fontsTick = useFontsReadyTick();
+
   // Keep the Transformer bound to every selected text/placed-image node. Konva derives the combined
   // bounding box from the node list itself, so a multi-selection needs no separate box maths.
   useEffect(() => {
@@ -1436,7 +1443,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // moving it off React's own commit tick.
     const raf = requestAnimationFrame(() => transformer.getLayer()?.batchDraw());
     return () => cancelAnimationFrame(raf);
-  }, [selectionIds, activeTool, editingLayerId, layers]);
+  }, [selectionIds, activeTool, editingLayerId, layers, fontsTick]);
 
   // Double-clicking one of the Transformer's own resize handles auto-fits a single selected box
   // (area) text layer's frame tightly to its content, matching Photoshop's bounding-box gesture.

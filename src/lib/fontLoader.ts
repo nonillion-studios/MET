@@ -16,6 +16,21 @@ export function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+const fontsReadyListeners = new Set<() => void>();
+
+/** Notifies subscribers that some font(s) in `document.fonts` just finished loading — called after
+ *  every successful FontFace registration below. Lets already-rendered text (measured/laid out
+ *  before its font was ready) recompute once real metrics are available. */
+function notifyFontsReady(): void {
+  fontsReadyListeners.forEach(listener => listener());
+}
+
+/** Subscribe to font-ready notifications; returns an unsubscribe function. See useFontsReadyTick. */
+export function subscribeFontsReady(listener: () => void): () => void {
+  fontsReadyListeners.add(listener);
+  return () => fontsReadyListeners.delete(listener);
+}
+
 function dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
   const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const binary = atob(base64);
@@ -53,6 +68,7 @@ export async function registerFontBytes(buffer: ArrayBuffer, fallbackFamily: str
   const fontFace = new FontFace(family, buffer.slice(0));
   await fontFace.load();
   document.fonts.add(fontFace);
+  notifyFontsReady();
 
   return { family, dataUrl: arrayBufferToDataUrl(buffer) };
 }
@@ -109,4 +125,5 @@ export async function registerStoredFont(family: string, dataUrl: string): Promi
   const fontFace = new FontFace(family, buffer);
   await fontFace.load();
   document.fonts.add(fontFace);
+  notifyFontsReady();
 }
