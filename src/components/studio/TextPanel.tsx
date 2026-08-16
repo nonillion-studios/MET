@@ -261,6 +261,9 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
             />
           </label>
         </div>
+        {!text.autoWidth && text.fixedHeight != null && text.autoFitFontSize && (
+          <p className="text-[10px] text-ink-faint/70 -mt-1">Size is a maximum — auto-fit shrinks it to fit the box.</p>
+        )}
 
         <label className="flex items-center gap-2 text-micro text-ink-faint">
           <span className="w-16 shrink-0">Weight</span>
@@ -384,6 +387,17 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
                 className="w-16 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
               />
             )}
+          </label>
+        )}
+        {!text.autoWidth && text.fixedHeight != null && (
+          <label className="flex items-center gap-2 text-micro text-ink-faint">
+            <input
+              type="checkbox"
+              checked={!!text.autoFitFontSize}
+              onChange={(e) => set({ autoFitFontSize: e.target.checked })}
+              className="accent-[var(--color-accent)]"
+            />
+            <span className="shrink-0">Auto-fit text to box</span>
           </label>
         )}
 

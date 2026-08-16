@@ -45,6 +45,10 @@ export interface TextLayout {
   lines: LineMetrics[];
   /** True once laid-out content exceeds `text.fixedHeight` (area text with a fixed frame only). */
   overflowing: boolean;
+  /** The fontSize this layout actually used — equal to `text.fontSize` unless `autoFitFontSize`
+   *  shrank it to fit `fixedHeight`. Callers that need the *effective* on-screen size (rather than
+   *  the stored ceiling) read this instead of `text.fontSize` — see fitFontSizeToBox below. */
+  resolvedFontSize: number;
 }
 
 /** A run sliced down to a single line, before horizontal alignment is applied. */
@@ -173,8 +177,12 @@ function wrapParagraph(pieces: LinePiece[], maxWidth: number): LinePiece[][] {
  * the box, alignment and baselines, so the two can't disagree. (They previously each did their own
  * wrapping, which is exactly how point text ended up exporting wrapped when it doesn't wrap on
  * canvas.)
+ *
+ * Takes `text.fontSize` as-is — the public `layoutText` below is what resolves `autoFitFontSize`
+ * before calling this, so `fitFontSizeToBox`'s own probing calls can reach this directly without
+ * recursing back into the auto-fit search.
  */
-export function layoutText(text: TextLayerData): TextLayout {
+function layoutAt(text: TextLayerData): TextLayout {
   const paragraphs = paragraphsOf(text);
   // Point text grows to fit and never wraps; box text wraps at its authored width.
   const lines = text.autoWidth
@@ -244,5 +252,56 @@ export function layoutText(text: TextLayerData): TextLayout {
     firstBaselineY: text.fontSize * 0.8,
     lines: lineMetrics,
     overflowing: !text.autoWidth && text.fixedHeight != null && naturalHeight > text.fixedHeight,
+    resolvedFontSize: text.fontSize,
   };
+}
+
+/** Font size never searched below this — matches TextPanel's own font-size input `min`, so the
+ *  ceiling (the stored `fontSize`) and the floor stay in the same visible range as manual editing. */
+const MIN_AUTO_FIT_FONT_SIZE = 6;
+
+/**
+ * Binary-searches the largest fontSize at or below the layer's own `fontSize` (a ceiling, never a
+ * floor — auto-fit only ever shrinks type, matching how the Text panel's numeric Size input keeps
+ * meaning as a "max size" once auto-fit is on) that lays out without overflowing `fixedHeight` or
+ * the box's `width`. Only ever called by `layoutText` below, and only when `autoFitFontSize` is on
+ * for an area (box) layer with a fixed frame — a point layer or one with no `fixedHeight` has no
+ * frame to fit against.
+ *
+ * Known v1 limitation: a run with its own explicit `fontSize` override (`TextRun.fontSize`) keeps
+ * that absolute value regardless of the search below, since `resolveRunStyle` only falls back to
+ * the layer's `fontSize` when a run has no override of its own. Auto-fit is meant for uniform-style
+ * bubble text, not layers leaning on heavy per-character size overrides.
+ */
+function fitFontSizeToBox(text: TextLayerData): number {
+  const max = text.fontSize;
+  if (max <= MIN_AUTO_FIT_FONT_SIZE) return max;
+
+  const fits = (size: number) => {
+    const probe = layoutAt({ ...text, fontSize: size });
+    return !probe.overflowing && probe.width <= text.width;
+  };
+
+  if (fits(max)) return max;
+  if (!fits(MIN_AUTO_FIT_FONT_SIZE)) return MIN_AUTO_FIT_FONT_SIZE;
+
+  let lo = MIN_AUTO_FIT_FONT_SIZE, hi = max;
+  while (hi - lo > 0.5) {
+    const mid = (lo + hi) / 2;
+    if (fits(mid)) lo = mid; else hi = mid;
+  }
+  return Math.floor(lo);
+}
+
+/**
+ * Lays a text layer out — the public entry point `TextLayerNode.tsx`, `exportImage.ts`, and every
+ * other caller in this codebase uses. Resolves `autoFitFontSize` (see `fitFontSizeToBox`) before
+ * delegating to `layoutAt`, so every caller gets the shrunk-to-fit size for free without having to
+ * know auto-fit exists; `TextLayout.resolvedFontSize` on the result exposes the effective size for
+ * callers that need it directly (e.g. an editing textarea's own CSS font-size).
+ */
+export function layoutText(text: TextLayerData): TextLayout {
+  const shouldAutoFit = !text.autoWidth && text.fixedHeight != null && !!text.autoFitFontSize;
+  const resolvedFontSize = shouldAutoFit ? fitFontSizeToBox(text) : text.fontSize;
+  return resolvedFontSize === text.fontSize ? layoutAt(text) : layoutAt({ ...text, fontSize: resolvedFontSize });
 }
