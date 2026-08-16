@@ -19,7 +19,7 @@ export const CHARACTER_STYLE_KEYS = [
 ] as const satisfies readonly (keyof TextLayerData)[];
 
 export const PARAGRAPH_STYLE_KEYS = [
-  'align', 'lineHeight', 'autoWidth',
+  'align', 'lineHeight', 'autoWidth', 'verticalAlign',
 ] as const satisfies readonly (keyof TextLayerData)[];
 
 export type CharacterStyleFields = Pick<TextLayerData, (typeof CHARACTER_STYLE_KEYS)[number]>;

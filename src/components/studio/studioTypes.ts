@@ -232,6 +232,10 @@ export interface TextLayerData {
    * it, which the canvas/panel surface as the ⊞ indicator rather than silently clipping.
    */
   fixedHeight?: number;
+  /** Area (box) text only, and only meaningful once `fixedHeight` is set: how laid-out content sits
+   *  within the frame when it's shorter than `fixedHeight`. Absent means 'top' (the pre-existing
+   *  behavior) — see textLayout.ts's layoutAt. */
+  verticalAlign?: 'top' | 'middle' | 'bottom';
   /** Area (box) text only, and only meaningful once `fixedHeight` is set: binary-searches fontSize
    *  down from the layer's own `fontSize` (a ceiling, never a floor — auto-fit only shrinks) so the
    *  laid-out content fits inside width × fixedHeight. See textLayout.ts's fitFontSizeToBox /

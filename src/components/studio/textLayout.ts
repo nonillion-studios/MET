@@ -207,13 +207,22 @@ function layoutAt(text: TextLayerData): TextLayout {
   const contentWidth = Math.max(0, ...lineWidths);
   const boxWidth = text.autoWidth ? contentWidth : text.width;
   const lineStep = text.fontSize * text.lineHeight;
+  const naturalHeight = Math.max(1, resolvedLines.length) * lineStep;
+  // Only area text with a fixed frame has slack to distribute — content taller than the frame
+  // still starts at the top and clips at the bottom, same as today, rather than being pushed
+  // partly off-screen.
+  const verticalOffset = !text.autoWidth && text.fixedHeight != null && text.verticalAlign
+    ? Math.max(0, text.verticalAlign === 'middle'
+        ? (text.fixedHeight - naturalHeight) / 2
+        : text.verticalAlign === 'bottom' ? text.fixedHeight - naturalHeight : 0)
+    : 0;
 
   const runs: PositionedRun[] = [];
   const lineMetrics: LineMetrics[] = [];
   resolvedLines.forEach((line, lineIndex) => {
     // Line height is driven by the layer's fontSize so a big run doesn't reflow the whole block —
     // matching Konva's own lineHeight behaviour, which the layer style has always defined.
-    const lineTop = lineIndex * lineStep;
+    const lineTop = lineIndex * lineStep + verticalOffset;
     lineMetrics.push({ y: lineTop, height: lineStep });
     const lineWidth = lineWidths[lineIndex];
     const align = text.lineOverrides?.[lineIndex]?.align ?? text.align;
@@ -239,17 +248,19 @@ function layoutAt(text: TextLayerData): TextLayout {
     }
   });
 
-  const naturalHeight = Math.max(1, lines.length) * lineStep;
   return {
     runs,
     // Box text can still overflow its authored width (a single token longer than the frame isn't
     // broken or clipped by wrapParagraph) — report the true rendered extent so the selection box,
     // hit-rect, and W×H readout never claim a narrower box than what's actually on screen.
     width: Math.max(boxWidth, contentWidth),
+    // The natural content height — unaffected by verticalAlign, which only repositions content
+    // within a fixed frame, not its measured size (so overflow/W×H-readout stay meaningful).
     height: naturalHeight,
     // Approximates the baseline at 80% of the em box — canvas gives no baseline metric without
-    // measuring, and this only positions a visual guide.
-    firstBaselineY: text.fontSize * 0.8,
+    // measuring, and this only positions a visual guide. Shifted by verticalOffset so it still
+    // points at the first line's actual rendered position.
+    firstBaselineY: text.fontSize * 0.8 + verticalOffset,
     lines: lineMetrics,
     overflowing: !text.autoWidth && text.fixedHeight != null
       && naturalHeight > text.fixedHeight * (text.autoFitFontSize ? AUTO_FIT_HEIGHT_BUFFER : 1),

@@ -391,6 +391,20 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
         )}
         {!text.autoWidth && text.fixedHeight != null && (
           <label className="flex items-center gap-2 text-micro text-ink-faint">
+            <span className="w-16 shrink-0">Vertical</span>
+            <select
+              value={text.verticalAlign ?? 'top'}
+              onChange={(e) => set({ verticalAlign: e.target.value as 'top' | 'middle' | 'bottom' })}
+              className="studio-interactive flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
+            >
+              <option value="top">Top</option>
+              <option value="middle">Middle</option>
+              <option value="bottom">Bottom</option>
+            </select>
+          </label>
+        )}
+        {!text.autoWidth && text.fixedHeight != null && (
+          <label className="flex items-center gap-2 text-micro text-ink-faint">
             <input
               type="checkbox"
               checked={!!text.autoFitFontSize}

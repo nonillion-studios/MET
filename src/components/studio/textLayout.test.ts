@@ -175,3 +175,62 @@ describe('layoutText auto-fit font size', () => {
     expect(layout.overflowing).toBe(true);
   });
 });
+
+describe('layoutText verticalAlign', () => {
+  it('defaults to top (unaffected) when verticalAlign is absent', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200 });
+    const layout = layoutText(text);
+    expect(layout.runs[0].y).toBe(0);
+    expect(layout.firstBaselineY).toBe(text.fontSize * 0.8);
+  });
+
+  it('top is explicitly a no-op too', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'top' });
+    expect(layoutText(text).runs[0].y).toBe(0);
+  });
+
+  it('middle centers the natural content height within fixedHeight', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'middle' });
+    const natural = layoutText({ ...text, fixedHeight: undefined }).height;
+    const layout = layoutText(text);
+    const expectedOffset = (200 - natural) / 2;
+    expect(layout.runs[0].y).toBeCloseTo(expectedOffset, 5);
+    expect(layout.firstBaselineY).toBeCloseTo(text.fontSize * 0.8 + expectedOffset, 5);
+  });
+
+  it('bottom anchors the natural content height to the frame\'s bottom edge', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'bottom' });
+    const natural = layoutText({ ...text, fixedHeight: undefined }).height;
+    const layout = layoutText(text);
+    expect(layout.runs[0].y).toBeCloseTo(200 - natural, 5);
+  });
+
+  it('clamps to 0 rather than pushing content off-screen when content overflows the frame', () => {
+    const text = makeText({
+      content: 'Line one\nLine two\nLine three\nLine four',
+      fixedHeight: 20,
+      verticalAlign: 'middle',
+    });
+    const layout = layoutText(text);
+    expect(layout.overflowing).toBe(true);
+    expect(layout.runs[0].y).toBe(0);
+  });
+
+  it('has no effect without a fixedHeight, or for point text', () => {
+    const noFrame = makeText({ content: 'One line', verticalAlign: 'middle' });
+    expect(layoutText(noFrame).runs[0].y).toBe(0);
+
+    const pointText = makeText({ content: 'One line', autoWidth: true, fixedHeight: 200, verticalAlign: 'middle' });
+    expect(layoutText(pointText).runs[0].y).toBe(0);
+  });
+
+  it('reported height stays the natural content height regardless of verticalAlign', () => {
+    const top = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'top' });
+    const middle = { ...top, verticalAlign: 'middle' as const };
+    const bottom = { ...top, verticalAlign: 'bottom' as const };
+    const naturalHeight = layoutText({ ...top, fixedHeight: undefined }).height;
+    expect(layoutText(top).height).toBe(naturalHeight);
+    expect(layoutText(middle).height).toBe(naturalHeight);
+    expect(layoutText(bottom).height).toBe(naturalHeight);
+  });
+});
