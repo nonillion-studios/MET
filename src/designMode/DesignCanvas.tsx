@@ -6,6 +6,7 @@ import { createTextLayer } from '../components/studio/studioTypes';
 import { TextLayerNode } from '../components/studio/TextLayerNode';
 import { PlacedImageLayerNode } from '../components/studio/PlacedImageLayerNode';
 import { layoutText } from '../components/studio/textLayout';
+import { useFontsReadyTick } from '../hooks/useFontsReadyTick';
 import { getOrCreateCanvasFor, clonePaintCanvas, type PaintCanvasRegistry } from '../components/studio/paint/paintCanvasRegistry';
 import { cloneSubtree } from '../components/studio/layerTree';
 import { screenToImage, imageToScreen, type CanvasViewport } from '../components/studio/canvasCoords';
@@ -133,6 +134,11 @@ export function DesignCanvas({
 
   useEffect(() => { onZoomChange?.(scale * 100); }, [scale, onZoomChange]);
 
+  // Bumps when a font finishes loading — re-runs the Transformer-bind effect below so the bounding
+  // box recomputes from TextLayerNode's now-corrected layout once fallback-font metrics are
+  // replaced with the real font's (mirrors StudioCanvas.tsx's own fix for the same race).
+  const fontsTick = useFontsReadyTick();
+
   // ── Free Transform: bind the shared Transformer to selected text/placed-image nodes ───────────
   useEffect(() => {
     const transformer = transformerRef.current;
@@ -146,7 +152,7 @@ export function DesignCanvas({
       : [];
     transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
-  }, [selectedLayerIds, activeTool, editingLayerId, image?.layers]);
+  }, [selectedLayerIds, activeTool, editingLayerId, image?.layers, fontsTick]);
 
   // ── Background fill (from the New Canvas dialog's white/black choice) ─────────────────────────
   useEffect(() => {

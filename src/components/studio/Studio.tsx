@@ -60,7 +60,7 @@ import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../.
 import JSZip from 'jszip';
 import {
   createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, createPlacedImageLayer, parseTyperScript,
-  createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
+  createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, textModeFor, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
   type PlacedImageLayerData,
   type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
 } from './studioTypes';
@@ -2169,6 +2169,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       if (patch.content && !l.text.content && patch.align === undefined && isArabicMajority(patch.content)) {
         next = { ...patch, align: 'right' };
       }
+      if (patch.autoWidth !== undefined) {
+        next = { ...next, textMode: textModeFor(patch.autoWidth) };
+      }
       return { ...l, text: { ...l.text, ...next } };
     }), historyLabel);
   }
@@ -2229,8 +2232,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   /** Cross-page text edit, for the Translation Preview panel (search/replace, status, comments). */
   function handleUpdateTextLayerOnPage(pageId: string, id: string, patch: Partial<TextLayerData>) {
+    const next = patch.autoWidth !== undefined ? { ...patch, textMode: textModeFor(patch.autoWidth) } : patch;
     updateLayersOnPage(pageId, current => updateLayer(current, id, l =>
-      l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...patch } } : l
+      l.type === 'text' && l.text ? { ...l, text: { ...l.text, ...next } } : l
     ));
   }
 
@@ -2254,7 +2258,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       // own doc comment). `fixedHeight` is meaningless for point text, so it's cleared rather than
       // left stale for a later area conversion to inherit unexpectedly.
       updateLayers(current => updateLayer(current, id, l =>
-        l.type === 'text' && l.text ? { ...l, text: { ...l.text, autoWidth: true, fixedHeight: undefined } } : l
+        l.type === 'text' && l.text ? { ...l, text: { ...l.text, autoWidth: true, textMode: 'point', fixedHeight: undefined } } : l
       ), 'Convert to Point Text');
     } else {
       // Point -> Area: seed the new frame from the text's current natural size — the same
@@ -2264,7 +2268,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       const natural = layoutText({ ...layer.text, autoWidth: true });
       updateLayers(current => updateLayer(current, id, l =>
         l.type === 'text' && l.text
-          ? { ...l, text: { ...l.text, autoWidth: false, width: natural.width, fixedHeight: natural.height } }
+          ? { ...l, text: { ...l.text, autoWidth: false, textMode: 'area', width: natural.width, fixedHeight: natural.height } }
           : l
       ), 'Convert to Area Text');
     }

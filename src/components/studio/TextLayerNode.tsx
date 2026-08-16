@@ -6,6 +6,7 @@ import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes'
 import { layoutText } from './textLayout';
 import { gradientVector } from './textGradient';
 import { rasterizeWarpedTextLocal } from './textWarpRender';
+import { useFontsReadyTick } from '../../hooks/useFontsReadyTick';
 
 interface TextLayerNodeProps {
   layer: StudioLayer;
@@ -65,7 +66,11 @@ export function TextLayerNode({
   onAutoFitHeight, onOverflowHoverChange,
 }: TextLayerNodeProps) {
   const text = layer.text!;
-  const layout = useMemo(() => layoutText(text), [text]);
+  // Recompute once a font that was still loading becomes ready — `layoutText` measures with
+  // whatever's currently in `document.fonts`, so a layer laid out before its custom font resolved
+  // would otherwise stay pinned to stale fallback-font metrics forever.
+  const fontsTick = useFontsReadyTick();
+  const layout = useMemo(() => layoutText(text), [text, fontsTick]);
   // Warp Text: re-rasterized (and re-warped) from scratch whenever the text's own content/style
   // changes, since warp settings are stored data rather than a baked image — see the `warp` field's
   // own doc comment on TextLayerData. `null` (not warped) keeps the existing per-run Konva.Text

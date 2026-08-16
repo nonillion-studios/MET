@@ -109,6 +109,15 @@ export const LAYER_TYPE_ICON: Record<StudioLayerType, LucideIcon> = {
 
 export type TextAlign = 'left' | 'center' | 'right' | 'justify';
 
+/** A readable mirror of `TextLayerData.autoWidth` ('point' === autoWidth true, 'area' === false).
+ *  `autoWidth` remains the single field layout/reflow logic (textLayout.ts, TextLayerNode.tsx)
+ *  branches on — `textMode` is kept in sync wherever `autoWidth` is written, never read for layout
+ *  decisions itself. */
+export type TextMode = 'point' | 'area';
+export function textModeFor(autoWidth: boolean): TextMode {
+  return autoWidth ? 'point' : 'area';
+}
+
 export const FONT_FAMILIES = [
   'Anime Ace', 'CC Wild Words', 'Comic Sans MS', 'Arial', 'Georgia', 'Impact',
 ];
@@ -214,6 +223,9 @@ export interface TextLayerData {
    * width=0 so a point layer keeps a usable width if it's later converted to a box.
    */
   autoWidth: boolean;
+  /** Readable mirror of `autoWidth` — see `TextMode`'s own doc comment. Not itself read by any
+   *  layout/reflow logic; `autoWidth` stays authoritative. */
+  textMode: TextMode;
   /**
    * Area (box) text only: when set, the frame stops growing at this height instead of always
    * auto-sizing to content — `textLayout.ts` reports `overflowing` once laid-out content exceeds
@@ -1066,6 +1078,7 @@ export function createTextLayer(x: number, y: number, boxWidth?: number, boxHeig
       y,
       width: boxWidth ?? 240,
       autoWidth: boxWidth === undefined,
+      textMode: textModeFor(boxWidth === undefined),
       ...(boxWidth !== undefined && boxHeight !== undefined ? { fixedHeight: boxHeight } : {}),
       letterSpacing: 0,
       shadow: { ...DEFAULT_TEXT_SHADOW },
