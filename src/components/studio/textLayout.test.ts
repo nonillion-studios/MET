@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutText, measureRunText } from './textLayout';
+import { layoutText, measureRunText, AUTO_FIT_HEIGHT_BUFFER } from './textLayout';
 import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, type TextLayerData } from './studioTypes';
 
 /** Mirrors createTextLayer's defaults (studioTypes.ts) minus x/y/width, which each test sets. */
@@ -156,7 +156,9 @@ describe('layoutText auto-fit font size', () => {
     const layout = layoutText(text);
     expect(layout.overflowing).toBe(false);
     expect(layout.resolvedFontSize).toBeLessThan(40);
-    expect(layout.height).toBeLessThanOrEqual(60);
+    // 8% buffer: auto-fit tolerates text slightly taller than the fixed frame (curved
+    // speech-bubble edges have real slack there) rather than shrinking tighter than it needs to.
+    expect(layout.height).toBeLessThanOrEqual(60 * AUTO_FIT_HEIGHT_BUFFER);
   });
 
   it('respects the ceiling: content that already fits at the authored fontSize never grows or shrinks', () => {
@@ -171,5 +173,104 @@ describe('layoutText auto-fit font size', () => {
     const layout = layoutText(text);
     expect(layout.resolvedFontSize).toBe(6);
     expect(layout.overflowing).toBe(true);
+  });
+});
+
+describe('layoutText bidi reordering', () => {
+  it('reorders a style-split RTL line visually while keeping runs[] in original logical/typed order', () => {
+    const arabic = 'الجملة ';
+    const latin = 'Hello';
+    // Two TextRuns (different style overrides) so paragraphsOf produces two separate LinePieces on
+    // one line, simulating a bold/italic override splitting otherwise-uniform RTL content — the
+    // actual trigger for this bug (see textLayout.ts's bidi-resolution comment).
+    const text = makeText({
+      content: arabic + latin,
+      autoWidth: true,
+      runs: [
+        { length: arabic.length },
+        { length: latin.length, bold: true },
+      ],
+    });
+    const layout = layoutText(text);
+
+    // runs[] stays in logical/typed order — critical for autoTypeset.ts's linesFromLayout, which
+    // concatenates run.text in array order to reconstruct line content.
+    expect(layout.runs.map(r => r.text)).toEqual([arabic, latin]);
+
+    // But visually, the Arabic piece (typed first, read right-to-left) sits to the RIGHT of the
+    // embedded Latin word rather than simply "after" it in typed/x order.
+    const [arabicRun, latinRun] = layout.runs;
+    expect(arabicRun.x).toBeGreaterThan(latinRun.x);
+  });
+
+  it('leaves plain Latin content completely untouched (identity fast path)', () => {
+    const text = makeText({
+      content: 'Hello World',
+      autoWidth: true,
+      runs: [{ length: 6 }, { length: 5, bold: true }],
+    });
+    const layout = layoutText(text);
+    expect(layout.runs.map(r => r.text)).toEqual(['Hello ', 'World']);
+    expect(layout.runs[0].x).toBeLessThan(layout.runs[1].x);
+    expect(layout.runs.every(r => r.drawText === undefined)).toBe(true);
+  });
+});
+
+describe('layoutText verticalAlign', () => {
+  it('defaults to top (unaffected) when verticalAlign is absent', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200 });
+    const layout = layoutText(text);
+    expect(layout.runs[0].y).toBe(0);
+    expect(layout.firstBaselineY).toBe(text.fontSize * 0.8);
+  });
+
+  it('top is explicitly a no-op too', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'top' });
+    expect(layoutText(text).runs[0].y).toBe(0);
+  });
+
+  it('middle centers the natural content height within fixedHeight', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'middle' });
+    const natural = layoutText({ ...text, fixedHeight: undefined }).height;
+    const layout = layoutText(text);
+    const expectedOffset = (200 - natural) / 2;
+    expect(layout.runs[0].y).toBeCloseTo(expectedOffset, 5);
+    expect(layout.firstBaselineY).toBeCloseTo(text.fontSize * 0.8 + expectedOffset, 5);
+  });
+
+  it('bottom anchors the natural content height to the frame\'s bottom edge', () => {
+    const text = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'bottom' });
+    const natural = layoutText({ ...text, fixedHeight: undefined }).height;
+    const layout = layoutText(text);
+    expect(layout.runs[0].y).toBeCloseTo(200 - natural, 5);
+  });
+
+  it('clamps to 0 rather than pushing content off-screen when content overflows the frame', () => {
+    const text = makeText({
+      content: 'Line one\nLine two\nLine three\nLine four',
+      fixedHeight: 20,
+      verticalAlign: 'middle',
+    });
+    const layout = layoutText(text);
+    expect(layout.overflowing).toBe(true);
+    expect(layout.runs[0].y).toBe(0);
+  });
+
+  it('has no effect without a fixedHeight, or for point text', () => {
+    const noFrame = makeText({ content: 'One line', verticalAlign: 'middle' });
+    expect(layoutText(noFrame).runs[0].y).toBe(0);
+
+    const pointText = makeText({ content: 'One line', autoWidth: true, fixedHeight: 200, verticalAlign: 'middle' });
+    expect(layoutText(pointText).runs[0].y).toBe(0);
+  });
+
+  it('reported height stays the natural content height regardless of verticalAlign', () => {
+    const top = makeText({ content: 'One line', fixedHeight: 200, verticalAlign: 'top' });
+    const middle = { ...top, verticalAlign: 'middle' as const };
+    const bottom = { ...top, verticalAlign: 'bottom' as const };
+    const naturalHeight = layoutText({ ...top, fixedHeight: undefined }).height;
+    expect(layoutText(top).height).toBe(naturalHeight);
+    expect(layoutText(middle).height).toBe(naturalHeight);
+    expect(layoutText(bottom).height).toBe(naturalHeight);
   });
 });

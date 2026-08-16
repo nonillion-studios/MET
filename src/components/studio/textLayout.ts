@@ -1,5 +1,6 @@
 import type { TextLayerData, TextRun } from './studioTypes';
 import { normalizeRuns, resolveRunStyle, resolveLineStyle, runFontString, type ResolvedRunStyle } from './textRuns';
+import { resolveLineBidi, wrapForcedRtl } from './textBidi';
 
 /**
  * Whether `text` reads as Arabic-script content — used to default a freshly-typed text layer to
@@ -19,6 +20,13 @@ export function isArabicMajority(text: string): boolean {
 /** One run's worth of text on one line, already positioned in the layer's local coords. */
 export interface PositionedRun {
   text: string;
+  /** Only set when it differs from `text` — the bidi-forced-direction string (see textBidi.ts's
+   *  wrapForcedRtl) actually measured/drawn for this run, so an RTL-context piece with no strong
+   *  leading character (e.g. a bare number between two Arabic words) shapes/orders correctly.
+   *  Rendering call sites must use `drawText ?? text`; `text` itself always stays the clean,
+   *  unmodified original so consumers that reconstruct logical content (autoTypeset.ts's
+   *  linesFromLayout) are unaffected. */
+  drawText?: string;
   /** Left edge of this piece, relative to the layer's x. */
   x: number;
   /** Top of the em box, relative to the layer's y — i.e. a canvas `textBaseline='top'` origin. */
@@ -58,6 +66,8 @@ interface LinePiece {
   /** Manual kern inserted before this piece (only at a real run boundary, never mid-wrap). */
   kerning: number;
   width: number;
+  /** Set only for a bidi-forced-direction piece — see PositionedRun.drawText. */
+  drawText?: string;
 }
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -202,56 +212,97 @@ function layoutAt(text: TextLayerData): TextLayout {
     });
   });
 
-  const lineWidths = resolvedLines.map(line => line.reduce((sum, p) => sum + p.kerning + p.width, 0));
+  // Bidi resolution: for each line, compute each piece's visual x-rank and, for pieces that need
+  // it, a forced-direction drawText + re-measured width (see textBidi.ts's resolveLineBidi /
+  // wrapForcedRtl). A line with no RTL-script content takes resolveLineBidi's identity fast path
+  // and this is a no-op.
+  const bidiLines = resolvedLines.map(line => {
+    const { visualRank, forceRtl } = resolveLineBidi(line);
+    if (forceRtl.size === 0) return { pieces: line, visualRank };
+    const pieces = line.map((piece, i) => {
+      if (!forceRtl.has(i)) return piece;
+      const drawText = wrapForcedRtl(piece.text);
+      return { ...piece, drawText, width: measureRunText(drawText, piece.style) };
+    });
+    return { pieces, visualRank };
+  });
+
+  const lineWidths = bidiLines.map(({ pieces }) => pieces.reduce((sum, p) => sum + p.kerning + p.width, 0));
   // Point text is as wide as its content; box text keeps its authored width so alignment has a box.
   const contentWidth = Math.max(0, ...lineWidths);
   const boxWidth = text.autoWidth ? contentWidth : text.width;
   const lineStep = text.fontSize * text.lineHeight;
+  const naturalHeight = Math.max(1, resolvedLines.length) * lineStep;
+  // Only area text with a fixed frame has slack to distribute — content taller than the frame
+  // still starts at the top and clips at the bottom, same as today, rather than being pushed
+  // partly off-screen.
+  const verticalOffset = !text.autoWidth && text.fixedHeight != null && text.verticalAlign
+    ? Math.max(0, text.verticalAlign === 'middle'
+        ? (text.fixedHeight - naturalHeight) / 2
+        : text.verticalAlign === 'bottom' ? text.fixedHeight - naturalHeight : 0)
+    : 0;
 
   const runs: PositionedRun[] = [];
   const lineMetrics: LineMetrics[] = [];
-  resolvedLines.forEach((line, lineIndex) => {
+  bidiLines.forEach(({ pieces: line, visualRank }, lineIndex) => {
     // Line height is driven by the layer's fontSize so a big run doesn't reflow the whole block —
     // matching Konva's own lineHeight behaviour, which the layer style has always defined.
-    const lineTop = lineIndex * lineStep;
+    const lineTop = lineIndex * lineStep + verticalOffset;
     lineMetrics.push({ y: lineTop, height: lineStep });
     const lineWidth = lineWidths[lineIndex];
     const align = text.lineOverrides?.[lineIndex]?.align ?? text.align;
 
-    let x = 0;
-    if (align === 'center') x = (boxWidth - lineWidth) / 2;
-    else if (align === 'right') x = boxWidth - lineWidth;
+    let boxOffset = 0;
+    if (align === 'center') boxOffset = (boxWidth - lineWidth) / 2;
+    else if (align === 'right') boxOffset = boxWidth - lineWidth;
     // 'justify' anchors left; canvas 2D has no justify and inter-word stretch isn't implemented,
     // so this matches how it's rendered rather than silently dropping the setting.
 
-    for (const piece of line) {
-      x += piece.kerning;
+    // Walk pieces in VISUAL order to accumulate each one's x-offset (bidi-correct for RTL/mixed
+    // lines, identical to typed order for plain LTR lines), but store each result back into an
+    // array indexed by the piece's ORIGINAL position — so the loop below that builds `runs[]` can
+    // keep iterating `line` in its original logical/typed order. That's what keeps `runs[]`'s array
+    // order and each run's `text` exactly as typed, which autoTypeset.ts's linesFromLayout (and any
+    // other consumer that reconstructs logical content) depends on; only the *position* changes.
+    const visualOrder = line.map((_, i) => i).sort((a, b) => visualRank[a] - visualRank[b]);
+    const xByPiece = new Array<number>(line.length);
+    let visualX = 0;
+    for (const i of visualOrder) {
+      visualX += line[i].kerning;
+      xByPiece[i] = visualX;
+      visualX += line[i].width;
+    }
+
+    line.forEach((piece, i) => {
       runs.push({
         text: piece.text,
-        x,
+        drawText: piece.drawText,
+        x: boxOffset + xByPiece[i],
         // Runs sit on a shared baseline, so a larger run's em box starts higher. baselineShift
         // then lifts (+) or drops (-) just that run.
         y: lineTop + (text.fontSize - piece.style.fontSize) - piece.style.baselineShift,
         style: piece.style,
         lineIndex,
       });
-      x += piece.width;
-    }
+    });
   });
 
-  const naturalHeight = Math.max(1, lines.length) * lineStep;
   return {
     runs,
     // Box text can still overflow its authored width (a single token longer than the frame isn't
     // broken or clipped by wrapParagraph) — report the true rendered extent so the selection box,
     // hit-rect, and W×H readout never claim a narrower box than what's actually on screen.
     width: Math.max(boxWidth, contentWidth),
+    // The natural content height — unaffected by verticalAlign, which only repositions content
+    // within a fixed frame, not its measured size (so overflow/W×H-readout stay meaningful).
     height: naturalHeight,
     // Approximates the baseline at 80% of the em box — canvas gives no baseline metric without
-    // measuring, and this only positions a visual guide.
-    firstBaselineY: text.fontSize * 0.8,
+    // measuring, and this only positions a visual guide. Shifted by verticalOffset so it still
+    // points at the first line's actual rendered position.
+    firstBaselineY: text.fontSize * 0.8 + verticalOffset,
     lines: lineMetrics,
-    overflowing: !text.autoWidth && text.fixedHeight != null && naturalHeight > text.fixedHeight,
+    overflowing: !text.autoWidth && text.fixedHeight != null
+      && naturalHeight > text.fixedHeight * (text.autoFitFontSize ? AUTO_FIT_HEIGHT_BUFFER : 1),
     resolvedFontSize: text.fontSize,
   };
 }
@@ -259,6 +310,13 @@ function layoutAt(text: TextLayerData): TextLayout {
 /** Font size never searched below this — matches TextPanel's own font-size input `min`, so the
  *  ceiling (the stored `fontSize`) and the floor stay in the same visible range as manual editing. */
 const MIN_AUTO_FIT_FONT_SIZE = 6;
+
+/** Auto-fit only: 8%/4% slack so a fixed frame drawn to a curved speech-bubble's rectangular
+ *  bounding box doesn't force text to shrink tighter than the bubble's own curved edges need. Only
+ *  ever applied when `autoFitFontSize` is on (see the `overflowing` computation above and
+ *  `fitFontSizeToBox` below) — a plain fixed-height box with auto-fit off is unaffected. */
+export const AUTO_FIT_HEIGHT_BUFFER = 1.08;
+const AUTO_FIT_WIDTH_BUFFER = 1.04;
 
 /**
  * Binary-searches the largest fontSize at or below the layer's own `fontSize` (a ceiling, never a
@@ -279,7 +337,7 @@ function fitFontSizeToBox(text: TextLayerData): number {
 
   const fits = (size: number) => {
     const probe = layoutAt({ ...text, fontSize: size });
-    return !probe.overflowing && probe.width <= text.width;
+    return !probe.overflowing && probe.width <= text.width * AUTO_FIT_WIDTH_BUFFER;
   };
 
   if (fits(max)) return max;

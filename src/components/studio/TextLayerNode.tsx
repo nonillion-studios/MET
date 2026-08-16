@@ -245,7 +245,7 @@ export function TextLayerNode({
               key={i}
               x={run.x}
               y={run.y}
-              text={run.text}
+              text={run.drawText ?? run.text}
               fontFamily={run.style.fontFamily}
               fontSize={run.style.fontSize}
               fontStyle={`${run.style.italic ? 'italic ' : ''}${run.style.fontWeight}`}
