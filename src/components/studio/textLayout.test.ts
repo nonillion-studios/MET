@@ -10,6 +10,7 @@ function makeText(overrides: Partial<TextLayerData> = {}): TextLayerData {
     y: 0,
     width: 200,
     autoWidth: false,
+    textMode: 'area',
     letterSpacing: 0,
     shadow: { ...DEFAULT_TEXT_SHADOW },
     gradient: { ...DEFAULT_TEXT_GRADIENT },

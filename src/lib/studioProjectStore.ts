@@ -1,6 +1,6 @@
 import { get, set } from 'idb-keyval';
 import { genId } from './id';
-import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, createDefaultAdjustmentData, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
+import { DEFAULT_TEXT_SHADOW, DEFAULT_TEXT_GRADIENT, createDefaultAdjustmentData, textModeFor, type StudioLayer, type TyperStyle, type TyperFolder } from '../components/studio/studioTypes';
 
 /** Bump + add a migration step in loadChapterStudioData whenever the persisted shape changes.
  *  v7 added the 'path' layer type — no backfill needed (old data simply has zero path layers).
@@ -78,6 +78,7 @@ function migrateLayer(l: SerializedStudioLayer): SerializedStudioLayer {
       text: {
         ...l.text,
         autoWidth: l.text.autoWidth ?? false,
+        textMode: l.text.textMode ?? textModeFor(l.text.autoWidth ?? false),
         letterSpacing: l.text.letterSpacing ?? 0,
         shadow: l.text.shadow ?? { ...DEFAULT_TEXT_SHADOW },
         gradient: l.text.gradient ?? { ...DEFAULT_TEXT_GRADIENT },
