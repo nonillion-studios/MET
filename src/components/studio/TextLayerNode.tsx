@@ -27,10 +27,11 @@ interface TextLayerNodeProps {
   /** Hovering the box body (not a Transformer handle, which sits on top and wins the hit-test
    *  first) vs. leaving it — drives the move-cursor StudioCanvas.tsx shows over the container. */
   onHoverChange?: (hovering: boolean) => void;
-  /** Double-clicking the ⊞ overflow indicator auto-fits the box's fixedHeight to its content —
+  /** Double-clicking the ⊞ status indicator auto-fits the box's fixedHeight to its content —
    *  undoable, separate from the Transformer-handle dblclick in StudioCanvas.tsx which only
-   *  auto-fits width. Only reachable while `layout.overflowing` is true (the indicator that calls
-   *  this doesn't render otherwise). */
+   *  auto-fits width. The indicator itself is always present on any area text with a fixed frame,
+   *  but auto-fitting an already-fitting box is harmless (it just resets fixedHeight to the same
+   *  natural height). */
   onAutoFitHeight?: () => void;
   /** Hovering the ⊞ overflow indicator itself (not the box body) — drives a pointer cursor over
    *  the canvas container, taking priority over the box-body move cursor since the indicator sits
@@ -149,27 +150,32 @@ export function TextLayerNode({
         const scaleY = node.scaleY();
         node.scaleX(1);
         node.scaleY(1);
+        const patch: Partial<TextLayerData> = text.autoWidth
+          ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
+          : {
+              width: Math.max(20, layout.width * scaleX),
+              // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
+              // one that's already explicitly fixed — a pure width-only side-handle drag
+              // (scaleY === 1) on a box that has never had an explicit height must leave
+              // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
+              // height and the reflowed extra lines would overflow instead of growing the box.
+              ...((scaleY !== 1 || text.fixedHeight != null)
+                ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+                : {}),
+            };
+        // Same permanent regression guard as onTransformEnd below — this handler is the one that
+        // actually runs continuously during a drag, so it's the more important place to catch a
+        // reintroduced fontSize-on-area-text-resize regression, not just the one-time commit.
+        if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
+          throw new Error('REGRESSION: area text resize must never modify fontSize');
+        }
         // flushSync forces the resulting width/fontSize/fixedHeight state update (and the re-layout
         // + Konva.Text attr changes it produces) to land before this handler returns, i.e. before
         // Konva's own Transformer schedules its next redraw. Without it, the scale-zero above can
         // get painted on its own first (old layout, scale already 1) — a visible snap/jump each
         // frame — because the state update would otherwise land on React's next batched flush,
         // racing Konva's own redraw scheduling instead of preceding it.
-        flushSync(() => onUpdate(
-          text.autoWidth
-            ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
-            : {
-                width: Math.max(20, layout.width * scaleX),
-                // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
-                // one that's already explicitly fixed — a pure width-only side-handle drag
-                // (scaleY === 1) on a box that has never had an explicit height must leave
-                // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
-                // height and the reflowed extra lines would overflow instead of growing the box.
-                ...((scaleY !== 1 || text.fixedHeight != null)
-                  ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
-                  : {}),
-              }
-        ));
+        flushSync(() => onUpdate(patch));
       }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
@@ -296,9 +302,11 @@ export function TextLayerNode({
         />
       ))}
 
-      {/* Overflow indicator for a fixed-height area frame — laid-out content exceeds it and is
-          actually being clipped at the bottom edge (see the inner glyph-clip Group above), not
-          just silently lost off-frame. Bottom-center, straddling the box's bottom edge, matching
+      {/* Overflow/status indicator for any fixed-height area frame — always present on area (box)
+          text once it has an explicit frame, not just once it overflows: white/blue when
+          everything fits, red/white the moment laid-out content exceeds the frame and is actually
+          being clipped at the bottom edge (see the inner glyph-clip Group above), not just
+          silently lost off-frame. Bottom-center, straddling the box's bottom edge, matching
           Photoshop's own placement. Sized in /scale units so the square reads as a fixed ~16
           on-screen px square at any zoom — this file's convention is dividing individual size/
           offset values by scale (as the W×H readout below already does), not wrapping in a
@@ -306,7 +314,7 @@ export function TextLayerNode({
           selected. A single click/tap is a deliberate no-op (cancelBubble stops it reaching the
           parent Group's own onClick/onDblClick, which would otherwise select/deselect or enter
           edit mode); a double-click/tap auto-fits the frame height to content, undoably. */}
-      {layout.overflowing && (
+      {!text.autoWidth && text.fixedHeight != null && (
         <Group
           x={Math.max(layout.width, 4) / 2}
           y={text.fixedHeight ?? layout.height}
@@ -334,8 +342,8 @@ export function TextLayerNode({
             y={-8 / scale}
             width={16 / scale}
             height={16 / scale}
-            fill="#fffbeb"
-            stroke="#78350f"
+            fill={layout.overflowing ? '#e53e3e' : '#ffffff'}
+            stroke={layout.overflowing ? '#ffffff' : '#0066cc'}
             strokeWidth={1 / scale}
           />
           <KonvaText
@@ -343,7 +351,7 @@ export function TextLayerNode({
             x={-7 / scale}
             y={-7.5 / scale}
             fontSize={14 / scale}
-            fill="#78350f"
+            fill={layout.overflowing ? '#ffffff' : '#0066cc'}
             listening={false}
           />
         </Group>

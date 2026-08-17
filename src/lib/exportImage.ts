@@ -58,9 +58,16 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
     ctx.clip();
   }
 
-  // Fixed-height area frame: the frame is an informational boundary (see the ⊞ overflow indicator),
-  // not a hard mask — content past it stays visible on export too, matching the live canvas render
-  // (TextLayerNode.tsx's inner glyph Group no longer clips either).
+  // Fixed-height area frame: TextLayerNode.tsx's inner glyph Group clips to `fixedHeight` on the
+  // live canvas (content past it is hidden, not destroyed — the ⊞ indicator flags exactly this),
+  // so export clips identically here, or a flattened image would show overflow text the editor
+  // itself never shows. Applied before the warp branch below too, since the live clip wraps the
+  // warped bitmap the same way it wraps per-run text.
+  if (!text.autoWidth && text.fixedHeight != null) {
+    ctx.beginPath();
+    ctx.rect(text.x, text.y, Math.max(layout.width, 4), text.fixedHeight);
+    ctx.clip();
+  }
 
   // Warp Text: the rasterize-in-local-space-then-warp path shared with TextLayerNode.tsx's live
   // render — shadow/gradient/stroke are already baked into that local bitmap, so this draws it
