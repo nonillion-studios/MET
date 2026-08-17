@@ -149,27 +149,32 @@ export function TextLayerNode({
         const scaleY = node.scaleY();
         node.scaleX(1);
         node.scaleY(1);
+        const patch: Partial<TextLayerData> = text.autoWidth
+          ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
+          : {
+              width: Math.max(20, layout.width * scaleX),
+              // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
+              // one that's already explicitly fixed — a pure width-only side-handle drag
+              // (scaleY === 1) on a box that has never had an explicit height must leave
+              // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
+              // height and the reflowed extra lines would overflow instead of growing the box.
+              ...((scaleY !== 1 || text.fixedHeight != null)
+                ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+                : {}),
+            };
+        // Same permanent regression guard as onTransformEnd below — this handler is the one that
+        // actually runs continuously during a drag, so it's the more important place to catch a
+        // reintroduced fontSize-on-area-text-resize regression, not just the one-time commit.
+        if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
+          throw new Error('REGRESSION: area text resize must never modify fontSize');
+        }
         // flushSync forces the resulting width/fontSize/fixedHeight state update (and the re-layout
         // + Konva.Text attr changes it produces) to land before this handler returns, i.e. before
         // Konva's own Transformer schedules its next redraw. Without it, the scale-zero above can
         // get painted on its own first (old layout, scale already 1) — a visible snap/jump each
         // frame — because the state update would otherwise land on React's next batched flush,
         // racing Konva's own redraw scheduling instead of preceding it.
-        flushSync(() => onUpdate(
-          text.autoWidth
-            ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
-            : {
-                width: Math.max(20, layout.width * scaleX),
-                // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
-                // one that's already explicitly fixed — a pure width-only side-handle drag
-                // (scaleY === 1) on a box that has never had an explicit height must leave
-                // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
-                // height and the reflowed extra lines would overflow instead of growing the box.
-                ...((scaleY !== 1 || text.fixedHeight != null)
-                  ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
-                  : {}),
-              }
-        ));
+        flushSync(() => onUpdate(patch));
       }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
