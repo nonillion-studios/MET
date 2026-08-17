@@ -267,7 +267,13 @@ test('clicking the indicator is a no-op: no resize, no content change, indicator
   await page.waitForTimeout(1500);
 
   const before = (await findTextLayers(page))[0].text!;
-  await page.mouse.click(x0 + 80, y0 + 40);
+  // Click the indicator's actual empirical position rather than an assumed (x0+80, y0+40) offset —
+  // a fixed offset is close but not always exactly on the ~16px-square hit target, and a near-miss
+  // lands on the canvas behind it instead (with the Text tool still armed from creating the box,
+  // that reads as "create a new point text layer here" rather than a real no-op).
+  const spot = await findIndicatorScreenPos(page, 'overflow');
+  expect(spot).not.toBeNull();
+  await page.mouse.click(spot!.x, spot!.y);
   await page.waitForTimeout(300);
   const after = (await findTextLayers(page))[0].text!;
 
@@ -279,7 +285,7 @@ test('clicking the indicator is a no-op: no resize, no content change, indicator
 });
 
 test('double-clicking the indicator auto-fits the frame height, undoably', async ({ page }) => {
-  const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
+  await dragCreateAreaText(page, 160, 40);
   const fh = await waitForFixedHeight(page);
   const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
   await typeIntoTextLayer(page, lines.join('\n'));
@@ -287,7 +293,11 @@ test('double-clicking the indicator auto-fits the frame height, undoably', async
   await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
   await deselect(page);
 
-  await page.mouse.dblclick(x0 + 80, y0 + 40);
+  // Double-click the indicator's actual empirical position (see the no-op test's comment on why
+  // an assumed fixed offset can miss the ~16px hit target).
+  const spot = await findIndicatorScreenPos(page, 'overflow');
+  expect(spot).not.toBeNull();
+  await page.mouse.dblclick(spot!.x, spot!.y);
   await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
     .toBeGreaterThan(fh + 5);
   await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
@@ -405,7 +415,11 @@ test('overflowing content is visually clipped at the frame bottom, but not destr
 
   // But the content itself is untouched, not deleted — re-entering edit mode and growing the box
   // taller (via the ⊞ indicator's own double-click auto-fit) reveals the same overflow text again.
-  await page.mouse.dblclick(x0 + 80, y0 + 40);
+  // Double-click the indicator's actual empirical position (see the no-op test's comment on why an
+  // assumed fixed offset can miss the ~16px hit target).
+  const spot = await findIndicatorScreenPos(page, 'overflow');
+  expect(spot).not.toBeNull();
+  await page.mouse.dblclick(spot!.x, spot!.y);
   await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
     .toBeGreaterThan(fh + 5);
   await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
