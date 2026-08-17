@@ -128,6 +128,35 @@ describe('layoutText width', () => {
     const style = { fontFamily: text.fontFamily, fontSize: text.fontSize, fontWeight: 400, color: text.color, italic: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
     expect(layout.width).toBeCloseTo(measureRunText(text.content, style), 5);
   });
+
+  it('a long sentence in a narrow box actually wraps into multiple lines, none wider than the box', () => {
+    const text = makeText({
+      content: 'hello how is everything going today my good friend',
+      width: 120,
+      autoWidth: false,
+    });
+    const layout = layoutText(text);
+    expect(layout.lines.length).toBeGreaterThan(1);
+    // Every wrapped line's own rendered width stays within the box — no single line runs past the
+    // right edge the way un-wrapped single-line text would.
+    for (const line of layout.lines) {
+      const runsOnLine = layout.runs.filter(r => r.y === line.y);
+      const lineWidth = runsOnLine.reduce((max, r) => Math.max(max, r.x + measureRunText(r.drawText ?? r.text, r.style)), 0);
+      expect(lineWidth).toBeLessThanOrEqual(text.width);
+    }
+  });
+});
+
+describe('layoutText content immutability', () => {
+  it('never mutates the content string it was given, however it wraps/overflows/auto-fits', () => {
+    const content = 'hello how is everything going today my good friend\nsecond paragraph, unchanged too';
+    const text = makeText({ content, width: 80, fixedHeight: 30, autoFitFontSize: true });
+    const before = text.content;
+    layoutText(text);
+    // Same reference, not just equal value — layoutText must not have replaced the string at all.
+    expect(text.content).toBe(before);
+    expect(text.content).toBe(content);
+  });
 });
 
 describe('layoutText auto-fit font size', () => {
