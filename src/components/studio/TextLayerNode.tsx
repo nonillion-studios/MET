@@ -27,10 +27,11 @@ interface TextLayerNodeProps {
   /** Hovering the box body (not a Transformer handle, which sits on top and wins the hit-test
    *  first) vs. leaving it — drives the move-cursor StudioCanvas.tsx shows over the container. */
   onHoverChange?: (hovering: boolean) => void;
-  /** Double-clicking the ⊞ overflow indicator auto-fits the box's fixedHeight to its content —
+  /** Double-clicking the ⊞ status indicator auto-fits the box's fixedHeight to its content —
    *  undoable, separate from the Transformer-handle dblclick in StudioCanvas.tsx which only
-   *  auto-fits width. Only reachable while `layout.overflowing` is true (the indicator that calls
-   *  this doesn't render otherwise). */
+   *  auto-fits width. The indicator itself is always present on any area text with a fixed frame,
+   *  but auto-fitting an already-fitting box is harmless (it just resets fixedHeight to the same
+   *  natural height). */
   onAutoFitHeight?: () => void;
   /** Hovering the ⊞ overflow indicator itself (not the box body) — drives a pointer cursor over
    *  the canvas container, taking priority over the box-body move cursor since the indicator sits
@@ -301,9 +302,11 @@ export function TextLayerNode({
         />
       ))}
 
-      {/* Overflow indicator for a fixed-height area frame — laid-out content exceeds it and is
-          actually being clipped at the bottom edge (see the inner glyph-clip Group above), not
-          just silently lost off-frame. Bottom-center, straddling the box's bottom edge, matching
+      {/* Overflow/status indicator for any fixed-height area frame — always present on area (box)
+          text once it has an explicit frame, not just once it overflows: white/blue when
+          everything fits, red/white the moment laid-out content exceeds the frame and is actually
+          being clipped at the bottom edge (see the inner glyph-clip Group above), not just
+          silently lost off-frame. Bottom-center, straddling the box's bottom edge, matching
           Photoshop's own placement. Sized in /scale units so the square reads as a fixed ~16
           on-screen px square at any zoom — this file's convention is dividing individual size/
           offset values by scale (as the W×H readout below already does), not wrapping in a
@@ -311,7 +314,7 @@ export function TextLayerNode({
           selected. A single click/tap is a deliberate no-op (cancelBubble stops it reaching the
           parent Group's own onClick/onDblClick, which would otherwise select/deselect or enter
           edit mode); a double-click/tap auto-fits the frame height to content, undoably. */}
-      {layout.overflowing && (
+      {!text.autoWidth && text.fixedHeight != null && (
         <Group
           x={Math.max(layout.width, 4) / 2}
           y={text.fixedHeight ?? layout.height}
@@ -339,8 +342,8 @@ export function TextLayerNode({
             y={-8 / scale}
             width={16 / scale}
             height={16 / scale}
-            fill="#fffbeb"
-            stroke="#78350f"
+            fill={layout.overflowing ? '#e53e3e' : '#ffffff'}
+            stroke={layout.overflowing ? '#ffffff' : '#0066cc'}
             strokeWidth={1 / scale}
           />
           <KonvaText
@@ -348,7 +351,7 @@ export function TextLayerNode({
             x={-7 / scale}
             y={-7.5 / scale}
             fontSize={14 / scale}
-            fill="#78350f"
+            fill={layout.overflowing ? '#ffffff' : '#0066cc'}
             listening={false}
           />
         </Group>
