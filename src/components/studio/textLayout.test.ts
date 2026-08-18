@@ -112,14 +112,16 @@ describe('layoutText width', () => {
     expect(layoutText(text).width).toBe(300);
   });
 
-  it('box text grows past its authored width when a single token cannot be wrapped to fit', () => {
+  it('an unbreakable token (no spaces of its own) wider than the box wraps character-by-character instead of overflowing', () => {
     const text = makeText({
       content: 'ThisIsOneUnbreakablyLongTokenThatCannotWrapToFitTheBox',
       width: 50,
       autoWidth: false,
     });
     const layout = layoutText(text);
-    expect(layout.width).toBeGreaterThan(50);
+    // Stays pinned to the authored width — the old behavior let this grow past it instead.
+    expect(layout.width).toBe(50);
+    expect(layout.lines.length).toBeGreaterThan(1);
   });
 
   it('point text (autoWidth true) width equals the full measured line width', () => {
@@ -144,6 +146,28 @@ describe('layoutText width', () => {
       const lineWidth = runsOnLine.reduce((max, r) => Math.max(max, r.x + measureRunText(r.drawText ?? r.text, r.style)), 0);
       expect(lineWidth).toBeLessThanOrEqual(text.width);
     }
+  });
+
+  it('a continuous string with no spaces at all still wraps into multiple lines, content preserved', () => {
+    // Mirrors the real repro: typing a long run of characters with no spaces into an area box —
+    // greedy word-wrap alone has nowhere to break this, so it must fall back to a character split.
+    const content = 'AWRARAGRGAAWERAWRARAGRGAAQWERTYUIOPASDFGHJKL';
+    const text = makeText({ content, width: 100, autoWidth: false });
+    const layout = layoutText(text);
+
+    expect(layout.width).toBe(100);
+    expect(layout.lines.length).toBeGreaterThan(1);
+
+    // Every wrapped line stays within the box, same contract as the word-wrap case above.
+    for (const line of layout.lines) {
+      const runsOnLine = layout.runs.filter(r => r.y === line.y);
+      const lineWidth = runsOnLine.reduce((max, r) => Math.max(max, r.x + measureRunText(r.drawText ?? r.text, r.style)), 0);
+      expect(lineWidth).toBeLessThanOrEqual(text.width);
+    }
+
+    // No characters dropped or duplicated at the character-split points — concatenating every
+    // run's text back in order reconstructs the original content exactly.
+    expect(layout.runs.map(r => r.text).join('')).toBe(content);
   });
 });
 
