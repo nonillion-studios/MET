@@ -1,5 +1,4 @@
 import { useMemo } from 'react';
-import { flushSync } from 'react-dom';
 import { Group, Rect, Line, Ellipse, Text as KonvaText, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
 import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes';
@@ -130,61 +129,29 @@ export function TextLayerNode({
       // each node just commits its own final position — propagating the delta by hand here would
       // double-apply it and the followers would overshoot.
       onDragEnd={(e) => onUpdate({ x: e.target.x(), y: e.target.y() })}
-      // Live reflow: fires continuously while a handle is being dragged, not just once on
-      // release. Each frame absorbs the node's current scale into real width/(height or fontSize)
-      // data (the same conversion onTransformEnd does) and immediately zeroes the scale back out,
-      // so the *next* frame's `layout` is computed from the true new size rather than a Konva
-      // visual stretch — the text actually re-wraps as you drag, instead of visibly stretching
-      // until you let go. No history label (matches the other continuous-drag controls, e.g.
-      // opacity), so this doesn't spam an undo entry per frame; only the final position/size
-      // sticks.
+      // Resize: committed ONCE, on release, not per-frame. An earlier version committed a React
+      // state update on every single `onTransform` frame (many times a second) via `flushSync` —
+      // that hot loop, called from Konva's own event dispatch (not a React SyntheticEvent), could
+      // race React's own scheduler (the same class of "Cannot update a component while rendering a
+      // different component" violation e2e/textAutoFit.spec.ts already documents as a pre-existing
+      // issue elsewhere in this app) and was observed to silently drop the resulting update instead
+      // of throwing: the live canvas would briefly reflect a new width/height, but it never reached
+      // `layersByPage`/autosave and reverted. Letting Konva show its own default scaled-stretch
+      // preview while dragging (glyphs visibly stretch, matching every other resizable layer type
+      // in this app — see PlacedImageLayerNode.tsx) and reflowing for real only once, here, trades
+      // a live-reflow-while-dragging nicety for the update actually landing.
       //
       // Point vs area text scale *different* things, matching Photoshop exactly: point text has
       // no frame of its own — resizing it *is* resizing the type, so scale converts to fontSize.
       // Area text has a real frame independent of its type size — resizing changes the box only
       // (width from scaleX, height from scaleY, becoming/updating `fixedHeight`) and reflows the
       // existing fontSize into it; the type size never moves, not even by 1px.
-      onTransform={(e) => {
-        const node = e.target as Konva.Group;
-        const scaleX = node.scaleX();
-        const scaleY = node.scaleY();
-        node.scaleX(1);
-        node.scaleY(1);
-        const patch: Partial<TextLayerData> = text.autoWidth
-          ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
-          : {
-              width: Math.max(20, layout.width * scaleX),
-              // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
-              // one that's already explicitly fixed — a pure width-only side-handle drag
-              // (scaleY === 1) on a box that has never had an explicit height must leave
-              // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
-              // height and the reflowed extra lines would overflow instead of growing the box.
-              ...((scaleY !== 1 || text.fixedHeight != null)
-                ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
-                : {}),
-            };
-        // Same permanent regression guard as onTransformEnd below — this handler is the one that
-        // actually runs continuously during a drag, so it's the more important place to catch a
-        // reintroduced fontSize-on-area-text-resize regression, not just the one-time commit.
-        if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
-          throw new Error('REGRESSION: area text resize must never modify fontSize');
-        }
-        // flushSync forces the resulting width/fontSize/fixedHeight state update (and the re-layout
-        // + Konva.Text attr changes it produces) to land before this handler returns, i.e. before
-        // Konva's own Transformer schedules its next redraw. Without it, the scale-zero above can
-        // get painted on its own first (old layout, scale already 1) — a visible snap/jump each
-        // frame — because the state update would otherwise land on React's next batched flush,
-        // racing Konva's own redraw scheduling instead of preceding it.
-        flushSync(() => onUpdate(patch));
-      }}
       onTransformEnd={(e) => {
         const node = e.target as Konva.Group;
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
         // Scale must not stay baked on the node — it's converted into width/(height or fontSize)
-        // instead, so the next layout starts from a clean transform. (Usually already 1 by this
-        // point, since onTransform above zeroes it every frame — kept here too for the rare case
-        // this fires without an intervening onTransform, e.g. a transform with no actual movement.)
+        // instead, so the next layout starts from a clean transform.
         node.scaleX(1);
         node.scaleY(1);
         const patch: Partial<TextLayerData> = {
@@ -194,7 +161,10 @@ export function TextLayerNode({
           width: Math.max(20, layout.width * scaleX),
           ...(text.autoWidth
             ? { fontSize: Math.max(6, text.fontSize * scaleY) }
-            // Same rule as `onTransform` above: don't introduce a fixed height from a width-only drag.
+            // A pure width-only side-handle drag (scaleY === 1) on a box that has never had an
+            // explicit height must leave `fixedHeight` untouched (undefined), or it would freeze
+            // the box at its pre-drag height and the reflowed extra lines would overflow instead
+            // of growing the box.
             : (scaleY !== 1 || text.fixedHeight != null)
               ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
               : {}),
@@ -208,7 +178,7 @@ export function TextLayerNode({
         if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
           throw new Error('REGRESSION: area text resize must never modify fontSize');
         }
-        flushSync(() => onUpdate(patch));
+        onUpdate(patch);
       }}
     >
       {/* Hit area + the Group's bounds, so clicking gaps between glyphs still selects the layer and
