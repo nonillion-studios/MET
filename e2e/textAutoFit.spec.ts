@@ -92,9 +92,12 @@ async function seedTextLayer(page: Page, opts: SeedTextLayerOpts = {}): Promise<
   }, { chapterId: CHAPTER_ID, content: OVERFLOWING_CONTENT, opts });
 }
 
-/** Same fill-color probe as textOverflow.spec.ts's countIndicatorFillPixels. */
-async function countIndicatorFillPixels(page: Page): Promise<number> {
-  return page.evaluate(() => {
+/** Same fill-color probe as textOverflow.spec.ts's countIndicatorFillPixels — the ⊞ status
+ *  indicator is always present on area text with a fixed frame (TextLayerNode.tsx), white/blue
+ *  (`'ok'`) while content fits and red/white (`'overflow'`) once it doesn't, rather than only
+ *  appearing when overflowing. */
+async function countIndicatorFillPixels(page: Page, kind: 'ok' | 'overflow'): Promise<number> {
+  return page.evaluate((kind) => {
     let n = 0;
     for (const c of Array.from(document.querySelectorAll('.konvajs-content canvas'))) {
       const canvas = c as HTMLCanvasElement;
@@ -102,31 +105,38 @@ async function countIndicatorFillPixels(page: Page): Promise<number> {
       if (!ctx || canvas.width === 0 || canvas.height === 0) continue;
       const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
       for (let i = 0; i < data.length; i += 4) {
-        if (data[i + 3] > 128 && data[i] > 240 && data[i + 1] > 235 && data[i + 2] > 200 && data[i + 2] < 245) n += 1;
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+        if (a <= 128) continue;
+        if (kind === 'ok') {
+          if (r > 250 && g > 250 && b > 250) n += 1;
+        } else {
+          if (r > 200 && r < 245 && g > 40 && g < 90 && b > 40 && b < 90) n += 1;
+        }
       }
     }
     return n;
-  });
+  }, kind);
 }
 
 test.beforeEach(async ({ page }) => {
   page.on('pageerror', (e) => { throw new Error(`Uncaught page error: ${e.message}`); });
 });
 
-test('without autoFitFontSize, overflowing content shows the ⊞ indicator', async ({ page }) => {
+test('without autoFitFontSize, overflowing content shows the red ⊞ indicator', async ({ page }) => {
   await seedChapter(page);
   await seedTextLayer(page, { autoFitFontSize: false });
   await page.reload();
   await navigateToStudio(page);
-  await expect.poll(() => countIndicatorFillPixels(page), { timeout: 15_000 }).toBeGreaterThan(15);
+  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
 });
 
-test('with autoFitFontSize, the same overflowing content shrinks to fit — no indicator', async ({ page }) => {
+test('with autoFitFontSize, the same overflowing content shrinks to fit — white/blue indicator, not red', async ({ page }) => {
   await seedChapter(page);
   await seedTextLayer(page, { autoFitFontSize: true });
   await page.reload();
   await navigateToStudio(page);
   // Same content/frame as the control test above; only the flag differs.
   await page.waitForTimeout(500);
-  expect(await countIndicatorFillPixels(page)).toBe(0);
+  expect(await countIndicatorFillPixels(page, 'overflow')).toBe(0);
+  expect(await countIndicatorFillPixels(page, 'ok')).toBeGreaterThan(0);
 });
