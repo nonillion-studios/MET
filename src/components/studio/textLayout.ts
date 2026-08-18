@@ -152,6 +152,26 @@ function wrapParagraph(pieces: LinePiece[], maxWidth: number): LinePiece[][] {
 
   const lineOf = (line: LinePiece[]) => line.reduce((sum, p) => sum + p.kerning + p.width, 0);
 
+  // Places a token that's still wider than maxWidth even alone on a fresh line by breaking it
+  // character by character — the fallback for an unbreakable word (no spaces of its own) that
+  // greedy word-wrap has no space to break at. Mirrors what Photoshop's own paragraph text engine
+  // does in the same situation, instead of leaving the token to overflow the box untouched.
+  const placeByCharacter = (token: string, style: ResolvedRunStyle, kerning: number) => {
+    let firstChar = true;
+    for (const ch of token) {
+      const chWidth = measureRunText(ch, style);
+      let chKerning = firstChar ? kerning : 0;
+      firstChar = false;
+      const lineEmpty = lines[lines.length - 1].length === 0;
+      if (lineWidth + chKerning + chWidth > maxWidth && !lineEmpty) {
+        lines.push([]);
+        lineWidth = 0;
+        chKerning = 0;
+      }
+      pushPiece({ text: ch, style, kerning: chKerning, width: chWidth });
+    }
+  };
+
   for (const piece of pieces) {
     // Keep the separators: splitting on /(\s+)/ lets us re-attach spaces to the preceding word.
     const tokens = piece.text.split(/(\s+)/).filter(t => t !== '');
@@ -166,15 +186,21 @@ function wrapParagraph(pieces: LinePiece[], maxWidth: number): LinePiece[][] {
       const fits = lineWidth + kerning + width <= maxWidth;
       const lineEmpty = lines[lines.length - 1].length === 0;
 
+      let effectiveKerning = kerning;
       if (!fits && !lineEmpty && !isSpace) {
         lines.push([]);
         lineWidth = 0;
-        pushPiece({ text: token, style: piece.style, kerning: 0, width });
+        effectiveKerning = 0;
+      } else if (!fits && isSpace) {
+        // A space that would overflow is dropped rather than starting a line with whitespace.
         continue;
       }
-      // A space that would overflow is dropped rather than starting a line with whitespace.
-      if (!fits && isSpace) continue;
-      pushPiece({ text: token, style: piece.style, kerning, width });
+
+      if (!isSpace && width > maxWidth) {
+        placeByCharacter(token, piece.style, effectiveKerning);
+      } else {
+        pushPiece({ text: token, style: piece.style, kerning: effectiveKerning, width });
+      }
     }
   }
   return lines;
