@@ -478,10 +478,6 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   /** Hovering a text layer's own box body (not one of the Transformer's handles, which sit on top
    *  and win the hit-test first) — drives the move-cursor over the container below. */
   const [hoveringTextBody, setHoveringTextBody] = useState(false);
-  /** Hovering a text layer's own ⊞ overflow indicator specifically — takes priority over
-   *  hoveringTextBody for cursor purposes since the indicator sits at/on the box's bottom edge,
-   *  inside the body's own hit area. */
-  const [hoveringOverflowIndicator, setHoveringOverflowIndicator] = useState(false);
   const lassoPointsRef = useRef<{ x: number; y: number }[] | null>(null);
   /** Selection to combine against and how, captured from Shift/Alt at the start of a marquee/lasso drag. */
   const combineBaseRef = useRef<Selection>(NO_SELECTION);
@@ -1427,6 +1423,13 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
+    // Skip re-binding while a transform gesture is actively in progress. Area text's live-reflow
+    // resize (TextLayerNode.tsx's onTransform) commits a state update on every drag frame, which
+    // changes `layers` — a dependency here — so without this guard, `transformer.nodes(nodes)`
+    // would re-attach the Transformer to its nodes on every single frame of the very drag it's
+    // currently tracking. Konva resets a Transformer's internal start-state on re-attach, which
+    // would fight the in-progress gesture instead of just re-deriving the (unchanged) node list.
+    if (transformer.isTransforming()) return;
     const nodes: Konva.Node[] = activeTool === 'select' && !editingLayerId
       ? selectionIds.flatMap((id): Konva.Node[] => {
           const textNode = textNodeRefs.current[id];
@@ -1455,12 +1458,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       if (selectionIds.length !== 1) return;
       const layer = findLayer(layers, selectionIds[0]);
       if (!layer || layer.type !== 'text' || !layer.text || layer.text.autoWidth) return;
+      // Doubles as the (undoable) height-fit gesture the removed ⊞ overflow indicator's own
+      // double-click used to provide — fitting width wouldn't even resolve an overflow, which is
+      // a height problem, so a double-click on a resize handle fits whichever dimension is
+      // actually wrong for the box's current state.
+      if (layoutText(layer.text).overflowing) {
+        onAutoFitTextHeight(layer.id);
+        return;
+      }
       const natural = layoutText({ ...layer.text, autoWidth: true });
       onUpdateTextLayer(layer.id, { width: Math.max(20, natural.width) });
     }
     transformer.on('dblclick dbltap', onHandleDblClick);
     return () => { transformer.off('dblclick dbltap', onHandleDblClick); };
-  }, [selectionIds, layers, onUpdateTextLayer]);
+  }, [selectionIds, layers, onUpdateTextLayer, onAutoFitTextHeight]);
 
   // Seed Select > Transform Selection's box from the current selection's bounds the moment the
   // mode is entered — not every render, or a mid-transform re-render would snap the box back.
@@ -2258,15 +2269,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   // the Select or Text tool actually able to drag it right now (both gate TextLayerNode's
   // `draggable` the same way — see the renderLeaf text branch).
   const showMoveCursor = !panning && (activeTool === 'select' || activeTool === 'text') && hoveringTextBody;
-  // Not gated on activeTool: the ⊞ indicator's click/dblclick handlers aren't tool-gated either
-  // (it's visible/interactive regardless of selection or active tool), so the cursor matches.
-  const showOverflowCursor = !panning && hoveringOverflowIndicator;
   // Photoshop convention: a closed hand while actively panning (Space-held drag or the Hand tool
   // itself mid-drag), an open hand the rest of the time the Hand tool is merely selected. Zoom
   // swaps its glyph on Alt (zoom-out) the same way the tool's own click handler already does.
   const cursorClass = panning ? 'cursor-grabbing'
     : showToolOverlay ? 'cursor-none'
-    : showOverflowCursor ? 'cursor-pointer'
     : showMoveCursor ? 'cursor-move'
     : activeTool === 'pan' ? 'cursor-grab'
     : activeTool === 'zoom' ? (altHeld ? 'cursor-zoom-out' : 'cursor-zoom-in')
@@ -2460,8 +2467,6 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             onSelectLine={onTextLineSelectionChange ? (lineIndex) => onTextLineSelectionChange({ layerId: layer.id, lineIndex }) : undefined}
             scale={scale}
             onHoverChange={setHoveringTextBody}
-            onAutoFitHeight={() => onAutoFitTextHeight(layer.id)}
-            onOverflowHoverChange={setHoveringOverflowIndicator}
           />
         )}
 
@@ -3110,15 +3115,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             // typed overflow so it stays visible while editing, matching the rendered/exported state
             // (TextLayerNode.tsx / exportImage.ts) not clipping it either.
             height: Math.max(20, editingLayer.text.fixedHeight ?? 0, editingLayout!.height),
-            // The browser's own textarea wrapping is UA-default word-break, which force-breaks
-            // unbreakably-long tokens mid-word — layoutText()'s wrapParagraph never does that (a
-            // too-long token just overflows the line instead). Normal here keeps live-typing wraps
-            // closer to what layoutText() will lay out once you exit edit mode.
+            // Area text: layoutText()'s wrapParagraph falls back to a character-by-character split
+            // for a token with no spaces of its own that's still too wide for the box (matching
+            // Photoshop's own paragraph text engine), rather than letting it overflow untouched —
+            // 'anywhere' keeps live-typing wraps in the textarea matching that in real time, instead
+            // of only snapping to the correct wrapped layout once you exit edit mode.
             // Point text never wraps by definition (see the width comment above) — 'pre' means only
             // an explicit \n breaks a line, so the box can only ever grow/shrink from real content
             // changes, never from the browser's own soft-wrap guessing differently than layoutText.
             whiteSpace: editingLayer.text.autoWidth ? 'pre' : 'pre-wrap',
-            overflowWrap: 'normal',
+            overflowWrap: editingLayer.text.autoWidth ? 'normal' : 'anywhere',
             wordBreak: 'normal',
             // The *resolved* size (not the raw stored ceiling) so a box with Auto-fit on shows text
             // at the same shrunk size while typing that it renders at once editing ends.

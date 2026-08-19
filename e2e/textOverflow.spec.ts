@@ -2,12 +2,12 @@ import { test, expect, type Page } from '@playwright/test';
 import { openStudio, readStudioStore, typeIntoTextLayer } from './studioFixture';
 
 /**
- * Status indicator (⊞) on area (fixed-height) text boxes: always present once the box has a
- * frame — white/blue while content fits, flips to red/white the moment wrapped content exceeds
- * the frame (which is also the point content actually gets clipped at the frame's bottom edge
- * rather than rendered past it) — a single click on the glyph is a no-op, a double-click
- * auto-fits the frame to content (undoably), and its on-screen footprint stays a fixed ~16px
- * regardless of zoom. See TextLayerNode.tsx / textLayout.ts / Studio.tsx's handleAutoFitTextHeight.
+ * Overflow feedback on area (fixed-height) text boxes: the box's own frame border turns red the
+ * moment wrapped content exceeds the fixed height and is actually being clipped at the bottom
+ * edge, rather than a separate floating indicator icon. Double-clicking a resize handle while the
+ * box is overflowing auto-fits its height to content instead of the usual width-fit (undoable).
+ * See TextLayerNode.tsx / textLayout.ts / Studio.tsx's handleAutoFitTextHeight /
+ * StudioCanvas.tsx's onHandleDblClick.
  */
 
 interface StoredTextLayer {
@@ -38,15 +38,12 @@ function linesToOverflow(fixedHeight: number, fontSize = 28, lineHeight = 1.15):
   return Math.ceil(fixedHeight / (fontSize * lineHeight)) + 3;
 }
 
-type IndicatorKind = 'ok' | 'overflow';
-
-/** Counts pixels matching the ⊞ indicator's fill color for the given state anywhere on the
- *  stage — white (#ffffff) when content fits, red (#e53e3e) when it overflows — distinctive
- *  colors the fixture's flat grey page (#808080) and default black text never produce, so
- *  presence/absence is a reliable global signal without knowing exact screen coordinates
+/** Counts pixels matching the overflow border's red stroke (#e53e3e) anywhere on the stage — a
+ *  distinctive color the fixture's flat grey page (#808080) and default black text never produce,
+ *  so presence/absence is a reliable global signal without knowing exact screen coordinates
  *  (mirrors studioFixture.ts's countDarkPixels, scoped to `.konvajs-content canvas`). */
-async function countIndicatorFillPixels(page: Page, kind: IndicatorKind): Promise<number> {
-  return page.evaluate((kind) => {
+async function countRedBorderPixels(page: Page): Promise<number> {
+  return page.evaluate(() => {
     let n = 0;
     for (const c of Array.from(document.querySelectorAll('.konvajs-content canvas'))) {
       const canvas = c as HTMLCanvasElement;
@@ -56,29 +53,21 @@ async function countIndicatorFillPixels(page: Page, kind: IndicatorKind): Promis
       for (let i = 0; i < data.length; i += 4) {
         const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
         if (a <= 128) continue;
-        if (kind === 'ok') {
-          if (r > 250 && g > 250 && b > 250) n += 1;
-        } else {
-          if (r > 200 && r < 245 && g > 40 && g < 90 && b > 40 && b < 90) n += 1;
-        }
+        if (r > 200 && r < 245 && g > 40 && g < 90 && b > 40 && b < 90) n += 1;
       }
     }
     return n;
-  }, kind);
+  });
 }
 
-/** Counts pixels matching a color predicate within a small *screen*-space region (a screenshot
- *  clip, decoded back into a canvas) — for positional assertions (did the indicator move with the
- *  box? is content actually clipped past the frame?) that need to check a specific spot rather
- *  than the whole stage. A per-pixel count, not an average: averaging a small ~16px feature over a
- *  wider patch dilutes it below any sane threshold once the surrounding background contributes
- *  most of the patch's area — counting matching pixels directly (same technique as
- *  countIndicatorFillPixels/studioFixture's countDarkPixels) doesn't have that problem. */
-async function countPixelsInRegion(
-  page: Page, x: number, y: number, width: number, height: number, kind: IndicatorKind | 'dark',
-): Promise<number> {
+/** Counts near-black pixels within a small *screen*-space region (a screenshot clip, decoded back
+ *  into a canvas) — for positional assertions (is content actually clipped past the frame?) that
+ *  need to check a specific spot rather than the whole stage. A per-pixel count, not an average:
+ *  averaging a small feature over a wider patch dilutes it below any sane threshold once the
+ *  surrounding background contributes most of the patch's area. */
+async function countDarkPixelsInRegion(page: Page, x: number, y: number, width: number, height: number): Promise<number> {
   const shot = await page.screenshot({ clip: { x, y, width, height } });
-  return page.evaluate(async ({ b64, kind }) => {
+  return page.evaluate(async (b64) => {
     const img = new Image();
     await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = `data:image/png;base64,${b64}`; });
     const c = document.createElement('canvas');
@@ -90,57 +79,41 @@ async function countPixelsInRegion(
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
       if (a <= 128) continue;
-      if (kind === 'ok') {
-        if (r > 250 && g > 250 && b > 250) n += 1;
-      } else if (kind === 'overflow') {
-        if (r > 200 && r < 245 && g > 40 && g < 90 && b > 40 && b < 90) n += 1;
-      } else {
-        if (r < 64 && g < 64 && b < 64) n += 1;
-      }
+      if (r < 64 && g < 64 && b < 64) n += 1;
     }
     return n;
-  }, { b64: shot.toString('base64'), kind });
+  }, shot.toString('base64'));
 }
 
-/** Finds the ⊞ indicator's actual on-screen position empirically (the centroid of its fill-color
- *  pixels on whichever stage canvas holds it), rather than computed from the drag gesture's
- *  origin/size and assumed scale math — sidesteps needing to reason about zoom/backing-store
- *  ratios at all for a positional assertion. Returns null if no indicator of that state is
- *  currently on screen. */
-async function findIndicatorScreenPos(page: Page, kind: IndicatorKind): Promise<{ x: number; y: number } | null> {
-  const canvases = page.locator('.konvajs-content canvas');
-  const count = await canvases.count();
-  for (let i = 0; i < count; i++) {
-    const el = canvases.nth(i);
-    const box = await el.boundingBox();
-    if (!box) continue;
-    const centroid = await el.evaluate((canvas: HTMLCanvasElement, kind: IndicatorKind) => {
-      const ctx = canvas.getContext('2d');
-      if (!ctx || canvas.width === 0 || canvas.height === 0) return null;
-      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      let sx = 0, sy = 0, n = 0;
-      for (let y = 0; y < canvas.height; y++) {
-        for (let x = 0; x < canvas.width; x++) {
-          const i = (y * canvas.width + x) * 4;
-          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-          if (a <= 128) continue;
-          const matches = kind === 'ok'
-            ? (r > 250 && g > 250 && b > 250)
-            : (r > 200 && r < 245 && g > 40 && g < 90 && b > 40 && b < 90);
-          if (matches) { sx += x; sy += y; n += 1; }
+/** Finds a Transformer resize handle empirically by scanning for near-white pixel clusters
+ *  (Konva's default anchor style) within a search region, and returning the one with the largest
+ *  (x+y) — i.e. bottom-right-most. Requires the layer to already be selected with the Move/Select
+ *  tool active, or no handles are rendered at all. Returns null if none found. */
+async function findBottomRightHandle(page: Page, region: { x: number; y: number; width: number; height: number }): Promise<{ x: number; y: number } | null> {
+  const shot = await page.screenshot({ clip: region });
+  const centroid = await page.evaluate(async (b64) => {
+    const img = new Image();
+    await new Promise<void>((res, rej) => { img.onload = () => res(); img.onerror = () => rej(); img.src = `data:image/png;base64,${b64}`; });
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    const { data } = ctx.getImageData(0, 0, c.width, c.height);
+    let bestScore = -Infinity, bestX = -1, bestY = -1;
+    for (let y = 0; y < c.height; y++) {
+      for (let x = 0; x < c.width; x++) {
+        const i = (y * c.width + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+        if (a > 200 && r > 245 && g > 245 && b > 245) {
+          const score = x + y;
+          if (score > bestScore) { bestScore = score; bestX = x; bestY = y; }
         }
       }
-      if (n === 0) return null;
-      return { x: sx / n, y: sy / n, backingW: canvas.width, backingH: canvas.height };
-    }, kind);
-    if (centroid) {
-      return {
-        x: box.x + (centroid.x / centroid.backingW) * box.width,
-        y: box.y + (centroid.y / centroid.backingH) * box.height,
-      };
     }
-  }
-  return null;
+    return bestX >= 0 ? { x: bestX, y: bestY } : null;
+  }, shot.toString('base64'));
+  if (!centroid) return null;
+  return { x: region.x + centroid.x, y: region.y + centroid.y };
 }
 
 /**
@@ -148,11 +121,7 @@ async function findIndicatorScreenPos(page: Page, kind: IndicatorKind): Promise<
  * `fitToScreen` centers the page within the Stage's container (confirmed by
  * typerBubbleDetect.spec.ts: "the box's center is the image's center"), so the container's own
  * center is reliably on-page at any zoom — unlike a fixed offset from the container's corner,
- * which can land in the surrounding padding once the page is smaller than the container (an
- * earlier version of this helper tried to find the page by scanning canvas pixels for its flat
- * grey fill instead; that turned out to be flaky, since `.konvajs-content` can resolve to more
- * than one canvas — e.g. Transformer/overlay chrome on its own Layer — with different pixel
- * dimensions, and picking the wrong one silently corrupted the computed rect). */
+ * which can land in the surrounding padding once the page is smaller than the container. */
 async function getPageCenter(page: Page): Promise<{ x: number; y: number }> {
   const box = (await page.locator('canvas').first().boundingBox())!;
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -161,15 +130,10 @@ async function getPageCenter(page: Page): Promise<{ x: number; y: number }> {
 /** Drags out an area (box) text layer via the Text tool, at a known origin *inside the rendered
  *  page* — a drag, not a click, so it gets a fixedHeight (StudioCanvas.tsx's onAddTextLayer
  *  boxWidth/boxHeight path). Fresh text layers auto-enter edit mode (StudioCanvas.tsx), so the
- *  caller can type straight away. Returns the drag's screen origin — the box's bottom-center in
- *  screen space right after creation is (x0 + w/2, y0 + h), regardless of the Stage's actual zoom,
- *  since the drag itself was driven in screen pixels. Origin is offset up/left from the page's
- *  center by less than a typical fit-to-screen page's half-extent, so it stays on-page. */
+ *  caller can type straight away. Returns the drag's screen origin. */
 async function dragCreateAreaText(page: Page, w: number, h: number): Promise<{ x0: number; y0: number }> {
   await page.keyboard.press('t');
   const center = await getPageCenter(page);
-  // Modest offset from center (not a corner-relative guess) — safely on-page across the range of
-  // container/page sizes this suite's viewport actually produces.
   const x0 = center.x - 40, y0 = center.y - 60;
   await page.mouse.move(x0, y0);
   await page.mouse.down();
@@ -178,10 +142,16 @@ async function dragCreateAreaText(page: Page, w: number, h: number): Promise<{ x
   return { x0, y0 };
 }
 
-/** Deselects (clicking empty canvas, well clear of where every test's box is created) so the
- *  Transformer's own handles — drawn on top and always winning the hit-test — aren't sitting on
- *  top of the indicator at the same screen point. The indicator itself renders and is interactive
- *  regardless of selection. */
+/** Switches to the Move/Select tool — the Text tool stays armed after creating a layer (by
+ *  design, for placing several boxes in a row), so a click/drag on the canvas while it's still
+ *  active creates MORE text layers instead of selecting/resizing the existing one. Resize-handle
+ *  tests need this before a Transformer handle will even render. */
+async function switchToMoveTool(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Move', exact: true }).click();
+  await page.waitForTimeout(200);
+}
+
+/** Deselects (clicking empty canvas, well clear of where every test's box is created). */
 async function deselect(page: Page): Promise<void> {
   const box = (await page.locator('canvas').first().boundingBox())!;
   await page.mouse.click(box.x + box.width - 10, box.y + box.height - 10);
@@ -198,183 +168,81 @@ test.beforeEach(async ({ page }) => {
   await page.waitForTimeout(400);
 });
 
-test('short content in a roomy box shows the white/blue (fitting) indicator, not red', async ({ page }) => {
+test('short content in a roomy box shows no red overflow border', async ({ page }) => {
   await dragCreateAreaText(page, 200, 150);
   await typeIntoTextLayer(page, 'A short line');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
-  expect(await countIndicatorFillPixels(page, 'ok')).toBeGreaterThan(0);
-  expect(await countIndicatorFillPixels(page, 'overflow')).toBe(0);
+  expect(await countRedBorderPixels(page)).toBe(0);
 });
 
-test('typing past the frame height flips the indicator to red, deleting back down flips it back', async ({ page }) => {
+test('typing past the frame height turns the border red, deleting back down clears it', async ({ page }) => {
   const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
   const fh = await waitForFixedHeight(page);
   const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
 
   await typeIntoTextLayer(page, lines.join('\n'));
   await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBeGreaterThan(0);
 
-  // Re-enter editing (double-click the box interior, well clear of the indicator/handles) and
-  // clear it back down to something short.
+  // Re-enter editing (double-click the box interior) and clear it back down to something short.
   await page.mouse.dblclick(x0 + 80, y0 + 15);
   const textarea = page.locator('textarea:not(#swal2-textarea)').first();
   await textarea.waitFor({ state: 'visible' });
-  // Click it ourselves rather than waiting on the app's own post-mount focus effect — more robust
-  // than racing that timing, and selectText()/typing need focus regardless of how it got there.
   await textarea.click();
   await textarea.selectText();
   await page.keyboard.press('Backspace');
   await page.keyboard.type('Hi');
   await page.keyboard.press('Escape');
 
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
-  await expect.poll(() => countIndicatorFillPixels(page, 'ok'), { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBe(0);
 });
 
-test('increasing font size past the threshold flips the indicator to red; decreasing flips it back', async ({ page }) => {
+test('increasing font size past the threshold turns the border red; decreasing clears it', async ({ page }) => {
   const { x0, y0 } = await dragCreateAreaText(page, 220, 60);
   await typeIntoTextLayer(page, 'One line of text');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
-  expect(await countIndicatorFillPixels(page, 'ok')).toBeGreaterThan(0);
-  expect(await countIndicatorFillPixels(page, 'overflow')).toBe(0);
+  expect(await countRedBorderPixels(page)).toBe(0);
 
   // The layer is already active (Add Text Layer sets it). Ctrl+Period/Comma step its font size —
   // grow it in a handful of steps, well beyond what a single short line at the original size
   // needed to fit the frame.
   await page.mouse.click(x0 + 80, y0 + 15);
   for (let i = 0; i < 12; i++) await page.keyboard.press('Control+Period');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBeGreaterThan(0);
 
   for (let i = 0; i < 12; i++) await page.keyboard.press('Control+Comma');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
-  await expect.poll(() => countIndicatorFillPixels(page, 'ok'), { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBe(0);
 });
 
-test('clicking the indicator is a no-op: no resize, no content change, indicator stays', async ({ page }) => {
+test('double-clicking a resize handle auto-fits the frame height when overflowing, undoably', async ({ page }) => {
   const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
   const fh = await waitForFixedHeight(page);
   const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
   await typeIntoTextLayer(page, lines.join('\n'));
   await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
-  await deselect(page);
-  // Let autosave actually flush before taking the "before" snapshot, so it reflects the real
-  // persisted state rather than a pre-typing read that the click's "after" read would then be
-  // spuriously compared against once autosave belatedly catches up.
-  await page.waitForTimeout(1500);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBeGreaterThan(0);
 
-  const before = (await findTextLayers(page))[0].text!;
-  // Click the indicator's actual empirical position rather than an assumed (x0+80, y0+40) offset —
-  // a fixed offset is close but not always exactly on the ~16px-square hit target, and a near-miss
-  // lands on the canvas behind it instead (with the Text tool still armed from creating the box,
-  // that reads as "create a new point text layer here" rather than a real no-op).
-  const spot = await findIndicatorScreenPos(page, 'overflow');
-  expect(spot).not.toBeNull();
-  await page.mouse.click(spot!.x, spot!.y);
-  await page.waitForTimeout(300);
-  const after = (await findTextLayers(page))[0].text!;
+  await switchToMoveTool(page);
+  await page.mouse.click(x0 + 20, y0 + 10);
+  await page.waitForTimeout(500);
 
-  expect(after.fixedHeight).toBe(before.fixedHeight);
-  expect(after.width).toBe(before.width);
-  expect(after.content).toBe(before.content);
-  // Still red — the click didn't consume/dismiss it either.
-  expect(await countIndicatorFillPixels(page, 'overflow')).toBeGreaterThan(15);
-});
+  const handle = await findBottomRightHandle(page, { x: x0 - 20, y: y0 - 20, width: 200, height: 100 });
+  expect(handle).not.toBeNull();
+  await page.mouse.dblclick(handle!.x, handle!.y);
 
-test('double-clicking the indicator auto-fits the frame height, undoably', async ({ page }) => {
-  await dragCreateAreaText(page, 160, 40);
-  const fh = await waitForFixedHeight(page);
-  const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
-  await typeIntoTextLayer(page, lines.join('\n'));
-  await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
-  await deselect(page);
-
-  // Double-click the indicator's actual empirical position (see the no-op test's comment on why
-  // an assumed fixed offset can miss the ~16px hit target).
-  const spot = await findIndicatorScreenPos(page, 'overflow');
-  expect(spot).not.toBeNull();
-  await page.mouse.dblclick(spot!.x, spot!.y);
   await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
     .toBeGreaterThan(fh + 5);
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
-  await expect.poll(() => countIndicatorFillPixels(page, 'ok'), { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBe(0);
 
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press('Control+z');
   await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
     .toBeCloseTo(fh, 0);
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBeGreaterThan(0);
 });
 
-test('the indicator keeps the same on-screen footprint at different zoom levels', async ({ page }) => {
-  await dragCreateAreaText(page, 160, 40);
-  const fh = await waitForFixedHeight(page);
-  const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
-  await typeIntoTextLayer(page, lines.join('\n'));
-  await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-
-  const atDefaultZoom = await countIndicatorFillPixels(page, 'overflow');
-
-  await page.keyboard.press('Control+-');
-  await page.keyboard.press('Control+-');
-  await page.waitForTimeout(300);
-  const atZoomedOut = await countIndicatorFillPixels(page, 'overflow');
-
-  await page.keyboard.press('Control+=');
-  await page.keyboard.press('Control+=');
-  await page.keyboard.press('Control+=');
-  await page.keyboard.press('Control+=');
-  await page.waitForTimeout(300);
-  const atZoomedIn = await countIndicatorFillPixels(page, 'overflow');
-
-  // If the indicator scaled with zoom, its area (and thus matching pixel count) would move by
-  // roughly the square of the zoom ratio across these steps; a fixed-screen-size indicator stays
-  // within a generous band regardless.
-  expect(atZoomedOut).toBeGreaterThan(atDefaultZoom * 0.4);
-  expect(atZoomedOut).toBeLessThan(atDefaultZoom * 2.5);
-  expect(atZoomedIn).toBeGreaterThan(atDefaultZoom * 0.4);
-  expect(atZoomedIn).toBeLessThan(atDefaultZoom * 2.5);
-});
-
-test('dragging the box body moves the indicator with it', async ({ page }) => {
-  const { x0, y0 } = await dragCreateAreaText(page, 160, 40);
-  const fh = await waitForFixedHeight(page);
-  const lines = Array.from({ length: linesToOverflow(fh) }, (_, i) => `Line ${i}`);
-  await typeIntoTextLayer(page, lines.join('\n'));
-  await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
-
-  const oldSpot = await findIndicatorScreenPos(page, 'overflow');
-  expect(oldSpot).not.toBeNull();
-
-  // Drag the box body (well clear of the indicator/handles, and clear of where the drag started
-  // creating the box, so this is unambiguously a body drag) by a small screen delta — kept small
-  // because the on-screen drag distance for a *selected* text layer in this app doesn't track the
-  // pointer 1:1 (a pre-existing characteristic of this drag path, unrelated to what this task
-  // changed), so a larger nominal delta risks carrying the box off the visible stage entirely.
-  const dx = 20, dy = 15;
-  await page.mouse.move(x0 + 30, y0 + 10);
-  await page.mouse.down();
-  await page.mouse.move(x0 + 30 + dx, y0 + 10 + dy, { steps: 10 });
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-
-  const newSpot = await findIndicatorScreenPos(page, 'overflow');
-  expect(newSpot).not.toBeNull();
-  // Checks that the indicator followed the box at all — moved a real distance, in the same
-  // direction as the drag (down and to the right) — rather than pinning down the box-drag
-  // gesture's own pixel-for-pixel precision, which isn't part of what this task changed.
-  expect(newSpot!.x - oldSpot!.x).toBeGreaterThan(5);
-  expect(newSpot!.y - oldSpot!.y).toBeGreaterThan(5);
-});
-
-test('point text never shows the status indicator, however long the content', async ({ page }) => {
+test('point text never shows a red overflow border, however long the content', async ({ page }) => {
   await page.keyboard.press('t');
   const center = await getPageCenter(page);
   await page.mouse.click(center.x, center.y);
@@ -393,8 +261,7 @@ test('point text never shows the status indicator, however long the content', as
   const layers = await findTextLayers(page);
   expect(layers[0].text!.autoWidth).toBe(true);
   expect(layers[0].text!.fixedHeight).toBeUndefined();
-  expect(await countIndicatorFillPixels(page, 'ok')).toBe(0);
-  expect(await countIndicatorFillPixels(page, 'overflow')).toBe(0);
+  expect(await countRedBorderPixels(page)).toBe(0);
 });
 
 test('overflowing content is visually clipped at the frame bottom, but not destroyed', async ({ page }) => {
@@ -403,27 +270,29 @@ test('overflowing content is visually clipped at the frame bottom, but not destr
   const lines = Array.from({ length: linesToOverflow(fh) + 5 }, () => 'XXXXXXXXXX');
   await typeIntoTextLayer(page, lines.join('\n'));
   await page.keyboard.press('Escape');
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBeGreaterThan(15);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBeGreaterThan(0);
   await deselect(page);
 
   // Well below the box's bottom edge (y0 + h), where overflow content used to paint — dark default
-  // (#000000) text on the fixture's flat grey (#808080) page. The frame is a real clip boundary now
-  // (a Konva `clip` on the glyph Group in TextLayerNode.tsx), flagged by the red ⊞ indicator above,
-  // so none of the "XXXXXXXXXX" lines past the frame paint into this band anymore.
-  const darkPixels = await countPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60, 'dark');
+  // (#000000) text on the fixture's flat grey (#808080) page. The frame is a real clip boundary
+  // (a Konva `clip` on the glyph Group in TextLayerNode.tsx), flagged by the red border above, so
+  // none of the "XXXXXXXXXX" lines past the frame paint into this band anymore.
+  const darkPixels = await countDarkPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60);
   expect(darkPixels).toBe(0);
 
-  // But the content itself is untouched, not deleted — re-entering edit mode and growing the box
-  // taller (via the ⊞ indicator's own double-click auto-fit) reveals the same overflow text again.
-  // Double-click the indicator's actual empirical position (see the no-op test's comment on why an
-  // assumed fixed offset can miss the ~16px hit target).
-  const spot = await findIndicatorScreenPos(page, 'overflow');
-  expect(spot).not.toBeNull();
-  await page.mouse.dblclick(spot!.x, spot!.y);
+  // But the content itself is untouched, not deleted — re-entering selection and growing the box
+  // taller (via a resize handle's double-click auto-fit) reveals the same overflow text again.
+  await switchToMoveTool(page);
+  await page.mouse.click(x0 + 20, y0 + 10);
+  await page.waitForTimeout(500);
+  const handle = await findBottomRightHandle(page, { x: x0 - 20, y: y0 - 20, width: 200, height: 100 });
+  expect(handle).not.toBeNull();
+  await page.mouse.dblclick(handle!.x, handle!.y);
+
   await expect.poll(async () => (await findTextLayers(page))[0]?.text?.fixedHeight, { timeout: 15_000 })
     .toBeGreaterThan(fh + 5);
-  await expect.poll(() => countIndicatorFillPixels(page, 'overflow'), { timeout: 15_000 }).toBe(0);
+  await expect.poll(() => countRedBorderPixels(page), { timeout: 15_000 }).toBe(0);
   await deselect(page);
-  const darkPixelsAfterGrow = await countPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60, 'dark');
+  const darkPixelsAfterGrow = await countDarkPixelsInRegion(page, x0, y0 + 40 + 15, 160, 60);
   expect(darkPixelsAfterGrow).toBeGreaterThan(0);
 });

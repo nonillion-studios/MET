@@ -26,16 +26,6 @@ interface TextLayerNodeProps {
   /** Hovering the box body (not a Transformer handle, which sits on top and wins the hit-test
    *  first) vs. leaving it — drives the move-cursor StudioCanvas.tsx shows over the container. */
   onHoverChange?: (hovering: boolean) => void;
-  /** Double-clicking the ⊞ status indicator auto-fits the box's fixedHeight to its content —
-   *  undoable, separate from the Transformer-handle dblclick in StudioCanvas.tsx which only
-   *  auto-fits width. The indicator itself is always present on any area text with a fixed frame,
-   *  but auto-fitting an already-fitting box is harmless (it just resets fixedHeight to the same
-   *  natural height). */
-  onAutoFitHeight?: () => void;
-  /** Hovering the ⊞ overflow indicator itself (not the box body) — drives a pointer cursor over
-   *  the canvas container, taking priority over the box-body move cursor since the indicator sits
-   *  at/on the box's bottom edge. Mirrors onHoverChange's shape. */
-  onOverflowHoverChange?: (hovering: boolean) => void;
 }
 
 /**
@@ -63,7 +53,6 @@ function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
  */
 export function TextLayerNode({
   layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate, onSelectLine, scale = 1, onHoverChange,
-  onAutoFitHeight, onOverflowHoverChange,
 }: TextLayerNodeProps) {
   const text = layer.text!;
   // Recompute once a font that was still loading becomes ready — `layoutText` measures with
@@ -129,18 +118,46 @@ export function TextLayerNode({
       // each node just commits its own final position — propagating the delta by hand here would
       // double-apply it and the followers would overshoot.
       onDragEnd={(e) => onUpdate({ x: e.target.x(), y: e.target.y() })}
-      // Resize: committed ONCE, on release, not per-frame. An earlier version committed a React
-      // state update on every single `onTransform` frame (many times a second) via `flushSync` —
-      // that hot loop, called from Konva's own event dispatch (not a React SyntheticEvent), could
-      // race React's own scheduler (the same class of "Cannot update a component while rendering a
-      // different component" violation e2e/textAutoFit.spec.ts already documents as a pre-existing
-      // issue elsewhere in this app) and was observed to silently drop the resulting update instead
-      // of throwing: the live canvas would briefly reflect a new width/height, but it never reached
-      // `layersByPage`/autosave and reverted. Letting Konva show its own default scaled-stretch
-      // preview while dragging (glyphs visibly stretch, matching every other resizable layer type
-      // in this app — see PlacedImageLayerNode.tsx) and reflowing for real only once, here, trades
-      // a live-reflow-while-dragging nicety for the update actually landing.
-      //
+      // Live reflow: fires continuously while a handle is being dragged, not just once on release,
+      // so the text actually re-wraps as you drag instead of visibly stretching until you let go.
+      // A prior version of this handler committed via `flushSync` on every frame — that hot loop,
+      // called from Konva's own event dispatch (not a React SyntheticEvent), could race React's
+      // own scheduler (the same class of "Cannot update a component while rendering a different
+      // component" violation e2e/textAutoFit.spec.ts documents as pre-existing elsewhere in this
+      // app) and was observed to silently drop the resulting update — the live canvas briefly
+      // reflected a new width/height, but it never reached `layersByPage`/autosave and reverted.
+      // `flushSync` itself (not just committing per-frame) was the trigger: a plain, ordinarily-
+      // batched `onUpdate` call here does not force a synchronous React flush mid-Konva-dispatch,
+      // so it doesn't reenter React's scheduler the way `flushSync` did. StudioCanvas.tsx's
+      // Transformer-binding effect also now skips re-attaching nodes while `transformer.
+      // isTransforming()`, so this per-frame update no longer races that rebind either.
+      onTransform={(e) => {
+        const node = e.target as Konva.Group;
+        const scaleX = node.scaleX();
+        const scaleY = node.scaleY();
+        node.scaleX(1);
+        node.scaleY(1);
+        const patch: Partial<TextLayerData> = text.autoWidth
+          ? { width: Math.max(20, layout.width * scaleX), fontSize: Math.max(6, text.fontSize * scaleY) }
+          : {
+              width: Math.max(20, layout.width * scaleX),
+              // Only patch `fixedHeight` on a drag that actually changes height (scaleY !== 1) or
+              // one that's already explicitly fixed — a pure width-only side-handle drag
+              // (scaleY === 1) on a box that has never had an explicit height must leave
+              // `fixedHeight` untouched (undefined), or it would freeze the box at its pre-drag
+              // height and the reflowed extra lines would overflow instead of growing the box.
+              ...((scaleY !== 1 || text.fixedHeight != null)
+                ? { fixedHeight: Math.max(20, (text.fixedHeight ?? layout.height) * scaleY) }
+                : {}),
+            };
+        // Same permanent regression guard as onTransformEnd below — this handler is the one that
+        // actually runs continuously during a drag, so it's the more important place to catch a
+        // reintroduced fontSize-on-area-text-resize regression, not just the one-time commit.
+        if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
+          throw new Error('REGRESSION: area text resize must never modify fontSize');
+        }
+        onUpdate(patch);
+      }}
       // Point vs area text scale *different* things, matching Photoshop exactly: point text has
       // no frame of its own — resizing it *is* resizing the type, so scale converts to fontSize.
       // Area text has a real frame independent of its type size — resizing changes the box only
@@ -272,59 +289,25 @@ export function TextLayerNode({
         />
       ))}
 
-      {/* Overflow/status indicator for any fixed-height area frame — always present on area (box)
-          text once it has an explicit frame, not just once it overflows: white/blue when
-          everything fits, red/white the moment laid-out content exceeds the frame and is actually
-          being clipped at the bottom edge (see the inner glyph-clip Group above), not just
-          silently lost off-frame. Bottom-center, straddling the box's bottom edge, matching
-          Photoshop's own placement. Sized in /scale units so the square reads as a fixed ~16
-          on-screen px square at any zoom — this file's convention is dividing individual size/
-          offset values by scale (as the W×H readout below already does), not wrapping in a
-          counter-scaled Group. Not gated on `selected`: visible whether or not the layer is
-          selected. A single click/tap is a deliberate no-op (cancelBubble stops it reaching the
-          parent Group's own onClick/onDblClick, which would otherwise select/deselect or enter
-          edit mode); a double-click/tap auto-fits the frame height to content, undoably. */}
-      {!text.autoWidth && text.fixedHeight != null && (
-        <Group
-          x={Math.max(layout.width, 4) / 2}
-          y={text.fixedHeight ?? layout.height}
-          onClick={(e) => {
-            e.cancelBubble = true;
-            e.evt?.preventDefault();
-            e.evt?.stopPropagation();
-            // TODO: text threading — clicking ⊞ will link this box to another text box
-            //       so overflow content flows into the linked box automatically.
-          }}
-          onTap={(e) => {
-            e.cancelBubble = true;
-            e.evt?.preventDefault();
-            e.evt?.stopPropagation();
-            // TODO: text threading — clicking ⊞ will link this box to another text box
-            //       so overflow content flows into the linked box automatically.
-          }}
-          onDblClick={(e) => { e.cancelBubble = true; onAutoFitHeight?.(); }}
-          onDblTap={(e) => { e.cancelBubble = true; onAutoFitHeight?.(); }}
-          onMouseEnter={() => onOverflowHoverChange?.(true)}
-          onMouseLeave={() => onOverflowHoverChange?.(false)}
-        >
-          <Rect
-            x={-8 / scale}
-            y={-8 / scale}
-            width={16 / scale}
-            height={16 / scale}
-            fill={layout.overflowing ? '#e53e3e' : '#ffffff'}
-            stroke={layout.overflowing ? '#ffffff' : '#0066cc'}
-            strokeWidth={1 / scale}
-          />
-          <KonvaText
-            text="⊞"
-            x={-7 / scale}
-            y={-7.5 / scale}
-            fontSize={14 / scale}
-            fill={layout.overflowing ? '#ffffff' : '#0066cc'}
-            listening={false}
-          />
-        </Group>
+      {/* Overflow indicator: the box's own frame border turns red the moment laid-out content
+          exceeds it and is actually being clipped at the bottom edge (see the inner glyph-clip
+          Group above), not just silently lost off-frame — invisible otherwise (the Transformer's
+          own selection outline already shows a normal border while selected; this only adds a
+          border when there's something to flag). Not gated on `selected`: visible whether or not
+          the layer is selected, so overflow is obvious at a glance while working the page.
+          Non-interactive — auto-fitting the frame height to content is reachable by
+          double-clicking a resize handle while the box is selected (see StudioCanvas.tsx's
+          onHandleDblClick, which fits height instead of width specifically when overflowing). */}
+      {!text.autoWidth && text.fixedHeight != null && layout.overflowing && (
+        <Rect
+          x={0}
+          y={0}
+          width={Math.max(layout.width, 4)}
+          height={text.fixedHeight}
+          stroke="#e53e3e"
+          strokeWidth={2 / scale}
+          listening={false}
+        />
       )}
 
       {/* W×H readout while selected (not mid-edit, not mid-drag — the live drag has its own
