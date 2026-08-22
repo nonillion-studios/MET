@@ -201,11 +201,15 @@ export function TextLayerNode({
       {/* Hit area + the Group's bounds, so clicking gaps between glyphs still selects the layer and
           the Transformer frames the text box rather than the glyph extents. A `transparent` fill is
           still drawn to the hit canvas (Konva substitutes its own colour key there), so this is
-          invisible but clickable. */}
+          invisible but clickable. Height uses `text.fixedHeight ?? layout.height` — the same
+          formula the W×H readout and the overflow border below already use — not plain
+          `layout.height`: those only diverge once the box is overflowing (natural content height
+          exceeds the fixed frame), which used to leave the Transformer's own selection outline
+          (bound to this rect) extending past the red overflow border into the clipped-off zone. */}
       <Rect
         name={TEXT_HIT_NAME}
         width={Math.max(layout.width, 4)}
-        height={Math.max(layout.height, 4)}
+        height={Math.max(!text.autoWidth ? (text.fixedHeight ?? layout.height) : layout.height, 4)}
         fill="transparent"
         onMouseEnter={() => onHoverChange?.(true)}
         onMouseLeave={() => onHoverChange?.(false)}
