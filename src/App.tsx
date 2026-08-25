@@ -26,7 +26,6 @@ import { MusicPlayerVisibilityProvider } from './components/musicPlayer/MusicPla
 import { Studio } from './components/studio/Studio';
 import { StudioBuildTransition } from './components/studio/StudioBuildTransition';
 import { TextEditorPage } from './components/textEditor/TextEditorPage';
-import { DesignMode } from './designMode/DesignMode';
 import type { StudioSessionRow } from './lib/studioCollab';
 import { applyTyperInsertMode, type TyperSendRequest } from './lib/typerBridge';
 import { loadChapterStudioData, saveChapterStudioData, createEmptyStudioData } from './lib/studioProjectStore';
@@ -902,12 +901,6 @@ export default function App() {
                 onOpenStudio={() => setActiveNavigationTab('library')}
                 onOpenSettings={() => setActiveNavigationTab('settings')}
               />
-            </div>
-          )}
-
-          {activeNavigationTab === 'design' && (
-            <div className="fixed inset-0 lg:relative lg:inset-auto flex flex-col bg-[#e5e7eb] dark:bg-[#1e1e1e] lg:rounded-2xl lg:overflow-hidden lg:border lg:border-hairline lg:h-[calc(100vh-8.5rem)] z-30">
-              <DesignMode />
             </div>
           )}
 
