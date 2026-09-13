@@ -35,7 +35,7 @@ import {
 } from './paint/selection';
 import { applyPatch, type PaintSettings } from './paint/paintEngine';
 import { compositeLayersForSampling, type SampleMode } from '../../lib/sampleComposite';
-import { paintLiveEffectCanvases, hasLiveHaloEffects } from '../../lib/liveLayerEffects';
+import { paintLiveEffectCanvases, hasLiveHaloEffects, type EffectDirtyBox } from '../../lib/liveLayerEffects';
 import { applyBlendIf } from '../../lib/layerEffects';
 import { Menu } from './menu/Menu';
 import type { MenuItemDef } from './menu/menuDefinitions';
@@ -380,8 +380,12 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    *  (not eagerly on every pixel change) — see `getSampleComposite` below. */
   const sampleCompositeCacheRef = useRef<Partial<Record<SampleMode, HTMLCanvasElement>>>({});
   const sampleCompositeDirtyRef = useRef(true);
-  /** Groups have no batchDraw of their own — only Layer does — so redraws go via the owning Layer. */
-  const redrawLayerNode = useCallback((layerId: string | null | undefined) => {
+  /** Groups have no batchDraw of their own — only Layer does — so redraws go via the owning Layer.
+   *  `dirtyBox` is opt-in and forwarded as-is to `recomputeLiveEffects` — omit it (the default) for
+   *  every mutation type that has no such region (mask edits, liquify, filters…), which keeps them
+   *  on the existing, always-correct full-page recompute; only `redrawActivePaintTarget` (a live
+   *  brush stroke) supplies one. */
+  const redrawLayerNode = useCallback((layerId: string | null | undefined, dirtyBox?: EffectDirtyBox) => {
     layerNodeRefs.current[layerId ?? '']?.getLayer()?.batchDraw();
     // Every raster mutation anywhere in this file (strokes, filters, seeding, liquify, mask
     // painting) already calls this right after touching pixels — the one universal chokepoint to
@@ -392,7 +396,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     // this function itself is only ever invoked from effects/event handlers, never during render):
     // a brush stroke on a layer that also has one of those enabled needs its halo refreshed too, or
     // the shadow/glow would silently go stale the moment new pixels are painted under it.
-    if (layerId) recomputeLiveEffects(layerId);
+    if (layerId) recomputeLiveEffects(layerId, dirtyBox);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const paintCanvasRegistry = useRef<PaintCanvasRegistry>({});
@@ -421,6 +425,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   const behindEffectsRegistry = useRef<PaintCanvasRegistry>({});
   const overlayBaseEffectsRegistry = useRef<PaintCanvasRegistry>({});
   const strokeEffectsRegistry = useRef<PaintCanvasRegistry>({});
+  /** The active brush stroke's accumulated page-space dirty box (mirrors usePaintLayer's own
+   *  internal strokeBoxRef — see its `strokeDirtyBoxRef` option), read by `redrawActivePaintTarget`
+   *  only: every *other* `redrawLayerNode` call site (mask edits, liquify, filters, content-aware
+   *  fill…) has no such box and must keep recomputing full-page, so this is never read implicitly
+   *  by `recomputeLiveEffects` itself — only ever passed in explicitly where it's actually valid. */
+  const strokeDirtyBoxRef = useRef<EffectDirtyBox | null>(null);
+  /** Last-seen serialized `effects` per layer id, so the structural-cache effect below can tell
+   *  "this layer's own Layer Style actually changed" apart from "the effect just reran because
+   *  some *other* layer's opacity/blendMode/visibility changed" (groupStructureKey is one joined
+   *  string covering every layer, so any single layer's change reruns the whole loop) — halo
+   *  bitmaps only ever depend on `effects`, never on opacity/blendMode, so skipping the recompute
+   *  when this layer's own `effects` is byte-identical to last time is always safe, not a heuristic. */
+  const prevEffectsSerializedRef = useRef<Record<string, string>>({});
 
   /** Recomputes `layerId`'s live halo canvases from its current content + effects. Called both from
    *  `redrawLayerNode` (so a paint stroke on an effect-bearing layer keeps its shadow/glow in sync)
@@ -428,8 +445,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
    *  Options dialog updates immediately, independent of any paint activity). Cheap no-op via
    *  `hasLiveHaloEffects` for the overwhelmingly common case of a layer with no such effect enabled,
    *  so this never costs anything on the hot paint-stroke path except for the rare layer that has
-   *  both paint activity and one of these effects at once. */
-  const recomputeLiveEffects = useCallback((layerId: string) => {
+   *  both paint activity and one of these effects at once. `dirtyBox`, when the caller has one (an
+   *  active brush stroke), scopes the recompute to that region instead of the full page — see
+   *  `paintLiveEffectCanvases`'s own doc comment for why that's exact, not approximate. */
+  const recomputeLiveEffects = useCallback((layerId: string, dirtyBox?: EffectDirtyBox) => {
     const img = imageRef.current;
     const layer = findLayer(layersRef.current, layerId);
     if (!img || !layer) return;
@@ -450,7 +469,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       height: img.height,
       getRaster: (id) => paintCanvasRegistry.current[id] ?? null,
       getMask: (id) => maskCanvasRegistry.current[id] ?? null,
-    }, { behind, overlayBase, stroke });
+    }, { behind, overlayBase, stroke }, dirtyBox);
   }, []);
 
   const bgImageNodeRef = useRef<Konva.Image | null>(null);
@@ -732,16 +751,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   }, []);
 
   /** Redraws whatever the active tool is actually painting onto — a layer's mask, the active layer
-   *  normally, or the Quick Mask buffer's tint while that mode is active. */
+   *  normally, or the Quick Mask buffer's tint while that mode is active. The normal-layer branch is
+   *  the one case with a live dirty box (the in-progress stroke's own accumulated bounds, mirrored
+   *  into strokeDirtyBoxRef by usePaintLayer) worth passing through to recomputeLiveEffects; mask
+   *  edits don't track one and keep recomputing full-page. */
   const redrawActivePaintTarget = useCallback(() => {
     if (editingMaskLayer) { refreshMaskFilter(editingMaskLayer.id); redrawLayerNode(editingMaskLayer.id); return; }
     if (quickMaskActive) { redrawQuickMaskOverlay(); return; }
-    redrawLayerNode(paintLayerIdRef.current);
+    redrawLayerNode(paintLayerIdRef.current, strokeDirtyBoxRef.current ?? undefined);
   }, [editingMaskLayer, quickMaskActive, redrawQuickMaskOverlay, redrawLayerNode, refreshMaskFilter]);
 
   const paint = usePaintLayer({
     getCanvas: getActivePaintCanvas,
     settings: paintSettings,
+    strokeDirtyBoxRef,
     // Quick Mask must be paintable everywhere, not clipped to the selection it's redefining. A
     // layer mask being edited *does* respect the active selection, like any other paint target.
     selection: quickMaskActive ? NO_SELECTION : selection,
@@ -1347,7 +1370,16 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       // Must run BEFORE `.cache()` below, not after: caching snapshots whatever these Konva.Image
       // nodes currently show, so repainting their backing canvases afterward would have no visible
       // effect until the next unrelated structural change forces a re-cache.
-      recomputeLiveEffects(layer.id);
+      //
+      // Only actually recompute when this layer's own `effects` changed — Konva's own opacity()/
+      // globalCompositeOperation update (elsewhere, cheap) already handles opacity/blendMode; the
+      // halo bitmaps themselves don't depend on either, so an opacity-only or another-layer's-change
+      // tick would otherwise still pay a full (page- or dirty-box-sized) blur pass for nothing.
+      const serializedEffects = layer.effects ? JSON.stringify(layer.effects) : '';
+      if (prevEffectsSerializedRef.current[layer.id] !== serializedEffects) {
+        prevEffectsSerializedRef.current[layer.id] = serializedEffects;
+        recomputeLiveEffects(layer.id);
+      }
       const isolate = needsIsolation(layer)
         || (layer.type === 'adjustment' && layer.visible)
         || hasClippedFollowers(layer.id)

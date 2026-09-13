@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Modal, Button } from '../ui';
 import { Slider, CheckboxRow, ColorRow, ChannelTabs } from './panelControls';
 import { BlendIfSlider } from './BlendIfSlider';
+import { useRafBatchedPatch } from './useRafBatchedPatch';
 import { swal } from '../../lib/swalTheme';
 import { loadLayerStylePresets, saveLayerStylePresets, type LayerStylePreset } from '../../lib/layerStyleStore';
 import {
@@ -88,9 +89,19 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, layer.id]);
 
+  // Every keystroke/slider-tick/checkbox-toggle in this dialog used to call onUpdate synchronously
+  // — a full layer-tree write plus (for any halo effect) a full-page pixel recompute per tick. RAF
+  // batching coalesces a fast slider drag to at most one commit per animation frame; flushing
+  // whenever preview turns off or the dialog closes keeps the "every change was applied" behavior
+  // the dialog previously had, rather than silently dropping the last in-flight change.
+  const { schedule: scheduleLivePreview, flush: flushLivePreview, cancel: cancelLivePreview } =
+    useRafBatchedPatch<{ blendMode: BlendMode; opacity: number; effects: LayerEffects }>(
+      (patch) => onUpdate(patch, false),
+    );
+
   useEffect(() => {
-    if (!open || !preview) return;
-    onUpdate({ blendMode, opacity: opacity / 100, effects }, false);
+    if (!open || !preview) { flushLivePreview(); return; }
+    scheduleLivePreview({ blendMode, opacity: opacity / 100, effects });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, preview, blendMode, opacity, effects]);
 
@@ -101,11 +112,15 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
   }
 
   function handleOk() {
+    // Discard any still-pending batched preview frame — this call is the authoritative committed
+    // one; a stray commit:false frame landing right after it would be redundant at best.
+    cancelLivePreview();
     onUpdate({ blendMode, opacity: opacity / 100, effects }, true);
     onClose();
   }
 
   function handleCancel() {
+    cancelLivePreview();
     if (before) onUpdate(before, false);
     onClose();
   }

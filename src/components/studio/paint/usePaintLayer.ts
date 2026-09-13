@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, type MutableRefObject } from 'react';
 import {
   applyFilterBrush, applyGradient, cloneSegment, healSegment, drawShape, floodFillAt, strokeSegment, liquify,
   backgroundEraseSegment, applyMagicErase, sampleColorAt, hexToRgb,
@@ -50,6 +50,12 @@ interface UsePaintLayerArgs {
    *  per stroke commit (same accessor convention as the rest of this interface), not cached, since
    *  the active layer/its lock can change between strokes. */
   getPreserveTransparency?: () => boolean;
+  /** Mirrors this hook's own internal `strokeBoxRef` (the active stroke's accumulated page-space
+   *  dirty box) out to a ref the caller owns, so something outside this hook (StudioCanvas's live
+   *  Layer Style halo recompute) can read the current stroke's dirty region without this hook
+   *  needing to know anything about effects/halos itself. Reset to null at the start of every new
+   *  brush/pencil/eraser stroke, same as the internal ref. */
+  strokeDirtyBoxRef?: MutableRefObject<{ minX: number; minY: number; maxX: number; maxY: number } | null>;
 }
 
 /** Shift-snap: preserves the drag distance but rounds the angle to the nearest 45° increment —
@@ -71,7 +77,7 @@ function snapGradientPoint(start: { x: number; y: number }, current: { x: number
  * coordinates) only when `activeTool` is one of PAINT_TOOLS; select/pan/text keep
  * their existing, untouched code paths.
  */
-export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas, onGradientPreview, getShiftHeld, getPreserveTransparency }: UsePaintLayerArgs) {
+export function usePaintLayer({ getCanvas, settings, selection, onSelectionChange, onStrokeEnd, getLayerId, liquifySnapshots, getFallbackCanvas, onCloneSourceSet, getSampleCanvas, onGradientPreview, getShiftHeld, getPreserveTransparency, strokeDirtyBoxRef }: UsePaintLayerArgs) {
   const drawingRef = useRef(false);
   const lastRef = useRef<{ x: number; y: number } | null>(null);
   // Intentionally shared between Clone Stamp and Healing Brush — Photoshop keeps one source point
@@ -142,6 +148,9 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
           maxY: Math.max(cur.maxY, box.maxY),
         }
       : box;
+    // Mirror out to the caller's own ref (if given) — see UsePaintLayerArgs.strokeDirtyBoxRef's
+    // doc comment for why this hook doesn't just accept an effects-shaped dependency directly.
+    if (strokeDirtyBoxRef) strokeDirtyBoxRef.current = strokeBoxRef.current;
   }
 
   /**
@@ -387,6 +396,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
       getStrokeBuffer(canvas.width, canvas.height);
       strokeBoxRef.current = null;
+      if (strokeDirtyBoxRef) strokeDirtyBoxRef.current = null;
       smoothRef.current = { x, y };
     }
     if (tool === 'background-eraser') {
@@ -398,7 +408,7 @@ export function usePaintLayer({ getCanvas, settings, selection, onSelectionChang
       spotHealBoundsRef.current = null;
     }
     applyStrokeSegment(ctx, tool, x, y, x, y, pressure);
-  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet, getSampleCanvas, onGradientPreview]);
+  }, [getCanvas, settings, selection, onStrokeEnd, getLayerId, liquifySnapshots, onCloneSourceSet, getSampleCanvas, onGradientPreview, strokeDirtyBoxRef]);
 
   function applyStrokeSegment(ctx: CanvasRenderingContext2D, tool: PaintTool, lastX: number, lastY: number, x: number, y: number, pressure = 1) {
     if (tool === 'brush' || tool === 'pencil' || tool === 'eraser') {
