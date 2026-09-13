@@ -6,7 +6,7 @@ import type { Page, ProcessedImage } from '../../types';
 import {
   compositeOperationFor, hasAnyEnabledStyle, hasActiveBlendIf, isBlendIfRangeActive,
   type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor, type PlacedImageLayerData, type LayerSelectMode,
-  type BlendIfChannel, type BlendIfRange,
+  type BlendIfChannel, type BlendIfRange, type WarpMesh,
 } from './studioTypes';
 import { detectBubbleCenter } from './bubbleDetect';
 import { TextLayerNode, TEXT_HIT_NAME } from './TextLayerNode';
@@ -115,6 +115,13 @@ interface StudioCanvasProps {
    *  undoably. Separate from onUpdateTextLayer: that path is deliberately unlabeled/continuous-
    *  drag-safe everywhere else it's called, and this needs a real history entry. */
   onAutoFitTextHeight: (id: string) => void;
+  /** The text layer currently being warp-edited (Studio.tsx's warpDialogLayerId — set by Text >
+   *  Warp Text…), if any — shows that one layer's on-canvas mesh handles. */
+  warpEditingLayerId?: string | null;
+  /** Continuous drag preview / one-shot committed-with-history-label mesh update, same
+   *  unlabeled/labeled split as onUpdateTextLayer/onAutoFitTextHeight above. */
+  onWarpMeshPreview?: (id: string, mesh: WarpMesh) => void;
+  onWarpMeshCommit?: (id: string, mesh: WarpMesh) => void;
   onUpdatePathLayer: (id: string, patch: Partial<PathLayerData>) => void;
   /** Commits the Pen/Curvature Pen tool's in-progress anchors as a new persisted path layer. */
   onAddPathLayer: (anchors: PathAnchor[], closed: boolean) => void;
@@ -339,7 +346,9 @@ export interface StudioCanvasHandle {
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
   page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
-  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
+  activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight,
+  warpEditingLayerId = null, onWarpMeshPreview, onWarpMeshCommit,
+  onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
   queuedBubbleShapes, queuedSliceRects, transformingSelection = false, onExitTransformSelection, quickMaskActive = false,
@@ -2499,6 +2508,9 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             onSelectLine={onTextLineSelectionChange ? (lineIndex) => onTextLineSelectionChange({ layerId: layer.id, lineIndex }) : undefined}
             scale={scale}
             onHoverChange={setHoveringTextBody}
+            warpEditing={warpEditingLayerId === layer.id}
+            onWarpMeshPreview={onWarpMeshPreview ? (mesh) => onWarpMeshPreview(layer.id, mesh) : undefined}
+            onWarpMeshCommit={onWarpMeshCommit ? (mesh) => onWarpMeshCommit(layer.id, mesh) : undefined}
           />
         )}
 
