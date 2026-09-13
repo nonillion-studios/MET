@@ -270,12 +270,38 @@ export type WarpStyle =
   | 'wave' | 'fish' | 'rise' | 'fisheye' | 'inflate'
   | 'squeeze' | 'twist';
 
+/** One control point's CURRENT normalized (-1..1) position, in the same box-relative coordinate
+ *  system `warpCoords`/`applyTextWarp` already sample in. The point's undeformed "rest" position
+ *  isn't stored here — for a `cols`x`rows` grid it's always the evenly-spaced position derivable
+ *  from its row-major index (`meshRestPoint` in textWarp.ts), so an untouched mesh is implicitly
+ *  the identity grid and a point's displacement is just current-minus-rest. */
+export interface WarpMeshPoint {
+  x: number;
+  y: number;
+}
+
+export interface WarpMesh {
+  /** Grid density. Fixed at 4x4 for the on-canvas mesh editor (see textWarp.ts's DEFAULT_MESH_*),
+   *  but stored explicitly so a saved mesh stays self-describing if that ever changes. */
+  cols: number;
+  rows: number;
+  /** `cols*rows` entries, row-major (`index = row*cols + col`). */
+  points: WarpMeshPoint[];
+}
+
 export interface WarpTextSettings {
   orientation: 'horizontal' | 'vertical';
   style: WarpStyle;
   bend: number; // -100..100
   horizontalDistortion: number; // -100..100
   verticalDistortion: number; // -100..100
+  /** A user-editable 2D mesh, on top of (not instead of) the preset/bend/H/V fields above. Absent
+   *  means "not yet customized" — style+bend/H/V alone still fully determine the warp, via
+   *  textWarp.ts's per-style mesh initializers, exactly matching pre-mesh rendering. Present once
+   *  the user drags a handle (or the mesh editor is opened) — from that point on the mesh is the
+   *  actual warp source; bend/H/V keep whatever values produced it (for the numeric fields to still
+   *  show something sensible) but no longer independently drive the render on their own. */
+  mesh?: WarpMesh;
 }
 
 export function createDefaultWarpSettings(): WarpTextSettings {
