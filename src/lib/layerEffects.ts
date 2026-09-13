@@ -227,8 +227,10 @@ export function satinMask(alpha: Float32Array, width: number, height: number, da
 
 /** Draws a halo/mask buffer (0-255 grayscale) as a solid `color` at `opacity`% onto `ctx`, using the
  *  halo's own values as its alpha channel — shared by every effect above that ends in "colorize this
- *  mask and composite it". */
-export function paintHalo(ctx: CanvasRenderingContext2D, halo: Float32Array, width: number, height: number, color: string, opacityPct: number, blendMode: GlobalCompositeOperation) {
+ *  mask and composite it". `dx`/`dy` place it at an offset on `ctx` — for the common case `halo` is
+ *  already page-sized and this is 0,0; `liveLayerEffects.ts`'s dirty-region path instead computes a
+ *  small region-sized `halo` and passes that region's own page-space origin here. */
+export function paintHalo(ctx: CanvasRenderingContext2D, halo: Float32Array, width: number, height: number, color: string, opacityPct: number, blendMode: GlobalCompositeOperation, dx = 0, dy = 0) {
   const { r, g, b } = hexToRgb(color);
   const img = ctx.createImageData(width, height);
   const alphaScale = Math.max(0, Math.min(100, opacityPct)) / 100;
@@ -241,7 +243,7 @@ export function paintHalo(ctx: CanvasRenderingContext2D, halo: Float32Array, wid
   scratch.getContext('2d')!.putImageData(img, 0, 0);
   ctx.save();
   ctx.globalCompositeOperation = blendMode;
-  ctx.drawImage(scratch, 0, 0);
+  ctx.drawImage(scratch, dx, dy);
   ctx.restore();
 }
 

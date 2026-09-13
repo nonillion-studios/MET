@@ -1,6 +1,32 @@
-import { compositeOperationFor, type StudioLayer } from '../components/studio/studioTypes';
+import { compositeOperationFor, type LayerEffects, type StudioLayer } from '../components/studio/studioTypes';
 import { extractAlpha, outerHalo, innerShadowHalo, innerGlowHalo, bevelMasks, satinMask, strokeRing, paintHalo } from './layerEffects';
 import { renderLeafContentOnly, type SampleLayerSource } from './sampleComposite';
+
+/** A page-space pixel rect known to be the only region whose content actually changed (e.g. a
+ *  brush stroke's accumulated bounding box) — lets `paintLiveEffectCanvases` recompute just that
+ *  region instead of the full page. Omit entirely when no such region is known (a structural/
+ *  effect-parameter change, or the first recompute after a fresh mount) — the full page is always
+ *  correct; a box is only ever an optimization, never required for correctness. */
+export interface EffectDirtyBox { minX: number; minY: number; maxX: number; maxY: number; }
+
+/** How far (in px) any one of `effects`' enabled halo effects can reach from a source pixel it's
+ *  derived from — the blur/offset/sample radius that must be included around a dirty box so the
+ *  cropped recompute sees the same neighboring alpha the effect would read at full-page scope.
+ *  Every halo function in `layerEffects.ts` is local (bounded blur + bounded shift), so padding a
+ *  dirty box by this amount makes a region-scoped recompute exact, not approximate — a halo pixel
+ *  further than this from any changed alpha pixel provably can't have changed. */
+export function maxEffectReach(effects: LayerEffects): number {
+  let reach = 0;
+  const consider = (v: number) => { if (v > reach) reach = v; };
+  if (effects.dropShadow.enabled) consider(effects.dropShadow.distance + effects.dropShadow.size);
+  if (effects.outerGlow.enabled) consider(effects.outerGlow.size);
+  if (effects.innerShadow.enabled) consider(effects.innerShadow.distance + effects.innerShadow.size);
+  if (effects.innerGlow.enabled) consider(effects.innerGlow.size);
+  if (effects.bevelEmboss.enabled) consider(effects.bevelEmboss.soften + effects.bevelEmboss.size);
+  if (effects.satin.enabled) consider(effects.satin.distance + effects.satin.size);
+  if (effects.stroke.enabled) consider(effects.stroke.size);
+  return reach;
+}
 
 /**
  * Live-canvas counterpart to `exportImage.ts`'s `applyLeafEffects` — reuses the exact same halo
@@ -21,41 +47,74 @@ import { renderLeafContentOnly, type SampleLayerSource } from './sampleComposite
  * "one persistent canvas per id, mutated in place" convention) rather than allocating fresh ones,
  * so a `Konva.Image` pointed at a target only ever needs a `.batchDraw()` to pick up a change, the
  * same as the main paint canvases already do.
+ *
+ * `dirtyBox`, when given, scopes every step (content render's getImageData crop, alpha extraction,
+ * every blur/halo pass, and the final composite) to that region padded by `maxEffectReach` instead
+ * of the full page — the dominant cost here is the per-pixel JS loops (`extractAlpha` and the
+ * blur/halo math), not the single `renderLeafContentOnly` drawImage call, so cropping before those
+ * loops run is what actually matters. Omitted (full-page) for the first recompute of a layer and
+ * for any non-paint-stroke trigger (an effect's own parameters changing, mask edits, etc.), where
+ * there's no known "only this region changed" guarantee to exploit.
+ *
+ * Padding is `2×` the effect's reach, not `1×`: a composited output pixel right at the padded
+ * region's own edge itself needs input samples up to `reach` beyond *it*, not just beyond the
+ * original dirty box — so the region has to be big enough to give its own boundary pixels correct
+ * context, or they'd read a locally-clamped edge instead of the real neighboring content. The
+ * resulting extra margin (still tiny next to a full manga page) is deliberately generous rather
+ * than exact, consistent with this module's "real technique, honestly scoped" standard elsewhere.
  */
 export function paintLiveEffectCanvases(
   layer: StudioLayer,
   src: SampleLayerSource,
   targets: { behind: HTMLCanvasElement; overlayBase: HTMLCanvasElement; stroke: HTMLCanvasElement },
+  dirtyBox?: EffectDirtyBox,
 ): void {
   const width = src.width, height = src.height;
-  const clear = (c: HTMLCanvasElement) => c.getContext('2d')?.clearRect(0, 0, width, height);
-  clear(targets.behind);
-  clear(targets.overlayBase);
-  clear(targets.stroke);
-
   const effects = layer.effects;
-  if (!effects) return;
 
-  const needsBehind = effects.dropShadow.enabled || effects.outerGlow.enabled;
-  const needsOverlayBase = effects.innerShadow.enabled || effects.innerGlow.enabled || effects.bevelEmboss.enabled || effects.satin.enabled;
-  const needsStroke = effects.stroke.enabled;
-  if (!needsBehind && !needsOverlayBase && !needsStroke) return;
+  const needsBehind = !!effects && (effects.dropShadow.enabled || effects.outerGlow.enabled);
+  const needsOverlayBase = !!effects && (effects.innerShadow.enabled || effects.innerGlow.enabled || effects.bevelEmboss.enabled || effects.satin.enabled);
+  const needsStroke = !!effects && effects.stroke.enabled;
+
+  if (!effects || (!needsBehind && !needsOverlayBase && !needsStroke)) {
+    // Nothing enabled — go fully blank across the whole canvas (not just the dirty box): an effect
+    // that was just disabled needs its old halo gone across its entire previous extent, which this
+    // function has no record of, so a full clear is the only safe move here regardless of dirtyBox.
+    const clear = (c: HTMLCanvasElement) => c.getContext('2d')?.clearRect(0, 0, width, height);
+    clear(targets.behind);
+    clear(targets.overlayBase);
+    clear(targets.stroke);
+    return;
+  }
+
+  const pad = dirtyBox ? Math.ceil(maxEffectReach(effects)) * 2 + 8 : 0;
+  const rx = dirtyBox ? Math.max(0, Math.floor(dirtyBox.minX) - pad) : 0;
+  const ry = dirtyBox ? Math.max(0, Math.floor(dirtyBox.minY) - pad) : 0;
+  const rMaxX = dirtyBox ? Math.min(width, Math.ceil(dirtyBox.maxX) + pad) : width;
+  const rMaxY = dirtyBox ? Math.min(height, Math.ceil(dirtyBox.maxY) + pad) : height;
+  const rw = Math.max(1, rMaxX - rx);
+  const rh = Math.max(1, rMaxY - ry);
+
+  const clearRegion = (c: HTMLCanvasElement) => c.getContext('2d')?.clearRect(rx, ry, rw, rh);
+  clearRegion(targets.behind);
+  clearRegion(targets.overlayBase);
+  clearRegion(targets.stroke);
 
   const content = renderLeafContentOnly(layer, src);
   const contentCtx = content.getContext('2d');
   if (!contentCtx) return;
-  const alpha = extractAlpha(contentCtx.getImageData(0, 0, width, height));
+  const alpha = extractAlpha(contentCtx.getImageData(rx, ry, rw, rh));
 
   if (needsBehind) {
     const ctx = targets.behind.getContext('2d');
     if (ctx) {
       if (effects.dropShadow.enabled) {
-        const halo = outerHalo(alpha, width, height, effects.dropShadow.distance, effects.dropShadow.angle, effects.dropShadow.spread, effects.dropShadow.size);
-        paintHalo(ctx, halo, width, height, effects.dropShadow.color, effects.dropShadow.opacity, compositeOperationFor(effects.dropShadow.blendMode));
+        const halo = outerHalo(alpha, rw, rh, effects.dropShadow.distance, effects.dropShadow.angle, effects.dropShadow.spread, effects.dropShadow.size);
+        paintHalo(ctx, halo, rw, rh, effects.dropShadow.color, effects.dropShadow.opacity, compositeOperationFor(effects.dropShadow.blendMode), rx, ry);
       }
       if (effects.outerGlow.enabled) {
-        const halo = outerHalo(alpha, width, height, 0, 0, effects.outerGlow.spread, effects.outerGlow.size);
-        paintHalo(ctx, halo, width, height, effects.outerGlow.color, effects.outerGlow.opacity, compositeOperationFor(effects.outerGlow.blendMode));
+        const halo = outerHalo(alpha, rw, rh, 0, 0, effects.outerGlow.spread, effects.outerGlow.size);
+        paintHalo(ctx, halo, rw, rh, effects.outerGlow.color, effects.outerGlow.opacity, compositeOperationFor(effects.outerGlow.blendMode), rx, ry);
       }
     }
   }
@@ -64,21 +123,21 @@ export function paintLiveEffectCanvases(
     const ctx = targets.overlayBase.getContext('2d');
     if (ctx) {
       if (effects.innerShadow.enabled) {
-        const halo = innerShadowHalo(alpha, width, height, effects.innerShadow.distance, effects.innerShadow.angle, effects.innerShadow.size);
-        paintHalo(ctx, halo, width, height, effects.innerShadow.color, effects.innerShadow.opacity, compositeOperationFor(effects.innerShadow.blendMode));
+        const halo = innerShadowHalo(alpha, rw, rh, effects.innerShadow.distance, effects.innerShadow.angle, effects.innerShadow.size);
+        paintHalo(ctx, halo, rw, rh, effects.innerShadow.color, effects.innerShadow.opacity, compositeOperationFor(effects.innerShadow.blendMode), rx, ry);
       }
       if (effects.innerGlow.enabled) {
-        const halo = innerGlowHalo(alpha, width, height, effects.innerGlow.size, effects.innerGlow.source ?? 'edge');
-        paintHalo(ctx, halo, width, height, effects.innerGlow.color, effects.innerGlow.opacity, compositeOperationFor(effects.innerGlow.blendMode));
+        const halo = innerGlowHalo(alpha, rw, rh, effects.innerGlow.size, effects.innerGlow.source ?? 'edge');
+        paintHalo(ctx, halo, rw, rh, effects.innerGlow.color, effects.innerGlow.opacity, compositeOperationFor(effects.innerGlow.blendMode), rx, ry);
       }
       if (effects.bevelEmboss.enabled) {
-        const { highlight, shadow } = bevelMasks(alpha, width, height, effects.bevelEmboss);
-        paintHalo(ctx, highlight, width, height, effects.bevelEmboss.highlightColor, effects.bevelEmboss.highlightOpacity, compositeOperationFor(effects.bevelEmboss.highlightMode));
-        paintHalo(ctx, shadow, width, height, effects.bevelEmboss.shadowColor, effects.bevelEmboss.shadowOpacity, compositeOperationFor(effects.bevelEmboss.shadowMode));
+        const { highlight, shadow } = bevelMasks(alpha, rw, rh, effects.bevelEmboss);
+        paintHalo(ctx, highlight, rw, rh, effects.bevelEmboss.highlightColor, effects.bevelEmboss.highlightOpacity, compositeOperationFor(effects.bevelEmboss.highlightMode), rx, ry);
+        paintHalo(ctx, shadow, rw, rh, effects.bevelEmboss.shadowColor, effects.bevelEmboss.shadowOpacity, compositeOperationFor(effects.bevelEmboss.shadowMode), rx, ry);
       }
       if (effects.satin.enabled) {
-        const halo = satinMask(alpha, width, height, effects.satin);
-        paintHalo(ctx, halo, width, height, effects.satin.color, effects.satin.opacity, compositeOperationFor(effects.satin.blendMode));
+        const halo = satinMask(alpha, rw, rh, effects.satin);
+        paintHalo(ctx, halo, rw, rh, effects.satin.color, effects.satin.opacity, compositeOperationFor(effects.satin.blendMode), rx, ry);
       }
     }
   }
@@ -86,9 +145,9 @@ export function paintLiveEffectCanvases(
   if (needsStroke) {
     const ctx = targets.stroke.getContext('2d');
     if (ctx) {
-      const ring = strokeRing(alpha, width, height, effects.stroke.size, effects.stroke.position);
+      const ring = strokeRing(alpha, rw, rh, effects.stroke.size, effects.stroke.position);
       const color = effects.stroke.fillType === 'gradient' ? effects.stroke.gradient.from : effects.stroke.color;
-      paintHalo(ctx, ring, width, height, color, effects.stroke.opacity, compositeOperationFor(effects.stroke.blendMode));
+      paintHalo(ctx, ring, rw, rh, color, effects.stroke.opacity, compositeOperationFor(effects.stroke.blendMode), rx, ry);
     }
   }
 }
