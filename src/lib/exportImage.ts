@@ -73,7 +73,7 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
   // render — shadow/gradient/stroke are already baked into that local bitmap, so this draws it
   // straight onto the (already rotated + clipped) export ctx and skips the per-run text below
   // entirely, the same way the live render swaps a single Konva.Image in for the per-run nodes.
-  if (text.warp && text.warp.style !== 'none') {
+  if (text.warp && (text.warp.style !== 'none' || text.warp.mesh)) {
     const warped = rasterizeWarpedTextLocal(text, layout);
     ctx.drawImage(warped, text.x, text.y);
     ctx.restore();

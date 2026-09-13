@@ -65,7 +65,7 @@ export function TextLayerNode({
   // changes, since warp settings are stored data rather than a baked image — see the `warp` field's
   // own doc comment on TextLayerData. `null` (not warped) keeps the existing per-run Konva.Text
   // rendering untouched, so the overwhelmingly common unwarped case pays nothing extra.
-  const isWarped = !!text.warp && text.warp.style !== 'none';
+  const isWarped = !!text.warp && (text.warp.style !== 'none' || !!text.warp.mesh);
   const warpedCanvas = useMemo(() => (isWarped ? rasterizeWarpedTextLocal(text, layout) : null), [isWarped, text, layout]);
 
   // Batches the continuous onTransform stream (see below) to at most one commit per animation
