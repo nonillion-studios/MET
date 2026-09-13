@@ -6,6 +6,7 @@ import { layoutText } from './textLayout';
 import { gradientVector } from './textGradient';
 import { rasterizeWarpedTextLocal } from './textWarpRender';
 import { useFontsReadyTick } from '../../hooks/useFontsReadyTick';
+import { useRafBatchedPatch } from './useRafBatchedPatch';
 
 interface TextLayerNodeProps {
   layer: StudioLayer;
@@ -66,6 +67,11 @@ export function TextLayerNode({
   // rendering untouched, so the overwhelmingly common unwarped case pays nothing extra.
   const isWarped = !!text.warp && text.warp.style !== 'none';
   const warpedCanvas = useMemo(() => (isWarped ? rasterizeWarpedTextLocal(text, layout) : null), [isWarped, text, layout]);
+
+  // Batches the continuous onTransform stream (see below) to at most one commit per animation
+  // frame — every tick was previously a top-level `layersByPage` write with no React.memo anywhere
+  // downstream, so a fast resize drag re-rendered the entire Studio/StudioCanvas tree per frame.
+  const { schedule: scheduleTransformPatch, cancel: cancelTransformPatch } = useRafBatchedPatch(onUpdate);
 
   const gradient = text.gradient?.enabled ? text.gradient : null;
   // One ramp across the whole layer, not one per run: the vector is computed on the layout box and
@@ -131,6 +137,9 @@ export function TextLayerNode({
       // so it doesn't reenter React's scheduler the way `flushSync` did. StudioCanvas.tsx's
       // Transformer-binding effect also now skips re-attaching nodes while `transformer.
       // isTransforming()`, so this per-frame update no longer races that rebind either.
+      // The commit itself is now routed through useRafBatchedPatch (scheduleTransformPatch) rather
+      // than calling onUpdate directly — same "no flushSync" reasoning applies, rAF only defers to
+      // the next paint, it doesn't force synchronous re-entry into React's scheduler.
       onTransform={(e) => {
         const node = e.target as Konva.Group;
         const scaleX = node.scaleX();
@@ -156,7 +165,7 @@ export function TextLayerNode({
         if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
           throw new Error('REGRESSION: area text resize must never modify fontSize');
         }
-        onUpdate(patch);
+        scheduleTransformPatch(patch);
       }}
       // Point vs area text scale *different* things, matching Photoshop exactly: point text has
       // no frame of its own — resizing it *is* resizing the type, so scale converts to fontSize.
@@ -195,6 +204,11 @@ export function TextLayerNode({
         if (import.meta.env.DEV && !text.autoWidth && 'fontSize' in patch) {
           throw new Error('REGRESSION: area text resize must never modify fontSize');
         }
+        // Discard (don't flush) any still-pending batched onTransform frame first — this patch is
+        // the authoritative final one (it also carries x/y/rotation, which onTransform's doesn't);
+        // an in-flight rAF landing right after this commit would otherwise revert it to a stale
+        // intermediate width/height for one frame.
+        cancelTransformPatch();
         onUpdate(patch);
       }}
     >
