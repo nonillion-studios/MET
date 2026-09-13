@@ -61,9 +61,10 @@ import { renderFlattenedPage, compositeFlattenedSlice, downloadBlob } from '../.
 import JSZip from 'jszip';
 import {
   createBackgroundLayer, createLayer, createTextLayer, createAdjustmentLayer, createGroupLayer, createPathLayer, createPlacedImageLayer, parseTyperScript,
-  createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, textModeFor, type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
+  createLayerMask, DEFAULT_TYPER_STYLES, DEFAULT_TYPER_FOLDERS, FONT_FAMILIES, BLEND_TO_COMPOSITE, textModeFor, createDefaultWarpSettings,
+  type StudioLayer, type TextLayerData, type PathLayerData, type PathAnchor,
   type PlacedImageLayerData,
-  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings,
+  type TyperStyle, type TyperFolder, type AdjustmentLayerData, type AdjustmentKind, type LayerSelectMode, type TextAlign, type WarpTextSettings, type WarpMesh,
 } from './studioTypes';
 import { applyCharPatch, resolveCharValue } from './textRuns';
 import { getClipboardLayer, setClipboardLayer } from '../../lib/layerClipboard';
@@ -2196,6 +2197,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   function handleCancelWarp(previous: WarpTextSettings | undefined) {
     if (warpDialogLayerId) handleUpdateTextLayer(warpDialogLayerId, { warp: previous });
   }
+  /** On-canvas mesh handle drag — merges the dragged mesh into the layer's current warp settings
+   *  and routes through the exact same preview/confirm split WarpTextDialog's own fields already
+   *  use, so both surfaces (the compact panel and the on-canvas handles) commit through one path. */
+  function handleWarpMeshPreview(id: string, mesh: WarpMesh) {
+    const current = findLayer(layers, id)?.text?.warp ?? createDefaultWarpSettings();
+    handlePreviewWarp({ ...current, mesh });
+  }
+  function handleWarpMeshCommit(id: string, mesh: WarpMesh) {
+    const current = findLayer(layers, id)?.text?.warp ?? createDefaultWarpSettings();
+    handleConfirmWarp({ ...current, mesh });
+  }
 
   /** Double-clicking a text layer's own ⊞ overflow indicator: fits fixedHeight tightly to the
    *  content it's currently holding, undoably — the height counterpart to the existing width
@@ -3040,6 +3052,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       fontFamilies={allFontFamilies}
       onUpdateTextLayer={handleUpdateTextLayer}
       onAutoFitTextHeight={handleAutoFitTextHeight}
+      warpEditingLayerId={warpDialogLayerId}
+      onWarpMeshPreview={handleWarpMeshPreview}
+      onWarpMeshCommit={handleWarpMeshCommit}
       onUpdatePathLayer={handleUpdatePathLayer}
       onAddPathLayer={handleAddPathLayer}
       onUpdatePlacedImage={handleUpdatePlacedImage}

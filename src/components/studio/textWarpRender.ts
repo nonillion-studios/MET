@@ -57,12 +57,13 @@ export function rasterizeTextLocal(text: TextLayerData, layout: TextLayout): HTM
   return canvas;
 }
 
-/** Rasterizes and (if `text.warp` is set to a real style) warps a text layer's glyphs, all in the
- *  same local coordinate space `rasterizeTextLocal` uses — the single entry point both
- *  `TextLayerNode.tsx`'s live render and `exportImage.ts`'s flatten path call, so the two can never
- *  disagree about what a warped text layer looks like. */
+/** Rasterizes and (if `text.warp` is set to a real style, or has a user-edited mesh even with
+ *  `style: 'none'` — a from-scratch custom warp) warps a text layer's glyphs, all in the same local
+ *  coordinate space `rasterizeTextLocal` uses — the single entry point both `TextLayerNode.tsx`'s
+ *  live render and `exportImage.ts`'s flatten path call, so the two can never disagree about what a
+ *  warped text layer looks like. */
 export function rasterizeWarpedTextLocal(text: TextLayerData, layout: TextLayout): HTMLCanvasElement {
   const base = rasterizeTextLocal(text, layout);
-  if (!text.warp || text.warp.style === 'none') return base;
+  if (!text.warp || (text.warp.style === 'none' && !text.warp.mesh)) return base;
   return applyTextWarp(base, text.warp);
 }

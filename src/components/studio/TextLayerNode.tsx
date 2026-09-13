@@ -1,12 +1,13 @@
 import { useMemo } from 'react';
 import { Group, Rect, Line, Ellipse, Text as KonvaText, Image as KonvaImage } from 'react-konva';
 import type Konva from 'konva';
-import type { StudioLayer, TextLayerData, LayerSelectMode } from './studioTypes';
+import type { StudioLayer, TextLayerData, LayerSelectMode, WarpMesh } from './studioTypes';
 import { layoutText } from './textLayout';
 import { gradientVector } from './textGradient';
 import { rasterizeWarpedTextLocal } from './textWarpRender';
 import { useFontsReadyTick } from '../../hooks/useFontsReadyTick';
 import { useRafBatchedPatch } from './useRafBatchedPatch';
+import { TextWarpMeshOverlay } from './TextWarpMeshOverlay';
 
 interface TextLayerNodeProps {
   layer: StudioLayer;
@@ -27,6 +28,14 @@ interface TextLayerNodeProps {
   /** Hovering the box body (not a Transformer handle, which sits on top and wins the hit-test
    *  first) vs. leaving it — drives the move-cursor StudioCanvas.tsx shows over the container. */
   onHoverChange?: (hovering: boolean) => void;
+  /** True while this specific layer's warp mesh is being edited (Studio.tsx's warpDialogLayerId —
+   *  the same state that also drives the compact WarpTextDialog panel). Shows the draggable on-
+   *  canvas mesh overlay in place of the plain selected-state chrome. */
+  warpEditing?: boolean;
+  /** Fired continuously while dragging a mesh handle (no history label upstream). */
+  onWarpMeshPreview?: (mesh: WarpMesh) => void;
+  /** Fired once, on handle release (a real, undoable history entry upstream). */
+  onWarpMeshCommit?: (mesh: WarpMesh) => void;
 }
 
 /**
@@ -54,6 +63,7 @@ function selectModeFor(evt: MouseEvent | TouchEvent): LayerSelectMode {
  */
 export function TextLayerNode({
   layer, groupRef, editing, selected, draggable, onSelect, onEdit, onUpdate, onSelectLine, scale = 1, onHoverChange,
+  warpEditing = false, onWarpMeshPreview, onWarpMeshCommit,
 }: TextLayerNodeProps) {
   const text = layer.text!;
   // Recompute once a font that was still loading becomes ready — `layoutText` measures with
@@ -65,7 +75,7 @@ export function TextLayerNode({
   // changes, since warp settings are stored data rather than a baked image — see the `warp` field's
   // own doc comment on TextLayerData. `null` (not warped) keeps the existing per-run Konva.Text
   // rendering untouched, so the overwhelmingly common unwarped case pays nothing extra.
-  const isWarped = !!text.warp && text.warp.style !== 'none';
+  const isWarped = !!text.warp && (text.warp.style !== 'none' || !!text.warp.mesh);
   const warpedCanvas = useMemo(() => (isWarped ? rasterizeWarpedTextLocal(text, layout) : null), [isWarped, text, layout]);
 
   // Batches the continuous onTransform stream (see below) to at most one commit per animation
@@ -341,6 +351,21 @@ export function TextLayerNode({
           fontSize={11 / scale}
           fill="#38bdf8"
           listening={false}
+        />
+      )}
+
+      {/* On-canvas warp mesh editor — real Konva handles, live-dragged, not a separate modal-only
+          control. Same gating as the W×H readout (selected, not mid-edit) plus warpEditing itself
+          (Studio.tsx's warpDialogLayerId, set by Text > Warp Text… — the same trigger the compact
+          WarpTextDialog panel also opens from). */}
+      {warpEditing && selected && !editing && onWarpMeshPreview && onWarpMeshCommit && (
+        <TextWarpMeshOverlay
+          text={text}
+          width={Math.max(layout.width, 4)}
+          height={text.fixedHeight ?? layout.height}
+          scale={scale}
+          onPreview={onWarpMeshPreview}
+          onCommit={onWarpMeshCommit}
         />
       )}
     </Group>
