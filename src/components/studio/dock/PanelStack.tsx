@@ -1,8 +1,9 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { cn } from '../../ui/cn';
 import { CollapsiblePanel, type PanelMenuItem } from './CollapsiblePanel';
+import { PanelTabGroup } from './PanelTabGroup';
 import { usePanelLayout } from './PanelLayoutContext';
-import { PANEL_BY_ID } from './panelRegistry';
+import { PANEL_BY_ID, PANEL_GROUP_LABELS } from './panelRegistry';
 
 export interface PanelStackEntry {
   id: string;
@@ -63,9 +64,30 @@ export function PanelStack({ panels, className }: PanelStackProps) {
   const layout = usePanelLayout();
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<{ id: string; before: boolean } | null>(null);
+  // Which member of a tab-grouped row is currently showing — not persisted (deliberately lightweight
+  // per-session UI state, not layout), keyed by group name so switching pages/panels doesn't need
+  // its own reset logic; defaults to whichever member is the row's anchor when never touched.
+  const [activeGroupTab, setActiveGroupTab] = useState<Record<string, string>>({});
 
   const byId = new Map(panels.map(p => [p.id, p]));
   const visibleOrder = layout.order.filter(id => byId.has(id) && layout.isVisible(id));
+
+  // Collapse consecutive-in-registry-group visible ids into one row each, rendered at whichever
+  // member appears first in `visibleOrder` — a group with only one currently-visible member is just
+  // that one id, unmerged. See panelRegistry.ts's `group` field doc comment.
+  const groupOf = (id: string) => PANEL_BY_ID.get(id)?.group;
+  const seenGroups = new Set<string>();
+  const rows: { anchorId: string; memberIds: string[] }[] = [];
+  for (const id of visibleOrder) {
+    const g = groupOf(id);
+    if (g) {
+      if (seenGroups.has(g)) continue;
+      seenGroups.add(g);
+      rows.push({ anchorId: id, memberIds: visibleOrder.filter(otherId => groupOf(otherId) === g) });
+    } else {
+      rows.push({ anchorId: id, memberIds: [id] });
+    }
+  }
 
   const maximized = layout.maximizedId && byId.has(layout.maximizedId) && layout.isVisible(layout.maximizedId)
     ? byId.get(layout.maximizedId)!
@@ -100,17 +122,26 @@ export function PanelStack({ panels, className }: PanelStackProps) {
 
   return (
     <div className={cn('h-full flex flex-col min-h-0 overflow-y-auto', className)}>
-      {visibleOrder.map((id, i) => {
+      {rows.map(({ anchorId: id, memberIds }, i) => {
         const entry = byId.get(id)!;
+        const group = memberIds.length > 1 ? groupOf(id) : undefined;
+        const title = group ? (PANEL_GROUP_LABELS[group] ?? entry.label) : entry.label;
+        const content = group ? (
+          <PanelTabGroup
+            members={memberIds.map(memberId => ({ id: memberId, label: byId.get(memberId)!.label, content: byId.get(memberId)!.content }))}
+            activeId={activeGroupTab[group] ?? id}
+            onTabChange={(memberId) => setActiveGroupTab(s => ({ ...s, [group]: memberId }))}
+          />
+        ) : entry.content;
         return (
           // A Fragment, not a wrapper div: the grow (Layers) panel's own `flex-1` needs to be a
           // direct child of this outer flex column to actually expand — an intermediate wrapper
           // div here would itself need `flex-1` too, or Layers would have nothing to grow into.
           <Fragment key={id}>
-            {i > 0 && <ResizeDivider aboveId={visibleOrder[i - 1]} belowId={id} />}
+            {i > 0 && <ResizeDivider aboveId={rows[i - 1].anchorId} belowId={id} />}
             <CollapsiblePanel
               id={id}
-              title={entry.label}
+              title={title}
               collapsed={layout.isCollapsed(id)}
               onToggleCollapsed={() => layout.toggleCollapsed(id)}
               maximized={false}
@@ -130,7 +161,7 @@ export function PanelStack({ panels, className }: PanelStackProps) {
                 setDragOver(null);
               }}
             >
-              {entry.content}
+              {content}
             </CollapsiblePanel>
           </Fragment>
         );

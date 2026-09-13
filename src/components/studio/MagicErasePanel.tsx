@@ -22,20 +22,22 @@ interface MagicErasePanelProps {
   onSendToMagicErase: (ids: string[]) => void;
   onJumpToRegion?: (region: TextRegion) => void;
   onOpenSettings?: () => void;
+  /** Set when hosted inside the right-column panel stack, whose own header already shows the name. */
+  hideTitle?: boolean;
 }
 
 export function MagicErasePanel({
   regions, selectedIds, onToggleSelect, onSelectAll, onSelectNone,
   minConfidence, onMinConfidenceChange, detecting, detectProgress, onDetect,
   fillColor, onFillColorChange, onFillRegions,
-  serverConfigured, erasing, onSendToMagicErase, onJumpToRegion, onOpenSettings,
+  serverConfigured, erasing, onSendToMagicErase, onJumpToRegion, onOpenSettings, hideTitle,
 }: MagicErasePanelProps) {
   const [busyRegionId, setBusyRegionId] = useState<string | null>(null);
   const selectedList = regions.filter(r => selectedIds.has(r.id));
   const busy = detecting || erasing;
 
   return (
-    <StudioPanel title="Magic Erase">
+    <StudioPanel title="Magic Erase" hideTitle={hideTitle}>
       <p className="text-micro text-ink-faint/70 leading-snug">
         Detect text locally, then either fill each block with a flat color yourself or send it to your
         Magic Erase server for AI inpainting.
