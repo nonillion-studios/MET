@@ -10,8 +10,8 @@ import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { PanelStack, type PanelStackEntry } from './dock/PanelStack';
 import { PANEL_BY_ID } from './dock/panelRegistry';
+import { PropertiesPanel } from './dock/PropertiesPanel';
 import { LayersPanel } from './LayersPanel';
-import { TextPanel } from './TextPanel';
 import { TyperPanel } from './TyperPanel';
 import { TyperFloatingWindow } from './TyperFloatingWindow';
 import { ColorProvider, useColor } from './color/ColorContext';
@@ -20,6 +20,7 @@ import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
+import { DockWidthDivider } from './dock/DockWidthDivider';
 import {
   flattenTree, findLayer, updateLayer, mapTree, removeLayers, insertAfter, moveWithinParent, cloneSubtree,
   collectSubtree, getParent, getSiblings, groupLayers, ungroup, reparent, canBeClipBase, canPaintLayer,
@@ -71,7 +72,6 @@ import { FontsPanel } from './FontsPanel';
 import { BrushesPanel } from './BrushesPanel';
 import { BrushPickerPopover } from './BrushPickerPopover';
 import type { BrushPreset } from '../../lib/brushStore';
-import { AdjustmentPanel } from './AdjustmentPanel';
 import { BlendingOptionsDialog } from './BlendingOptionsDialog';
 import { FilterDialog } from './filters/FilterDialog';
 import { FillPathDialog, type FillPathResult } from './FillPathDialog';
@@ -1648,7 +1648,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const layer = createAdjustmentLayer(kind);
     updateLayers(current => [...current, layer], 'Add Adjustment Layer');
     setActiveLayerId(layer.id);
-    panelLayout.reveal('adjustment');
+    panelLayout.reveal('properties');
   }
 
   /** Edit > Copy: clones the active layer (and its subtree, if it's a group) under fresh ids with
@@ -1874,8 +1874,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
    *  settings button, not plain selection. No-ops for layer types with no dedicated panel. */
   function openLayerSettings(id: string) {
     const type = findLayer(layers, id)?.type;
-    if (type === 'text') panelLayout.reveal('text');
-    if (type === 'adjustment') panelLayout.reveal('adjustment');
+    if (type === 'text' || type === 'adjustment') panelLayout.reveal('properties');
     setActiveMaskLayerId(null);
   }
 
@@ -2156,7 +2155,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     // re-selecting the tool each time (see StudioCanvas.tsx's text-tool pointer handling, and the
     // `selected`/`draggable` gating on TextLayerNode, both of which now also key off `activeTool
     // === 'text'`, not just `'select'`).
-    panelLayout.reveal('text');
+    panelLayout.reveal('properties');
   }
 
   function handleUpdateTextLayer(id: string, patch: Partial<TextLayerData>, historyLabel?: string) {
@@ -2241,7 +2240,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   function jumpToBubble(pageId: string, layerId: string) {
     setActivePageId(pageId);
     setActiveLayerId(layerId);
-    panelLayout.reveal('text');
+    panelLayout.reveal('properties');
   }
 
   function handleCenterTextLayer(id: string) {
@@ -2336,7 +2335,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   function handleOpenFontPanel() {
     setRightOpen(true);
-    panelLayout.reveal('text');
+    panelLayout.reveal('properties');
   }
 
   function handleTriggerImportFonts() {
@@ -2650,27 +2649,22 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     />
   );
 
-  const textPanel = activeLayer?.type === 'text' ? (
-    <TextPanel
+  const propertiesPanel = (
+    <PropertiesPanel
       layer={activeLayer}
-      onUpdate={handleUpdateTextLayer}
-      onCenter={handleCenterTextLayer}
+      onUpdateText={handleUpdateTextLayer}
+      onCenterText={handleCenterTextLayer}
       fontFamilies={allFontFamilies}
-      selection={textSelection?.layerId === activeLayer.id ? textSelection : null}
-      selectedLineIndex={textLineSelection?.layerId === activeLayer.id ? textLineSelection.lineIndex : null}
-      hideTitle
-    />
-  ) : null;
-
-  const adjustmentPanel = activeLayer?.type === 'adjustment' ? (
-    <AdjustmentPanel
-      layer={activeLayer}
-      onUpdate={handleUpdateAdjustmentLayer}
+      textSelection={activeLayer && textSelection?.layerId === activeLayer.id ? textSelection : null}
+      selectedLineIndex={activeLayer && textLineSelection?.layerId === activeLayer.id ? textLineSelection.lineIndex : null}
+      onUpdateAdjustment={handleUpdateAdjustmentLayer}
       getHistogramSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null}
-      onToggleVisible={() => handleToggleVisible(activeLayer.id)}
-      hideTitle
+      onToggleVisible={handleToggleVisible}
+      onOpacityChange={handleOpacityChange}
+      onBlendChange={handleBlendChange}
+      onOpenBlendingOptions={openBlendingOptions}
     />
-  ) : null;
+  );
 
   const brushLiveSettings = { size: brushSize, hardness: brushHardness, opacity: brushOpacity, flow: brushFlow,
     spacing, angle: brushAngle, roundness: brushRoundness, scatter, smoothing, pressureSize, pressureOpacity };
@@ -2786,6 +2780,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSendToMagicErase={handleSendToMagicErase}
       onJumpToRegion={(region) => setSelection({ kind: 'rect', x: region.x, y: region.y, width: region.width, height: region.height })}
       onOpenSettings={() => swalToast({ icon: 'info', title: 'Open the app\'s Settings tab to set a Magic Erase server' })}
+      hideTitle
     />
   );
 
@@ -2812,8 +2807,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   // 'pages' is the one id that isn't in that registry (it's the separate left-side sidebar, not a
   // PanelLayoutContext-tracked stack panel), so it keeps its own literal label.
   const allTabs = [
-    ...(textPanel ? [{ id: 'text', label: PANEL_BY_ID.get('text')!.title, content: textPanel }] : []),
-    ...(adjustmentPanel ? [{ id: 'adjustment', label: PANEL_BY_ID.get('adjustment')!.title, content: adjustmentPanel }] : []),
+    { id: 'properties', label: PANEL_BY_ID.get('properties')!.title, content: propertiesPanel },
     ...(liveSession ? [{ id: 'collab', label: PANEL_BY_ID.get('collab')!.title, content: collabPanel }] : []),
     { id: 'typer', label: PANEL_BY_ID.get('typer')!.title, content: typerPanel },
     { id: 'magicerase', label: PANEL_BY_ID.get('magicerase')!.title, content: magicErasePanel },
@@ -3107,7 +3101,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const toolsSidebar = (
     <div className="h-full flex">
       {toolRailVisible && <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />}
-      <div className="w-64 sm:w-72 h-full min-h-0 border-l border-hairline">
+      <DockWidthDivider />
+      <div className="h-full min-h-0 border-l border-hairline" style={{ width: panelLayout.dockWidth }}>
         <PanelStack panels={panelStackEntries} />
       </div>
     </div>
@@ -3355,7 +3350,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
         {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
-          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 w-64 sm:w-72 h-full liquid-glass-heavy border-l border-hairline shadow-2xl">
+          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 h-full liquid-glass-heavy border-l border-hairline shadow-2xl" style={{ width: panelLayout.dockWidth }}>
             <PanelStack panels={panelStackEntries} />
           </div>
         )}
