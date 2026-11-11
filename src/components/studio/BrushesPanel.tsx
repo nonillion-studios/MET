@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Download, Star, MoreHorizontal, Search, Plus } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
-import { swal, swalToast } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import { StudioPanel } from './StudioPanel';
 import { BRUSH_FOLDERS, loadBrushPresets, saveBrushPresets, type BrushPreset } from '../../lib/brushStore';
@@ -91,7 +91,7 @@ export function BrushesPanel({ color, activeBrushId, onSelectBrush, live, onLive
   const [presets, setPresets] = useState<BrushPreset[]>([]);
   const [query, setQuery] = useState('');
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({ Favorites: true, Basic: true });
-  /** Decoded masks for image brushes, keyed by preset id — decoded once, not per render. */
+  /** Decoded masks for image brushes, keyed by preset id - decoded once, not per render. */
   const [masks, setMasks] = useState<Record<string, HTMLCanvasElement>>({});
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -116,7 +116,7 @@ export function BrushesPanel({ color, activeBrushId, onSelectBrush, live, onLive
     return q ? presets.filter(p => p.name.toLowerCase().includes(q)) : presets;
   }, [presets, query]);
 
-  // Favorites is a virtual folder — a view over the flag, not a location, so a
+  // Favorites is a virtual folder - a view over the flag, not a location, so a
   // brush can be favourited without being moved out of its real folder.
   const groups = useMemo(() => {
     const out: { folder: string; items: BrushPreset[] }[] = [];
@@ -190,59 +190,57 @@ export function BrushesPanel({ color, activeBrushId, onSelectBrush, live, onLive
     URL.revokeObjectURL(url);
   }
 
-  async function openMenu(e: React.MouseEvent, preset: BrushPreset) {
+  // --- Context menu (replaces SweetAlert modal) ---
+  const [ctxMenu, setCtxMenu] = useState<{ presetId: string; x: number; y: number } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameVal, setRenameVal] = useState('');
+  const [movingId, setMovingId] = useState<string | null>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
+
+  const closeCtx = useCallback(() => setCtxMenu(null), []);
+  useEffect(() => {
+    if (!ctxMenu) return;
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { closeCtx(); e.stopPropagation(); } }
+    function onClick(e: MouseEvent) { if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) closeCtx(); }
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onClick, true);
+    return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('pointerdown', onClick, true); };
+  }, [ctxMenu, closeCtx]);
+
+  function openMenu(e: React.MouseEvent, preset: BrushPreset) {
     e.preventDefault();
     e.stopPropagation();
-    const result = await swal({
-      title: preset.name,
-      input: 'select',
-      inputOptions: {
-        rename: 'Rename…',
-        duplicate: 'Duplicate',
-        move: 'Move to folder…',
-        favorite: preset.favorite ? 'Remove from Favorites' : 'Add to Favorites',
-        ...(preset.builtin ? {} : { delete: 'Delete' }),
-      },
-      inputPlaceholder: 'Choose an action',
-      showCancelButton: true,
-      confirmButtonText: 'Go',
-    });
-    const action = result.value as string | undefined;
-    if (!result.isConfirmed || !action) return;
+    setCtxMenu({ presetId: preset.id, x: e.clientX, y: e.clientY });
+  }
 
-    if (action === 'favorite') {
-      persist(presets.map(p => p.id === preset.id ? { ...p, favorite: !p.favorite } : p));
-      return;
-    }
+  function ctxAction(action: string, preset: BrushPreset) {
+    closeCtx();
+    if (action === 'favorite') { persist(presets.map(p => p.id === preset.id ? { ...p, favorite: !p.favorite } : p)); return; }
     if (action === 'duplicate') {
       const copy: BrushPreset = { ...preset, id: genId('brush'), name: `${preset.name} copy`, builtin: false };
       persist([...presets, copy]);
       if (masks[preset.id]) setMasks(m => ({ ...m, [copy.id]: masks[preset.id] }));
       return;
     }
-    if (action === 'delete') {
-      persist(presets.filter(p => p.id !== preset.id));
-      return;
-    }
+    if (action === 'delete') { persist(presets.filter(p => p.id !== preset.id)); return; }
     if (action === 'rename') {
-      if (preset.builtin) { swalToast({ icon: 'info', title: 'Built-in brushes can’t be renamed — duplicate it first' }); return; }
-      const r = await swal({ title: 'Rename brush', input: 'text', inputValue: preset.name, showCancelButton: true, confirmButtonText: 'Rename' });
-      const name = (r.value || '').trim();
-      if (r.isConfirmed && name) persist(presets.map(p => p.id === preset.id ? { ...p, name } : p));
-      return;
+      if (preset.builtin) { swalToast({ icon: 'info', title: "Built-in brushes can't be renamed - duplicate it first" }); return; }
+      setRenamingId(preset.id); setRenameVal(preset.name); return;
     }
-    if (action === 'move') {
-      const folders = [...new Set([...BRUSH_FOLDERS, ...presets.map(p => p.folder)])];
-      const r = await swal({
-        title: 'Move to folder',
-        input: 'select',
-        inputOptions: Object.fromEntries(folders.map(f => [f, f])),
-        inputValue: preset.folder,
-        showCancelButton: true,
-        confirmButtonText: 'Move',
-      });
-      if (r.isConfirmed && r.value) persist(presets.map(p => p.id === preset.id ? { ...p, folder: String(r.value) } : p));
-    }
+    if (action === 'move') { setMovingId(preset.id); return; }
+  }
+
+  function commitRename() {
+    const id = renamingId; setRenamingId(null);
+    if (!id) return;
+    const name = renameVal.trim();
+    if (name) persist(presets.map(p => p.id === id ? { ...p, name } : p));
+  }
+
+  function commitMove(folder: string) {
+    const id = movingId; setMovingId(null);
+    if (!id) return;
+    persist(presets.map(p => p.id === id ? { ...p, folder } : p));
   }
 
   return (
@@ -333,6 +331,59 @@ export function BrushesPanel({ color, activeBrushId, onSelectBrush, live, onLive
           </label>
         </div>
       </div>
+      {ctxMenu && (() => {
+        const preset = presets.find(p => p.id === ctxMenu.presetId);
+        if (!preset) return null;
+        const items: { key: string; label: string; danger?: boolean }[] = [
+          { key: 'rename', label: 'Rename…' },
+          { key: 'duplicate', label: 'Duplicate' },
+          { key: 'move', label: 'Move to folder…' },
+          { key: 'favorite', label: preset.favorite ? 'Remove from Favorites' : 'Add to Favorites' },
+          ...(!preset.builtin ? [{ key: 'delete', label: 'Delete', danger: true }] : []),
+        ];
+        return (
+          <div ref={ctxRef} className="fixed z-[9999] min-w-[170px] py-1 rounded-control border border-hairline bg-surface shadow-xl text-small" style={{ left: ctxMenu.x, top: ctxMenu.y }}>
+            <div className="px-3 py-1 text-micro text-ink-faint truncate border-b border-hairline mb-1">{preset.name}</div>
+            {items.map(({ key, label, danger }) => (
+              <button key={key} type="button" onClick={() => ctxAction(key, preset)}
+                className={cn('w-full text-left px-3 py-1.5 text-small hover:bg-accent-soft/40 transition-colors', danger ? 'text-red-400 hover:text-red-300' : 'text-ink')}>
+                {label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+      {renamingId && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setRenamingId(null)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[240px]" onClick={(e) => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-2">Rename brush</div>
+            <input type="text" value={renameVal} onChange={(e) => setRenameVal(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenamingId(null); }}
+              className="w-full bg-ink/5 border border-hairline rounded-control px-2 py-1.5 text-ink text-small outline-none focus:border-accent" autoFocus />
+            <div className="flex justify-end gap-2 mt-3">
+              <button type="button" onClick={() => setRenamingId(null)} className="px-3 py-1 text-small text-ink-faint hover:text-ink">Cancel</button>
+              <button type="button" onClick={commitRename} className="px-3 py-1 text-small bg-accent text-white rounded-control">Rename</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {movingId && (() => {
+        const folders = [...new Set([...BRUSH_FOLDERS, ...presets.map(p => p.folder)])];
+        return (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setMovingId(null)}>
+            <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[200px]" onClick={(e) => e.stopPropagation()}>
+              <div className="text-small font-semibold text-ink mb-2">Move to folder</div>
+              {folders.map(f => (
+                <button key={f} type="button" onClick={() => commitMove(f)}
+                  className="w-full text-left px-3 py-1.5 text-small text-ink hover:bg-accent-soft/40 rounded-control transition-colors">{f}</button>
+              ))}
+              <div className="flex justify-end mt-2">
+                <button type="button" onClick={() => setMovingId(null)} className="px-3 py-1 text-small text-ink-faint hover:text-ink">Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </StudioPanel>
   );
 }
