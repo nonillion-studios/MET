@@ -774,6 +774,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
+  const [canvasFlipped, setCanvasFlipped] = useState(false);
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
@@ -2957,6 +2958,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleGrid: () => setShowGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
+    viewFlipped: canvasFlipped,
+    toggleFlipView: () => setCanvasFlipped(v => !v),
     hasSelection: hasSelection(selection),
     deselect: () => setSelection(NO_SELECTION),
     featherSelection: handleFeatherSelection,
@@ -3022,6 +3025,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       overlayOpacity={overlayOpacity}
       showGrid={showGrid}
       showRulers={showRulers}
+      flipped={canvasFlipped}
       activeTool={activeTool}
       fitSignal={fitSignal}
       layers={layers}
