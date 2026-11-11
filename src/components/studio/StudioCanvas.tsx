@@ -99,6 +99,10 @@ interface StudioCanvasProps {
   showGrid?: boolean;
   snapToGrid?: boolean;
   showRulers?: boolean;
+  guides?: { h: number[]; v: number[] };
+  showGuides?: boolean;
+  onAddGuide?: (axis: 'h' | 'v', position: number) => void;
+  onRemoveGuide?: (axis: 'h' | 'v', index: number) => void;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
@@ -347,7 +351,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
@@ -359,6 +363,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  const [guideDrag, setGuideDrag] = useState<{ axis: 'h' | 'v'; pos: number } | null>(null);
   /** Coalesces onLiveCursorMove/onCursorImagePosChange to at most once per animation frame. Both
    *  callbacks land on plain useState setters upstream (Studio.tsx), so calling them on every native
    *  pointermove — which can fire far more often than the display refresh rate — forces a full,
@@ -3024,6 +3029,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             );
           })()}
 
+          {showGuides && guides && image && (guides.v.length > 0 || guides.h.length > 0) && (
+            <Layer listening={false}>
+              {guides.v.map((x, i) => (
+                <Line key={`gv${i}`} points={[x, 0, x, image.height]} stroke="#00ffff" strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
+              ))}
+              {guides.h.map((y, i) => (
+                <Line key={`gh${i}`} points={[0, y, image.width, y]} stroke="#00ffff" strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
+              ))}
+            </Layer>
+          )}
+
           <Layer>
             {/* listening={false} while Space is held: a Transformer's resize/rotate handles are
                 always internally draggable, independent of the selected node's own `draggable`
@@ -3292,20 +3308,75 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       )}
       {showRulers && image && (
         <>
-          <div className="absolute top-0 left-0 right-0 h-5 bg-black/60 border-b border-white/10 overflow-hidden pointer-events-none z-10" style={{ marginLeft: RULER_SIZE }}>
+          <div
+            className="absolute top-0 left-0 right-0 h-5 bg-black/60 border-b border-white/10 overflow-hidden z-10 cursor-s-resize"
+            style={{ marginLeft: RULER_SIZE }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const imageY = (e.clientY - rect.top - pos.y) / scale;
+              setGuideDrag({ axis: 'h', pos: imageY });
+              const onMove = (ev: MouseEvent) => {
+                const iy = (ev.clientY - rect.top - pos.y) / scale;
+                setGuideDrag({ axis: 'h', pos: iy });
+              };
+              const onUp = (ev: MouseEvent) => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                const iy = (ev.clientY - rect.top - pos.y) / scale;
+                setGuideDrag(null);
+                if (iy > 0 && iy < image!.height) onAddGuide?.('h', Math.round(iy));
+              };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+          >
             {Array.from({ length: Math.floor(image.width / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(x => (
-              <span key={x} className="absolute top-0 h-full flex items-center text-[9px] text-white/50 font-mono border-l border-white/20 pl-0.5"
+              <span key={x} className="absolute top-0 h-full flex items-center text-[9px] text-white/50 font-mono border-l border-white/20 pl-0.5 pointer-events-none"
                 style={{ left: pos.x + x * scale }}>{x}</span>
             ))}
           </div>
-          <div className="absolute top-0 left-0 bottom-0 w-5 bg-black/60 border-r border-white/10 overflow-hidden pointer-events-none z-10" style={{ marginTop: RULER_SIZE }}>
+          <div
+            className="absolute top-0 left-0 bottom-0 w-5 bg-black/60 border-r border-white/10 overflow-hidden z-10 cursor-e-resize"
+            style={{ marginTop: RULER_SIZE }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const imageX = (e.clientX - rect.left - pos.x) / scale;
+              setGuideDrag({ axis: 'v', pos: imageX });
+              const onMove = (ev: MouseEvent) => {
+                const ix = (ev.clientX - rect.left - pos.x) / scale;
+                setGuideDrag({ axis: 'v', pos: ix });
+              };
+              const onUp = (ev: MouseEvent) => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                const ix = (ev.clientX - rect.left - pos.x) / scale;
+                setGuideDrag(null);
+                if (ix > 0 && ix < image!.width) onAddGuide?.('v', Math.round(ix));
+              };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+          >
             {Array.from({ length: Math.floor(image.height / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(y => (
-              <span key={y} className="absolute left-0 w-full text-[9px] text-white/50 font-mono border-t border-white/20 pt-0.5 text-center"
+              <span key={y} className="absolute left-0 w-full text-[9px] text-white/50 font-mono border-t border-white/20 pt-0.5 text-center pointer-events-none"
                 style={{ top: pos.y + y * scale }}>{y}</span>
             ))}
           </div>
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
+      )}
+      {guideDrag && (
+        <div
+          className="absolute z-30 pointer-events-none"
+          style={guideDrag.axis === 'h'
+            ? { left: 0, right: 0, top: pos.y + guideDrag.pos * scale - 0.5, height: 1, background: '#00ffff' }
+            : { top: 0, bottom: 0, left: pos.x + guideDrag.pos * scale - 0.5, width: 1, background: '#00ffff' }
+          }
+        />
       )}
       <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80" style={(flipped || rotation) ? { transform: `${rotation ? `rotate(${-rotation}deg)` : ''}${flipped ? ' scaleX(-1)' : ''}`.trim() } : undefined}>
         {Math.round(scale * 100)}%

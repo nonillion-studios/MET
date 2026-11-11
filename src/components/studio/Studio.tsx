@@ -772,6 +772,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [showGrid, setShowGrid] = useState(false);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
+  const [showGuides, setShowGuides] = useState(true);
+  const [guides, setGuides] = useState<{ h: number[]; v: number[] }>({ h: [], v: [] });
   const [canvasFlipped, setCanvasFlipped] = useState(false);
   const [canvasRotation, setCanvasRotation] = useState(0);
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
@@ -2965,6 +2967,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleSnapToGrid: () => setSnapToGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
+    showGuides,
+    toggleGuides: () => setShowGuides(v => !v),
+    clearGuides: () => setGuides({ h: [], v: [] }),
+    hasGuides: guides.h.length > 0 || guides.v.length > 0,
     viewFlipped: canvasFlipped,
     toggleFlipView: () => setCanvasFlipped(v => !v),
     canvasRotation,
@@ -3037,6 +3043,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       showGrid={showGrid}
       snapToGrid={snapToGrid}
       showRulers={showRulers}
+      guides={guides}
+      showGuides={showGuides}
+      onAddGuide={(axis, position) => setGuides(g => ({ ...g, [axis]: [...g[axis], position] }))}
+      onRemoveGuide={(axis, index) => setGuides(g => ({ ...g, [axis]: g[axis].filter((_, i) => i !== index) }))}
       flipped={canvasFlipped}
       rotation={canvasRotation}
       activeTool={activeTool}
