@@ -7,7 +7,7 @@ import {
 import { Button, IconButton, Modal } from '../ui';
 import { extractImagesFromZip } from '../../lib/zip';
 import { extractImagesFromFiles, createPagesFromOriginals, suggestPairing, type ImageExtractionResult } from '../../lib/pages';
-import { swal, swalToast } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import type { Page, ProcessedImage } from '../../types';
 
 interface PagesManagePanelProps {
@@ -83,7 +83,7 @@ export function PagesManagePanel({ open, onClose, chapterName, pages, onChange, 
         const detail = skipped.length > 0
           ? `Every file was skipped: ${skipped.map(s => `${s.filename} (${s.reason})`).join(', ')}`
           : 'That upload did not contain any supported images.';
-        swal({ icon: 'warning', title: 'No images found', text: detail });
+        swalToast({ icon: 'warning', title: 'No images found', text: detail });
         return;
       }
       if (kind === 'original') addOriginals(images);
@@ -99,7 +99,7 @@ export function PagesManagePanel({ open, onClose, chapterName, pages, onChange, 
     } catch (err) {
       console.error(err);
       const detail = err instanceof Error && err.message ? err.message : 'The file might be corrupted or in an unsupported format.';
-      swal({ icon: 'error', title: 'Import Failed', text: detail });
+      swalToast({ icon: 'error', title: 'Import Failed', text: detail });
     } finally {
       setBusy(false);
     }

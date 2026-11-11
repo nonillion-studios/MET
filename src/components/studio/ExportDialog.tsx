@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Download } from 'lucide-react';
 import { Modal, Button } from '../ui';
 import { compositeFlattenedImage, downloadBlob, type ImageExportFormat } from '../../lib/exportImage';
-import { swal } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import type { ExportSnapshot } from './StudioCanvas';
 
 interface ExportDialogProps {
@@ -26,7 +26,7 @@ export function ExportDialog({ open, onClose, fileBaseName, getSnapshot, exportP
   async function handleExport(format: ImageExportFormat | 'psd') {
     const snapshot = getSnapshot();
     if (!snapshot) {
-      swal({ icon: 'warning', title: 'Nothing to export', text: 'Select a page first.' });
+      swalToast({ icon: 'warning', title: 'Nothing to export', text: 'Select a page first.' });
       return;
     }
     setBusy(format);
@@ -42,7 +42,7 @@ export function ExportDialog({ open, onClose, fileBaseName, getSnapshot, exportP
       onClose();
     } catch (err) {
       console.error(err);
-      swal({ icon: 'error', title: 'Export Failed', text: err instanceof Error ? err.message : 'Could not export this page.' });
+      swalToast({ icon: 'error', title: 'Export Failed', text: err instanceof Error ? err.message : 'Could not export this page.' });
     } finally {
       setBusy(null);
     }
