@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, SlidersHorizontal, ChevronUp, ChevronDown,
   FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2, Grid2x2, Paintbrush, Move,
@@ -6,7 +6,6 @@ import {
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
 import { StudioPanel } from './StudioPanel';
-import { swal } from '../../lib/swalTheme';
 import {
   flattenWithPaths, canMove, findLayer, getParent, getSiblings, isDescendantOf, canBeClipBase, type LayerPath,
 } from './layerTree';
@@ -150,69 +149,32 @@ export function LayersPanel({
     else onDelete(id);
   }
 
-  async function confirmConvertBackground() {
-    if (!onConvertBackgroundToLayer) return;
-    const result = await swal({
-      title: 'New Layer',
-      text: 'The background will become a regular editable layer — you can paint on it, move it, and apply effects to it like any other layer.',
-      input: 'text',
-      inputValue: 'Layer 0',
-      inputAttributes: { autocapitalize: 'off' },
-      showCancelButton: true,
-      confirmButtonText: 'OK',
-    });
-    if (result.isConfirmed) onConvertBackgroundToLayer((result.value as string | undefined)?.trim() || 'Layer 0');
-  }
+  // ——— Context menu state (replaces SweetAlert modal) ———
+  const [ctxMenu, setCtxMenu] = useState<{ layerId: string; x: number; y: number } | null>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
 
-  async function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
+  const closeCtx = useCallback(() => setCtxMenu(null), []);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') { closeCtx(); e.stopPropagation(); } }
+    function onClick(e: MouseEvent) { if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) closeCtx(); }
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onClick, true);
+    return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('pointerdown', onClick, true); };
+  }, [ctxMenu, closeCtx]);
+
+  function openContextMenu(e: React.MouseEvent, layer: StudioLayer) {
     e.preventDefault();
     e.stopPropagation();
-    const options: Record<string, string> = {
-      select: 'Select',
-      rename: 'Rename…',
-      duplicate: 'Duplicate',
-      visibility: layer.visible ? 'Hide' : 'Show',
-      ...(layer.isBackground ? {} : { lock: layer.locked ? 'Unlock' : 'Lock' }),
-      ...(layer.type === 'text' && layer.text && onConvertTextMode
-        ? (layer.text.autoWidth
-          ? { convertText: 'Convert to Area Text' }
-          : { convertText: 'Convert to Point Text' })
-        : {}),
-      ...(layer.type === 'text' && onOpenWarpText ? { warpText: 'Warp Text…' } : {}),
-      moveUp: 'Move Up',
-      moveDown: 'Move Down',
-      ...(onOpenBlendingOptions ? { blendingOptions: 'Blending Options…' } : {}),
-      ...(onSetLayerEffects ? { copyStyle: 'Copy Layer Style' } : {}),
-      ...(onSetLayerEffects && getClipboardLayerStyle() ? { pasteStyle: 'Paste Layer Style' } : {}),
-      ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? { clearStyle: 'Clear Layer Style' } : {}),
-      ...(layer.isBackground && onConvertBackgroundToLayer ? { layerFromBackground: 'Layer from Background' } : {}),
-      ...(layer.type === 'placed-image' && onRasterizePlacedImage ? { rasterize: 'Rasterize Layer' } : {}),
-      ...(layer.isBackground ? {} : { delete: 'Delete' }),
-    };
-    const result = await swal({
-      title: layer.name,
-      input: 'select',
-      inputOptions: options,
-      inputPlaceholder: 'Choose an action',
-      showCancelButton: true,
-      confirmButtonText: 'Go',
-    });
-    if (!result.isConfirmed || !result.value) return;
-    switch (result.value as string) {
-      case 'select': onSelect(layer.id, 'replace'); break;
-      case 'rename': {
-        const renamed = await swal({
-          title: 'Rename Layer',
-          input: 'text',
-          inputValue: layer.name,
-          showCancelButton: true,
-          confirmButtonText: 'Rename',
-        });
-        if (renamed.isConfirmed && typeof renamed.value === 'string' && renamed.value.trim()) {
-          onRename(layer.id, renamed.value.trim());
-        }
-        break;
-      }
+    onSelect(layer.id, 'replace');
+    setCtxMenu({ layerId: layer.id, x: e.clientX, y: e.clientY });
+  }
+
+  function ctxAction(action: string, layer: StudioLayer) {
+    closeCtx();
+    switch (action) {
+      case 'rename': setRenamingId(layer.id); setRenameValue(layer.name); break;
       case 'duplicate': onDuplicate(layer.id); break;
       case 'convertText': onConvertTextMode?.(layer.id, !layer.text?.autoWidth); break;
       case 'warpText': onOpenWarpText?.(layer.id); break;
@@ -222,13 +184,9 @@ export function LayersPanel({
       case 'moveDown': onMove(layer.id, 'down'); break;
       case 'blendingOptions': onOpenBlendingOptions?.(layer.id); break;
       case 'copyStyle': setClipboardLayerStyle(layer.effects ?? createDefaultLayerEffects()); break;
-      case 'pasteStyle': {
-        const copied = getClipboardLayerStyle();
-        if (copied) onSetLayerEffects?.(layer.id, copied);
-        break;
-      }
+      case 'pasteStyle': { const c = getClipboardLayerStyle(); if (c) onSetLayerEffects?.(layer.id, c); break; }
       case 'clearStyle': onSetLayerEffects?.(layer.id, createDefaultLayerEffects()); break;
-      case 'layerFromBackground': void confirmConvertBackground(); break;
+      case 'layerFromBackground': onConvertBackgroundToLayer?.('Layer 0'); break;
       case 'rasterize': onRasterizePlacedImage?.(layer.id); break;
       case 'delete': deleteLayerOrSelection(layer.id); break;
     }
@@ -502,7 +460,7 @@ export function LayersPanel({
                         className={cn('flex-1 min-w-0 text-left text-ui font-medium truncate', active ? 'text-ink' : 'text-ink/80')}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
-                          if (layer.isBackground) { void confirmConvertBackground(); return; }
+                          if (layer.isBackground) { onConvertBackgroundToLayer?.('Layer 0'); return; }
                           setRenameValue(layer.name);
                           setRenamingId(layer.id);
                         }}
@@ -728,6 +686,50 @@ export function LayersPanel({
             </div>
           );
         })}
+      {ctxMenu && (() => {
+        const layer = findLayer(layers, ctxMenu.layerId);
+        if (!layer) return null;
+        const items: { key: string; label: string; danger?: boolean }[] = [
+          { key: 'rename', label: 'Rename…' },
+          { key: 'duplicate', label: 'Duplicate' },
+          { key: 'visibility', label: layer.visible ? 'Hide' : 'Show' },
+          ...(!layer.isBackground ? [{ key: 'lock', label: layer.locked ? 'Unlock' : 'Lock' }] : []),
+          ...(layer.type === 'text' && layer.text && onConvertTextMode
+            ? [{ key: 'convertText', label: layer.text.autoWidth ? 'Convert to Area Text' : 'Convert to Point Text' }] : []),
+          ...(layer.type === 'text' && onOpenWarpText ? [{ key: 'warpText', label: 'Warp Text…' }] : []),
+          { key: 'moveUp', label: 'Move Up' },
+          { key: 'moveDown', label: 'Move Down' },
+          ...(onOpenBlendingOptions ? [{ key: 'blendingOptions', label: 'Blending Options…' }] : []),
+          ...(onSetLayerEffects ? [{ key: 'copyStyle', label: 'Copy Layer Style' }] : []),
+          ...(onSetLayerEffects && getClipboardLayerStyle() ? [{ key: 'pasteStyle', label: 'Paste Layer Style' }] : []),
+          ...(onSetLayerEffects && layer.effects != null && hasAnyEnabledStyle(layer.effects) ? [{ key: 'clearStyle', label: 'Clear Layer Style' }] : []),
+          ...(layer.isBackground && onConvertBackgroundToLayer ? [{ key: 'layerFromBackground', label: 'Layer from Background' }] : []),
+          ...(layer.type === 'placed-image' && onRasterizePlacedImage ? [{ key: 'rasterize', label: 'Rasterize Layer' }] : []),
+          ...(!layer.isBackground ? [{ key: 'delete', label: 'Delete', danger: true }] : []),
+        ];
+        return (
+          <div
+            ref={ctxRef}
+            className="fixed z-[9999] min-w-[180px] py-1 rounded-control border border-hairline bg-surface shadow-xl text-small"
+            style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          >
+            <div className="px-3 py-1 text-micro text-ink-faint truncate border-b border-hairline mb-1">{layer.name}</div>
+            {items.map(({ key, label, danger }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => ctxAction(key, layer)}
+                className={cn(
+                  'w-full text-left px-3 py-1.5 text-small hover:bg-accent-soft/40 transition-colors',
+                  danger ? 'text-red-400 hover:text-red-300' : 'text-ink',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
     </StudioPanel>
   );
 }
