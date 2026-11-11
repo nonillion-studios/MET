@@ -18,6 +18,7 @@ import { ColorProvider, useColor } from './color/ColorContext';
 import { ColorPanel } from './color/ColorPanel';
 import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
+import { HistogramPanel } from './HistogramPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
 import {
@@ -2701,6 +2702,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const colorPanel = <ColorPanel hideTitle />;
   const historyPanel = <HistoryPanel hideTitle />;
+  const histogramPanel = <HistogramPanel getSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null} hideTitle />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} hideTitle />;
 
   // Built once and reused for both the docked-tab render and the floating window — the one place a
@@ -2822,6 +2824,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'color', label: PANEL_BY_ID.get('color')!.title, content: colorPanel },
     { id: 'fonts', label: PANEL_BY_ID.get('fonts')!.title, content: fontsPanel },
     { id: 'history', label: PANEL_BY_ID.get('history')!.title, content: historyPanel },
+    { id: 'histogram', label: PANEL_BY_ID.get('histogram')!.title, content: histogramPanel },
     { id: 'layers', label: PANEL_BY_ID.get('layers')!.title, content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
