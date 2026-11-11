@@ -47,7 +47,7 @@ export function FloatingTextToolbar({ text, boxScreenRect, containerHeight, font
         onChange={(e) => onUpdate({ fontFamily: e.target.value })}
         className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro max-w-[7rem]"
       >
-        {fontFamilies.map((f) => <option key={f} value={f}>{f}</option>)}
+        {fontFamilies.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
       </select>
 
       <input

@@ -440,7 +440,7 @@ export function ToolOptionsBar({
               onChange={(e) => setTextField('fontFamily', e.target.value)}
               className={`studio-interactive studio-focusable ${selectClass}`}
             >
-              {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
+              {fontFamilies.map(f => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
             </select>
           </label>
           <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>

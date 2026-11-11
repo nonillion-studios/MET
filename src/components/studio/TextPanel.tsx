@@ -184,7 +184,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
                 onChange={(e) => setLine({ fontFamily: e.target.value })}
                 className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1.5 text-ink text-micro"
               >
-                {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
+                {fontFamilies.map(f => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
               </select>
             </label>
             <div className="flex items-center gap-1">
@@ -235,7 +235,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
             onChange={(e) => setChar({ fontFamily: e.target.value })}
             className="bg-ink/5 border border-hairline rounded-control px-1.5 py-1.5 text-ink text-micro"
           >
-            {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
+            {fontFamilies.map(f => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
           </select>
         </label>
 
