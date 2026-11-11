@@ -3,7 +3,6 @@ import { Modal, Button } from '../ui';
 import { Slider, CheckboxRow, ColorRow, ChannelTabs } from './panelControls';
 import { BlendIfSlider } from './BlendIfSlider';
 import { useRafBatchedPatch } from './useRafBatchedPatch';
-import { swal } from '../../lib/swalTheme';
 import { loadLayerStylePresets, saveLayerStylePresets, type LayerStylePreset } from '../../lib/layerStyleStore';
 import {
   BLEND_MODES, createDefaultLayerEffects,
@@ -131,13 +130,17 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
     setEffects(createDefaultLayerEffects());
   }
 
-  async function handleNewStyle() {
-    const result = await swal({ title: 'New Style', input: 'text', inputPlaceholder: 'Style name', showCancelButton: true });
-    const name = (result.value as string | undefined)?.trim();
-    if (!name) return;
+  const [newStyleOpen, setNewStyleOpen] = useState(false);
+  const [newStyleName, setNewStyleName] = useState('');
+
+  function commitNewStyle() {
+    const name = newStyleName.trim();
+    if (!name) { setNewStyleOpen(false); return; }
     const next = [...presets, { id: `style-${Date.now()}`, name, effects }];
     setPresets(next);
-    await saveLayerStylePresets(next);
+    void saveLayerStylePresets(next);
+    setNewStyleOpen(false);
+    setNewStyleName('');
   }
 
   return (
@@ -154,7 +157,22 @@ export function BlendingOptionsDialog({ open, layer, onClose, onUpdate, initialS
           </label>
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={handleReset}>Reset to Default</Button>
-            <Button variant="secondary" onClick={handleNewStyle}>New Style…</Button>
+            {newStyleOpen ? (
+              <span className="flex items-center gap-1">
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Style name"
+                  value={newStyleName}
+                  onChange={e => setNewStyleName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') commitNewStyle(); if (e.key === 'Escape') setNewStyleOpen(false); }}
+                  className="text-micro bg-ink/5 border border-hairline rounded-control px-2 py-1 text-ink focus:outline-none focus:ring-1 focus:ring-accent w-32"
+                />
+                <Button variant="secondary" onClick={commitNewStyle}>Save</Button>
+              </span>
+            ) : (
+              <Button variant="secondary" onClick={() => { setNewStyleOpen(true); setNewStyleName(''); }}>New Style…</Button>
+            )}
             <Button variant="secondary" onClick={handleCancel}>Cancel</Button>
             <Button onClick={handleOk}>OK</Button>
           </div>
