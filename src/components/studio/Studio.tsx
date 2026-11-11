@@ -45,6 +45,7 @@ import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
 import { KeyboardShortcutsOverlay } from './KeyboardShortcutsOverlay';
+import { CommandPalette } from './CommandPalette';
 import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
@@ -650,6 +651,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
@@ -721,6 +723,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onToggleMultiBubble: () => setMultiBubbleMode(!multiBubbleMode),
     onLayerViaCopy: () => handleLayerViaCopy(),
     onLayerViaCut: () => handleLayerViaCut(),
+    onCommandPalette: () => setCommandPaletteOpen(v => !v),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -3519,6 +3522,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         />
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {commandPaletteOpen && <CommandPalette menus={menus} onSelectTool={setActiveTool} onClose={() => setCommandPaletteOpen(false)} />}
       {selAmountPrompt && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
           <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[260px]" onClick={e => e.stopPropagation()}>

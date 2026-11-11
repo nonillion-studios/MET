@@ -35,6 +35,7 @@ interface UseStudioShortcutsArgs {
   onToggleMultiBubble: () => void;
   onLayerViaCopy: () => void;
   onLayerViaCut: () => void;
+  onCommandPalette: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -56,7 +57,7 @@ export function useStudioShortcuts({
   onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
   onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
-  onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut,
+  onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -108,6 +109,7 @@ export function useStudioShortcuts({
         if (key === ',') { e.preventDefault(); onTextSizeStep(-1); return; }
         if (key === 'd') { e.preventDefault(); onDeselect(); return; }
         if (key === 'j') { e.preventDefault(); onLayerViaCopy(); return; }
+        if (key === '/' || key === 'k') { e.preventDefault(); onCommandPalette(); return; }
         return; // other mod combos (undo/redo) are handled by useKeyboardUndo
       }
 
@@ -130,6 +132,6 @@ export function useStudioShortcuts({
     onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
     onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
-    onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut,
+    onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
   ]);
 }
