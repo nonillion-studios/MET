@@ -1,3 +1,23 @@
+import { useEffect, useState } from 'react';
+
+function useMemoryUsage(): string | null {
+  const [mem, setMem] = useState<string | null>(null);
+  useEffect(() => {
+    const perf = performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } };
+    if (!perf.memory) return;
+    function update() {
+      const m = (performance as typeof perf).memory!;
+      const usedMB = Math.round(m.usedJSHeapSize / (1024 * 1024));
+      const limitMB = Math.round(m.jsHeapSizeLimit / (1024 * 1024));
+      setMem(`${usedMB}/${limitMB} MB`);
+    }
+    update();
+    const id = setInterval(update, 5000);
+    return () => clearInterval(id);
+  }, []);
+  return mem;
+}
+
 interface StatusBarProps {
   /** 1 = 100%. */
   zoom: number;
@@ -9,11 +29,9 @@ interface StatusBarProps {
   layerName: string | null;
 }
 
-/** A slim, always-present bar at the very bottom of the Studio shell — zoom/cursor/image-size/
- *  tool/layer, all driven by state `Studio.tsx` already tracks or mirrors from `StudioCanvas` via
- *  its `onViewportChange`/`onCursorImagePosChange` callbacks (see StudioCanvas.tsx). Never owns any
- *  of this data itself. */
 export function StatusBar({ zoom, onZoomClick, cursorPos, imageWidth, imageHeight, toolLabel, layerName }: StatusBarProps) {
+  const mem = useMemoryUsage();
+
   return (
     <div className="h-6 shrink-0 flex items-center gap-4 px-3 liquid-glass-bar border-t border-hairline text-micro text-ink-faint select-none">
       <button
@@ -31,7 +49,8 @@ export function StatusBar({ zoom, onZoomClick, cursorPos, imageWidth, imageHeigh
         {imageWidth != null && imageHeight != null ? `${imageWidth} × ${imageHeight} px` : '— × — px'}
       </span>
       <span className="shrink-0">{toolLabel}</span>
-      <span className="truncate">{layerName ?? 'No Layer'}</span>
+      <span className="truncate flex-1">{layerName ?? 'No Layer'}</span>
+      {mem && <span className="tabular-nums shrink-0 text-ink-faint/60" title="JS heap usage">{mem}</span>}
     </div>
   );
 }
