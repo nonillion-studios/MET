@@ -145,6 +145,10 @@ export interface MenuActions {
    *  there is to reset. */
   resetLayoutEnabled: boolean;
   resetPanelLayout: () => void;
+  workspacePresetNames: string[];
+  saveWorkspacePreset: () => void;
+  loadWorkspacePreset: (name: string) => void;
+  deleteWorkspacePreset: (name: string) => void;
   aboutOpen: () => void;
   triggerImportFonts: () => void;
   triggerImportBrushes: () => void;
@@ -454,8 +458,17 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         {
           id: 'arrange', label: 'Arrange', submenu: [
             { id: 'reset-layout', label: 'Reset Layout', action: a.resetPanelLayout, disabled: !a.resetLayoutEnabled },
-            { id: 'save-layout', label: 'Save Layout…', disabled: true },
-            { id: 'load-layout', label: 'Load Layout…', disabled: true },
+            { id: 'save-layout', label: 'Save Layout…', action: a.saveWorkspacePreset },
+            ...(a.workspacePresetNames.length > 0 ? [{
+              id: 'load-layout', label: 'Load Layout', submenu: a.workspacePresetNames.map(name => ({
+                id: `load-${name}`, label: name, action: () => a.loadWorkspacePreset(name),
+              })),
+            }] : [{ id: 'load-layout', label: 'Load Layout…', disabled: true }] as MenuItemDef[]),
+            ...(a.workspacePresetNames.length > 0 ? [{
+              id: 'delete-layout', label: 'Delete Layout', submenu: a.workspacePresetNames.map(name => ({
+                id: `delete-${name}`, label: name, action: () => a.deleteWorkspacePreset(name),
+              })),
+            }] : [] as MenuItemDef[]),
           ],
         },
         { id: 'sep2', label: '', separator: true },

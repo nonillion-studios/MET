@@ -652,6 +652,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [saveLayoutOpen, setSaveLayoutOpen] = useState(false);
+  const [saveLayoutName, setSaveLayoutName] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
@@ -2923,6 +2925,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleStatusBar,
     resetLayoutEnabled: true,
     resetPanelLayout: panelLayout.resetLayout,
+    workspacePresetNames: panelLayout.workspacePresets.map(p => p.name),
+    saveWorkspacePreset: () => { setSaveLayoutOpen(true); setSaveLayoutName(''); },
+    loadWorkspacePreset: panelLayout.loadWorkspacePreset,
+    deleteWorkspacePreset: panelLayout.deleteWorkspacePreset,
     aboutOpen: () => setAboutOpen(true),
     triggerImportFonts: handleTriggerImportFonts,
     triggerImportBrushes: handleTriggerImportBrushes,
@@ -3523,6 +3529,29 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {commandPaletteOpen && <CommandPalette menus={menus} onSelectTool={setActiveTool} onClose={() => setCommandPaletteOpen(false)} />}
+      {saveLayoutOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSaveLayoutOpen(false)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[280px]" onClick={e => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-2">Save Workspace Layout</div>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Layout name"
+              value={saveLayoutName}
+              onChange={e => setSaveLayoutName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && saveLayoutName.trim()) { panelLayout.saveWorkspacePreset(saveLayoutName.trim()); setSaveLayoutOpen(false); }
+                if (e.key === 'Escape') setSaveLayoutOpen(false);
+              }}
+              className="w-full text-small bg-ink/5 border border-hairline rounded-control px-2.5 py-1.5 text-ink focus:outline-none focus:ring-1 focus:ring-accent mb-3"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setSaveLayoutOpen(false)} className="px-3 py-1.5 text-small text-ink-faint hover:text-ink rounded-control">Cancel</button>
+              <button type="button" onClick={() => { if (saveLayoutName.trim()) { panelLayout.saveWorkspacePreset(saveLayoutName.trim()); setSaveLayoutOpen(false); } }} className="px-3 py-1.5 text-small bg-accent text-white rounded-control hover:brightness-110" disabled={!saveLayoutName.trim()}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
       {selAmountPrompt && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
           <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[260px]" onClick={e => e.stopPropagation()}>

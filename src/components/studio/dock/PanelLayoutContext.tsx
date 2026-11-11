@@ -59,30 +59,39 @@ const DEFAULT_DOCK_WIDTH = 288;
 const MIN_DOCK_WIDTH = 220;
 const MAX_DOCK_WIDTH = 480;
 
+interface WorkspacePreset { name: string; layout: StoredLayoutV2; dockWidth: number; }
+
+function loadPresets(): WorkspacePreset[] {
+  try {
+    const raw = localStorage.getItem('studio_workspace_presets');
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function persistPresets(presets: WorkspacePreset[]) {
+  try { localStorage.setItem('studio_workspace_presets', JSON.stringify(presets)); } catch {}
+}
+
 interface PanelLayoutContextValue {
   order: string[];
   isVisible: (id: string) => boolean;
   isCollapsed: (id: string) => boolean;
-  /** Undefined for a `grow` panel (Layers), which has no stored height. */
   heightOf: (id: string) => number | undefined;
   setVisible: (id: string, visible: boolean) => void;
   toggleCollapsed: (id: string) => void;
-  /** Makes a panel visible and expanded — the panel-stack successor to the old dock's "select this
-   *  tab": there's no single active tab anymore, so "reveal" is the closest real equivalent. */
   reveal: (id: string) => void;
   reorder: (draggedId: string, targetId: string, before: boolean) => void;
-  /** Adjusts two adjacent panels' stored heights by `delta` (grows `aboveId`, shrinks `belowId`),
-   *  clamped so neither passes its registry `minHeight`. A `grow` neighbor (Layers) has no stored
-   *  height to adjust — its side of the drag is a no-op, since its flex sizing already absorbs
-   *  whatever the fixed-height side gives up. */
   resizeAdjacent: (aboveId: string, belowId: string, delta: number) => void;
-  /** Resets one panel back to its registry default height. No-op for a `grow` panel. */
   resetHeight: (id: string) => void;
   maximizedId: string | null;
   toggleMaximized: (id: string) => void;
   resetLayout: () => void;
   dockWidth: number;
   resizeDock: (delta: number) => void;
+  workspacePresets: WorkspacePreset[];
+  saveWorkspacePreset: (name: string) => void;
+  loadWorkspacePreset: (name: string) => void;
+  deleteWorkspacePreset: (name: string) => void;
 }
 
 const PanelLayoutContext = createContext<PanelLayoutContextValue | null>(null);
@@ -190,6 +199,40 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
     setDockWidth(w => Math.min(MAX_DOCK_WIDTH, Math.max(MIN_DOCK_WIDTH, w + delta)));
   }, []);
 
+  const [workspacePresets, setWorkspacePresets] = useState<WorkspacePreset[]>(() => loadPresets());
+
+  const saveWorkspacePreset = useCallback((name: string) => {
+    const layout: StoredLayoutV2 = { v: SCHEMA_VERSION, order: state.order, collapsed: state.collapsed, visible: state.visible, height: state.height };
+    setWorkspacePresets(prev => {
+      const next = [...prev.filter(p => p.name !== name), { name, layout, dockWidth }];
+      persistPresets(next);
+      return next;
+    });
+  }, [state, dockWidth]);
+
+  const loadWorkspacePreset = useCallback((name: string) => {
+    const preset = workspacePresets.find(p => p.name === name);
+    if (!preset) return;
+    const order = [...preset.layout.order.filter(id => PANEL_IDS.includes(id)), ...PANEL_IDS.filter(id => !preset.layout.order.includes(id))];
+    const def = defaultLayout();
+    setState({
+      order,
+      collapsed: { ...def.collapsed, ...preset.layout.collapsed },
+      visible: { ...def.visible, ...preset.layout.visible },
+      height: { ...def.height, ...preset.layout.height },
+    });
+    setDockWidth(Math.min(MAX_DOCK_WIDTH, Math.max(MIN_DOCK_WIDTH, preset.dockWidth)));
+    setMaximizedId(null);
+  }, [workspacePresets]);
+
+  const deleteWorkspacePreset = useCallback((name: string) => {
+    setWorkspacePresets(prev => {
+      const next = prev.filter(p => p.name !== name);
+      persistPresets(next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!storageKey) return;
     const timeout = setTimeout(() => {
@@ -201,7 +244,9 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
   const value = useMemo<PanelLayoutContextValue>(() => ({
     order: state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder,
     resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout, dockWidth, resizeDock,
-  }), [state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder, resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout, dockWidth, resizeDock]);
+    workspacePresets, saveWorkspacePreset, loadWorkspacePreset, deleteWorkspacePreset,
+  }), [state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder, resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout, dockWidth, resizeDock,
+    workspacePresets, saveWorkspacePreset, loadWorkspacePreset, deleteWorkspacePreset]);
 
   return <PanelLayoutContext.Provider value={value}>{children}</PanelLayoutContext.Provider>;
 }
