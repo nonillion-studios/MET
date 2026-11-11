@@ -38,4 +38,5 @@ export const FIXED_SHORTCUTS_HELP: { keys: string; description: string }[] = [
   { keys: "Ctrl/Cmd+'", description: 'Toggle grid' },
   { keys: 'Ctrl/Cmd+Shift+N', description: 'New layer' },
   { keys: 'Ctrl/Cmd+Shift+E', description: 'Merge visible layers' },
+  { keys: 'Ctrl/Cmd+/ or K', description: 'Command palette (search actions & tools)' },
 ];
