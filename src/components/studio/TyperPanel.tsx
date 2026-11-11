@@ -227,7 +227,7 @@ export function TyperPanel({
             size="sm"
             active={!enabled}
             aria-label={enabled ? `Disable ${style.name}` : `Enable ${style.name}`}
-            title={enabled ? 'Disable style (won't match a prefix while off)' : 'Enable style'}
+            title={enabled ? "Disable style (won't match a prefix while off)" : 'Enable style'}
             onClick={() => updateStyle(style.id, { enabled: !enabled })}
             className="!bg-transparent !w-6 !h-6 shrink-0"
           >
