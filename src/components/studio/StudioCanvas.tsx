@@ -214,6 +214,10 @@ interface StudioCanvasProps {
    *  the viewport without polling `getViewTransform()`. `containerSize` is the on-screen viewport
    *  size in CSS px — the minimap needs it to size its own viewport-rectangle overlay correctly. */
   onViewportChange?: (v: { pos: { x: number; y: number }; scale: number; containerSize: { width: number; height: number } }) => void;
+  /** Non-destructive horizontal mirror of the canvas view (CSS transform). */
+  flipped?: boolean;
+  /** Non-destructive view rotation in degrees (CSS transform). */
+  rotation?: number;
 }
 
 /** The subset of a resolved TypeR line's style the drag preview needs to render — see
@@ -346,7 +350,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   activeMaskLayerId = null, onLiveCursorMove, onCursorImagePosChange, onViewportChange,
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
   onSelectInverse, onOpenFillSelectionDialog, onOpenStrokeSelectionDialog, onLayerViaCopy, onLayerViaCut, onAddLayerFromContextMenu,
-  typerArmed = false, typerPreviewLine = null,
+  typerArmed = false, typerPreviewLine = null, flipped = false, rotation = 0,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -2621,6 +2625,7 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     <div
       ref={containerRef}
       className={`studio-canvas-bg relative w-full h-full overflow-hidden touch-none ${cursorClass}`}
+      style={(flipped || rotation) ? { transform: `${flipped ? 'scaleX(-1) ' : ''}${rotation ? `rotate(${rotation}deg)` : ''}`.trim() } : undefined}
       onPointerMove={(e) => {
         // Live-collab cursor broadcasting needs a position for any tool, not just the
         // brush-cursor-chrome ones below — so this rect/cx/cy computation itself can't be
@@ -3265,9 +3270,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
       )}
-      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80">
+      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80" style={(flipped || rotation) ? { transform: `${rotation ? `rotate(${-rotation}deg)` : ''}${flipped ? ' scaleX(-1)' : ''}`.trim() } : undefined}>
         {Math.round(scale * 100)}%
       </div>
+      {(flipped || rotation !== 0) && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-control bg-amber-500/90 text-white text-micro font-semibold pointer-events-none" style={{ transform: `${rotation ? `rotate(${-rotation}deg)` : ''}${flipped ? ' scaleX(-1)' : ''}`.trim() }}>
+          {flipped && rotation ? 'FLIPPED + ROTATED VIEW' : flipped ? 'FLIPPED VIEW' : `ROTATED ${rotation}°`}
+        </div>
+      )}
     </div>
   );
 });

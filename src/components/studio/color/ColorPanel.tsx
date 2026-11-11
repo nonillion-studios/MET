@@ -4,7 +4,7 @@ import { colord, extend } from 'colord';
 import cmykPlugin from 'colord/plugins/cmyk';
 import labPlugin from 'colord/plugins/lab';
 import { IconButton, Input } from '../../ui';
-import { swal, swalToast } from '../../../lib/swalTheme';
+import { swalToast } from '../../../lib/swalTheme';
 import { StudioPanel } from '../StudioPanel';
 import { Menu } from '../menu/Menu';
 import type { MenuItemDef } from '../menu/menuDefinitions';
@@ -173,16 +173,27 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
 
   const activePalette = palettes.find(p => p.id === activePaletteId) ?? null;
 
-  async function handleNewPalette() {
-    const result = await swal({ title: 'New Palette', input: 'text', inputLabel: 'Palette name', showCancelButton: true, confirmButtonText: 'Create' });
-    const name = (result.value || '').trim();
-    if (result.isConfirmed && name) createPalette(name);
+  const [newPaletteOpen, setNewPaletteOpen] = useState(false);
+  const [newPaletteName, setNewPaletteName] = useState('');
+  const [confirmDeletePalette, setConfirmDeletePalette] = useState(false);
+
+  function handleNewPalette() {
+    setNewPaletteName('');
+    setNewPaletteOpen(true);
+  }
+  function commitNewPalette() {
+    setNewPaletteOpen(false);
+    const name = newPaletteName.trim();
+    if (name) createPalette(name);
   }
 
-  async function handleDeletePalette() {
+  function handleDeletePalette() {
     if (!activePalette) return;
-    const result = await swal({ icon: 'warning', title: `Delete "${activePalette.name}"?`, showCancelButton: true, confirmButtonText: 'Delete', confirmButtonColor: '#FF3B30' });
-    if (result.isConfirmed) deletePalette(activePalette.id);
+    setConfirmDeletePalette(true);
+  }
+  function commitDeletePalette() {
+    setConfirmDeletePalette(false);
+    if (activePalette) deletePalette(activePalette.id);
   }
 
   async function copyToClipboard(text: string, label: string) {
@@ -497,6 +508,31 @@ export function ColorPanel({ hideTitle }: ColorPanelProps = {}) {
           onClose={() => setPickerOpen(false)}
           addSwatch={activePaletteId ? (hex) => addSwatch(activePaletteId, hex) : undefined}
         />
+      {newPaletteOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setNewPaletteOpen(false)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[240px]" onClick={(e) => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-2">New Palette</div>
+            <input type="text" placeholder="Palette name" value={newPaletteName} onChange={(e) => setNewPaletteName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitNewPalette(); if (e.key === 'Escape') setNewPaletteOpen(false); }}
+              className="w-full bg-ink/5 border border-hairline rounded-control px-2 py-1.5 text-ink text-small outline-none focus:border-accent" autoFocus />
+            <div className="flex justify-end gap-2 mt-3">
+              <button type="button" onClick={() => setNewPaletteOpen(false)} className="px-3 py-1 text-small text-ink-faint hover:text-ink">Cancel</button>
+              <button type="button" onClick={commitNewPalette} className="px-3 py-1 text-small bg-accent text-white rounded-control">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDeletePalette && activePalette && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setConfirmDeletePalette(false)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[240px]" onClick={(e) => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-3">Delete &ldquo;{activePalette.name}&rdquo;?</div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmDeletePalette(false)} className="px-3 py-1 text-small text-ink-faint hover:text-ink">Cancel</button>
+              <button type="button" onClick={commitDeletePalette} className="px-3 py-1 text-small bg-red-500 text-white rounded-control hover:bg-red-600">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </StudioPanel>
   );
 }

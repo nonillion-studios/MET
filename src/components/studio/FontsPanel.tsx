@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, Trash2, Download, DownloadCloud, Check, Loader2 } from 'lucide-react';
 import { IconButton, Skeleton } from '../ui';
-import { swal, swalToast } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import { loadCustomFont, extractFontsFromZip, arrayBufferToDataUrl, registerStoredFont } from '../../lib/fontLoader';
 import { type StoredFont } from '../../lib/fontsStore';
@@ -70,10 +70,14 @@ export function FontsPanel({ onFamiliesChange, hideTitle }: FontsPanelProps) {
     }
   }
 
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   async function removeFont(id: string) {
-    const result = await swal({ icon: 'warning', title: 'Remove this font?', showCancelButton: true, confirmButtonText: 'Remove' });
-    if (!result.isConfirmed) return;
-    await removeStoredFont(id);
+    setConfirmRemoveId(id);
+  }
+  async function confirmRemove() {
+    if (!confirmRemoveId) return;
+    await removeStoredFont(confirmRemoveId);
+    setConfirmRemoveId(null);
   }
 
   async function downloadGoogleFont(entry: CuratedGoogleFont) {
@@ -202,6 +206,17 @@ export function FontsPanel({ onFamiliesChange, hideTitle }: FontsPanelProps) {
           );
         })}
       </div>
+      {confirmRemoveId && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setConfirmRemoveId(null)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[240px]" onClick={(e) => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-3">Remove this font?</div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setConfirmRemoveId(null)} className="px-3 py-1.5 text-small text-ink-faint hover:text-ink rounded-control">Cancel</button>
+              <button type="button" onClick={confirmRemove} className="px-3 py-1.5 text-small bg-red-500 text-white rounded-control hover:bg-red-600">Remove</button>
+            </div>
+          </div>
+        </div>
+      )}
     </StudioPanel>
   );
 }

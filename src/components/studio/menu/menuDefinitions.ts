@@ -160,6 +160,12 @@ export interface MenuActions {
   toggleGrid: () => void;
   showRulers: boolean;
   toggleRulers: () => void;
+  viewFlipped: boolean;
+  toggleFlipView: () => void;
+  canvasRotation: number;
+  rotateViewCW: () => void;
+  rotateViewCCW: () => void;
+  resetRotateView: () => void;
   hasSelection: boolean;
   deselect: () => void;
   featherSelection: () => void;
@@ -306,6 +312,11 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'snap-grid', label: 'Snap to Grid', disabled: true, checked: false },
         { id: 'snap-guides', label: 'Snap to Guides', disabled: true, checked: false },
         { id: 'sep4', label: '', separator: true },
+        { id: 'flip-view', label: 'Flip Canvas View', action: a.toggleFlipView, checked: a.viewFlipped },
+        { id: 'rotate-cw', label: 'Rotate View CW', shortcut: 'Shift+.', action: a.rotateViewCW },
+        { id: 'rotate-ccw', label: 'Rotate View CCW', shortcut: 'Shift+,', action: a.rotateViewCCW },
+        { id: 'reset-rotate', label: 'Reset Rotation', action: a.resetRotateView, disabled: a.canvasRotation === 0 },
+        { id: 'sep5', label: '', separator: true },
         { id: 'toggle-dock', label: 'Toggle Panels', action: a.toggleDock },
         { id: 'fullscreen', label: 'Fullscreen', shortcut: 'Ctrl+Shift+F', action: a.toggleFullscreen, checked: a.isFullscreen },
       ],
