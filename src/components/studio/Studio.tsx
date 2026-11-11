@@ -500,39 +500,27 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
-  async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
-    const result = await swal({
-      title,
-      input: 'number',
-      inputLabel: label,
-      inputValue: 10,
-      showCancelButton: true,
-      confirmButtonText: 'Apply',
-    });
-    if (!result.isConfirmed || result.value === undefined || result.value === '') return null;
-    return Number(result.value);
+  const [selAmountPrompt, setSelAmountPrompt] = useState<{ kind: 'feather' | 'expand' | 'contract'; value: string } | null>(null);
+
+  function openSelectionAmountPrompt(kind: 'feather' | 'expand' | 'contract') {
+    setSelAmountPrompt({ kind, value: '10' });
   }
 
-  async function handleFeatherSelection() {
-    if (!activePage) return;
-    const amount = await promptSelectionAmount('Feather Selection', 'Radius (px)');
-    if (amount === null || amount <= 0) return;
-    setSelection(sel => featherSelection(sel, amount, activePage.original.width, activePage.original.height));
+  function commitSelectionAmount() {
+    if (!selAmountPrompt || !activePage) { setSelAmountPrompt(null); return; }
+    const amount = Number(selAmountPrompt.value);
+    if (!amount || amount <= 0) { setSelAmountPrompt(null); return; }
+    const { kind } = selAmountPrompt;
+    const { width, height } = activePage.original;
+    if (kind === 'feather') setSelection(sel => featherSelection(sel, amount, width, height));
+    else if (kind === 'expand') setSelection(sel => growSelection(sel, amount, width, height));
+    else setSelection(sel => growSelection(sel, -amount, width, height));
+    setSelAmountPrompt(null);
   }
 
-  async function handleExpandSelection() {
-    if (!activePage) return;
-    const amount = await promptSelectionAmount('Expand Selection', 'Amount (px)');
-    if (amount === null || amount <= 0) return;
-    setSelection(sel => growSelection(sel, amount, activePage.original.width, activePage.original.height));
-  }
-
-  async function handleContractSelection() {
-    if (!activePage) return;
-    const amount = await promptSelectionAmount('Contract Selection', 'Amount (px)');
-    if (amount === null || amount <= 0) return;
-    setSelection(sel => growSelection(sel, -amount, activePage.original.width, activePage.original.height));
-  }
+  function handleFeatherSelection() { openSelectionAmountPrompt('feather'); }
+  function handleExpandSelection() { openSelectionAmountPrompt('expand'); }
+  function handleContractSelection() { openSelectionAmountPrompt('contract'); }
 
   /** Marquee selection's own right-click context menu > Select Inverse — same effect as the Select
    *  menu's item, just reachable from the selection itself. */
@@ -1625,7 +1613,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     } catch (err) {
       console.error(err);
       const detail = err instanceof Error && err.message ? err.message : 'Could not diff the whited image against the original.';
-      swal({ icon: 'error', title: 'Diff Failed', text: detail });
+      swalToast({ icon: 'error', title: 'Diff Failed', text: detail });
     }
   }
 
@@ -2448,7 +2436,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         swalToast({ icon: 'info', title: 'No confident text found on this page' });
       }
     } catch {
-      swal({ icon: 'error', title: 'Text detection failed', text: 'Could not run local OCR on this page.' });
+      swalToast({ icon: 'error', title: 'Text detection failed', text: 'Could not run local OCR on this page.' });
     } finally {
       setMagicEraseDetecting(false);
     }
@@ -2486,7 +2474,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const targets = magicEraseRegions.filter(r => targetIds.has(r.id));
     if (targets.length === 0) return;
     if (!magicEraseServer.trim()) {
-      swal({ icon: 'warning', title: 'No Magic Erase server set', text: 'Add a server address in Settings first.' });
+      swalToast({ icon: 'warning', title: 'No Magic Erase server set', text: 'Add a server address in Settings first.' });
       return;
     }
     const snapshot = canvasRef.current.getExportSnapshot();
@@ -2530,7 +2518,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       setMagicEraseSelectedIds(prev => { const next = new Set(prev); for (const id of regionIds) next.delete(id); return next; });
       swalToast({ icon: 'success', title: 'Magic Erase applied' });
     } catch (err) {
-      swal({
+      swalToast({
         icon: 'error',
         title: 'Magic Erase failed',
         text: err instanceof MagicEraseError ? err.message : 'Something went wrong reaching the server.',
@@ -3525,6 +3513,31 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         />
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {selAmountPrompt && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[260px]" onClick={e => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-1">
+              {selAmountPrompt.kind === 'feather' ? 'Feather Selection' : selAmountPrompt.kind === 'expand' ? 'Expand Selection' : 'Contract Selection'}
+            </div>
+            <label className="text-micro text-ink-faint mb-2 block">
+              {selAmountPrompt.kind === 'feather' ? 'Radius (px)' : 'Amount (px)'}
+            </label>
+            <input
+              autoFocus
+              type="number"
+              min={1}
+              value={selAmountPrompt.value}
+              onChange={e => setSelAmountPrompt(p => p ? { ...p, value: e.target.value } : p)}
+              onKeyDown={e => { if (e.key === 'Enter') commitSelectionAmount(); if (e.key === 'Escape') setSelAmountPrompt(null); }}
+              className="w-full text-small bg-ink/5 border border-hairline rounded-control px-2.5 py-1.5 text-ink focus:outline-none focus:ring-1 focus:ring-accent mb-3"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setSelAmountPrompt(null)} className="px-3 py-1.5 text-small text-ink-faint hover:text-ink rounded-control">Cancel</button>
+              <button type="button" onClick={commitSelectionAmount} className="px-3 py-1.5 text-small bg-accent text-white rounded-control hover:brightness-110">Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
