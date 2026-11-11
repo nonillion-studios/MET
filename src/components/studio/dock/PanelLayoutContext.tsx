@@ -55,6 +55,10 @@ function loadLayout(storageKey: string | undefined): PanelLayoutState {
   }
 }
 
+const DEFAULT_DOCK_WIDTH = 288;
+const MIN_DOCK_WIDTH = 220;
+const MAX_DOCK_WIDTH = 480;
+
 interface PanelLayoutContextValue {
   order: string[];
   isVisible: (id: string) => boolean;
@@ -77,6 +81,8 @@ interface PanelLayoutContextValue {
   maximizedId: string | null;
   toggleMaximized: (id: string) => void;
   resetLayout: () => void;
+  dockWidth: number;
+  resizeDock: (delta: number) => void;
 }
 
 const PanelLayoutContext = createContext<PanelLayoutContextValue | null>(null);
@@ -90,6 +96,13 @@ interface PanelLayoutProviderProps {
 export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProviderProps) {
   const [state, setState] = useState<PanelLayoutState>(() => loadLayout(storageKey));
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
+  const [dockWidth, setDockWidth] = useState<number>(() => {
+    if (!storageKey) return DEFAULT_DOCK_WIDTH;
+    try {
+      const v = localStorage.getItem(`studio_dock_width_${storageKey}`);
+      return v ? Math.min(MAX_DOCK_WIDTH, Math.max(MIN_DOCK_WIDTH, Number(v))) : DEFAULT_DOCK_WIDTH;
+    } catch { return DEFAULT_DOCK_WIDTH; }
+  });
 
   const lastKeyRef = useRef(storageKey);
   useEffect(() => {
@@ -170,12 +183,25 @@ export function PanelLayoutProvider({ children, storageKey }: PanelLayoutProvide
   const resetLayout = useCallback(() => {
     setState(defaultLayout());
     setMaximizedId(null);
+    setDockWidth(DEFAULT_DOCK_WIDTH);
   }, []);
+
+  const resizeDock = useCallback((delta: number) => {
+    setDockWidth(w => Math.min(MAX_DOCK_WIDTH, Math.max(MIN_DOCK_WIDTH, w + delta)));
+  }, []);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    const timeout = setTimeout(() => {
+      try { localStorage.setItem(`studio_dock_width_${storageKey}`, String(dockWidth)); } catch {}
+    }, 400);
+    return () => clearTimeout(timeout);
+  }, [storageKey, dockWidth]);
 
   const value = useMemo<PanelLayoutContextValue>(() => ({
     order: state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder,
-    resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout,
-  }), [state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder, resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout]);
+    resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout, dockWidth, resizeDock,
+  }), [state.order, isVisible, isCollapsed, heightOf, setVisible, toggleCollapsed, reveal, reorder, resizeAdjacent, resetHeight, maximizedId, toggleMaximized, resetLayout, dockWidth, resizeDock]);
 
   return <PanelLayoutContext.Provider value={value}>{children}</PanelLayoutContext.Provider>;
 }

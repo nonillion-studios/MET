@@ -9,6 +9,7 @@ import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { PanelStack, type PanelStackEntry } from './dock/PanelStack';
+import { DockWidthDivider } from './dock/DockWidthDivider';
 import { PANEL_BY_ID } from './dock/panelRegistry';
 import { LayersPanel } from './LayersPanel';
 import { TextPanel } from './TextPanel';
@@ -3110,7 +3111,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const toolsSidebar = (
     <div className="h-full flex">
       {toolRailVisible && <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />}
-      <div className="w-64 sm:w-72 h-full min-h-0 border-l border-hairline">
+      <DockWidthDivider onResize={panelLayout.resizeDock} />
+      <div className="h-full min-h-0 border-l border-hairline" style={{ width: panelLayout.dockWidth }}>
         <PanelStack panels={panelStackEntries} />
       </div>
     </div>
@@ -3358,7 +3360,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
         {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
-          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 w-64 sm:w-72 h-full liquid-glass-heavy border-l border-hairline shadow-2xl">
+          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 h-full liquid-glass-heavy border-l border-hairline shadow-2xl" style={{ width: panelLayout.dockWidth }}>
             <PanelStack panels={panelStackEntries} />
           </div>
         )}
