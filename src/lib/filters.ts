@@ -233,3 +233,37 @@ export function embossFilter(angleDeg: number, height: number, amount: number) {
     }
   };
 }
+
+export function screentoneFilter(dotSize: number, angleDeg: number, shape: 'circle' | 'line' | 'diamond') {
+  return (imageData: ImageData) => {
+    const { width: w, height: h, data: d } = imageData;
+    const size = Math.max(2, Math.round(dotSize));
+    const rad = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+
+        const rx = cos * x + sin * y;
+        const ry = -sin * x + cos * y;
+        const cx = ((rx % size) + size) % size - size / 2;
+        const cy = ((ry % size) + size) % size - size / 2;
+
+        const half = size / 2;
+        let dist: number;
+        if (shape === 'line') {
+          dist = Math.abs(cy) / half;
+        } else if (shape === 'diamond') {
+          dist = (Math.abs(cx) + Math.abs(cy)) / half;
+        } else {
+          dist = Math.sqrt(cx * cx + cy * cy) / half;
+        }
+
+        const v = dist < lum ? 255 : 0;
+        d[i] = v; d[i + 1] = v; d[i + 2] = v;
+      }
+    }
+  };
+}

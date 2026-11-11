@@ -213,7 +213,7 @@ const APPLY_FILTER_SUBMENU = (a: MenuActions): MenuItemDef[] => {
     {
       id: 'filter-pixelate', label: 'Pixelate', submenu: [
         item('mosaic', 'Mosaic…', true),
-        item('color-halftone', 'Color Halftone…', false),
+        item('screentone', 'Screentone…', true),
       ],
     },
     {

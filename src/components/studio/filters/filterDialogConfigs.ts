@@ -1,6 +1,6 @@
 import {
   gaussianBlurFilter, motionBlurFilter, boxBlurFilter, unsharpMaskFilter,
-  addNoiseFilter, mosaicFilter, findEdgesFilter, embossFilter,
+  addNoiseFilter, mosaicFilter, findEdgesFilter, embossFilter, screentoneFilter,
 } from '../../../lib/filters';
 
 export interface FilterControlSpec {
@@ -96,5 +96,18 @@ export const FILTER_DIALOG_CONFIGS: Record<string, FilterConfig> = {
       { key: 'amount', label: 'Amount', min: 1, max: 10, step: 0.1, default: 2, unit: '%' },
     ],
     run: (imageData, p) => embossFilter(p.angle, p.height, p.amount)(imageData),
+  },
+  screentone: {
+    id: 'screentone',
+    title: 'Screentone',
+    controls: [
+      { key: 'dotSize', label: 'Dot Size', min: 2, max: 40, step: 1, default: 8, unit: 'px' },
+      { key: 'angle', label: 'Angle', min: 0, max: 180, step: 1, default: 45, unit: '°' },
+      { key: 'shape', label: 'Shape (0=circle, 1=line, 2=diamond)', min: 0, max: 2, step: 1, default: 0 },
+    ],
+    run: (imageData, p) => {
+      const shapes = ['circle', 'line', 'diamond'] as const;
+      screentoneFilter(p.dotSize, p.angle, shapes[Math.round(p.shape)] ?? 'circle')(imageData);
+    },
   },
 };
