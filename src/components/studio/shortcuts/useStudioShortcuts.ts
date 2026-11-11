@@ -30,6 +30,7 @@ interface UseStudioShortcutsArgs {
   onToggleTextItalic: () => void;
   onToggleRulers: () => void;
   onToggleGrid: () => void;
+  onToggleSnapToGrid: () => void;
   onNewLayer: () => void;
   onMergeVisible: () => void;
   onToggleMultiBubble: () => void;
@@ -56,7 +57,7 @@ export function useStudioShortcuts({
   onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
   onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
-  onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
+  onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
   onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
@@ -90,6 +91,7 @@ export function useStudioShortcuts({
       // Checked ahead of the plain mod block too, or Ctrl+Shift+J would fall through into that
       // block's unshifted 'j' case (Layer Via Copy) instead of Layer Via Cut.
       if (mod && e.shiftKey && key === 'j') { e.preventDefault(); onLayerViaCut(); return; }
+      if (mod && e.shiftKey && key === ';') { e.preventDefault(); onToggleSnapToGrid(); return; }
 
       if (mod) {
         if (key === 'g') { e.preventDefault(); onGroupLayers(); return; }
@@ -131,7 +133,7 @@ export function useStudioShortcuts({
     toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
     onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
-    onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onNewLayer,
+    onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
     onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
   ]);
 }

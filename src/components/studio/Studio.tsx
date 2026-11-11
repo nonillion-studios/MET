@@ -720,6 +720,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onToggleTextItalic: handleToggleTextItalic,
     onToggleRulers: () => setShowRulers(v => !v),
     onToggleGrid: () => setShowGrid(v => !v),
+    onToggleSnapToGrid: () => setSnapToGrid(v => !v),
     onNewLayer: () => handleAddLayer(),
     onMergeVisible: () => handleMergeVisible(),
     onToggleMultiBubble: () => setMultiBubbleMode(!multiBubbleMode),
@@ -766,6 +767,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [showCleaned, setShowCleaned] = useState(false);
   const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
+  const [snapToGrid, setSnapToGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
   const [canvasFlipped, setCanvasFlipped] = useState(false);
   const [canvasRotation, setCanvasRotation] = useState(0);
@@ -2954,6 +2956,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     togglePanelsHidden: () => setPanelsHidden(v => !v),
     showGrid,
     toggleGrid: () => setShowGrid(v => !v),
+    snapToGrid,
+    toggleSnapToGrid: () => setSnapToGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
     viewFlipped: canvasFlipped,
@@ -3026,6 +3030,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       showCleaned={showCleaned}
       overlayOpacity={overlayOpacity}
       showGrid={showGrid}
+      snapToGrid={snapToGrid}
       showRulers={showRulers}
       flipped={canvasFlipped}
       rotation={canvasRotation}
@@ -3394,6 +3399,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
         toolLabel={findTool(activeTool)?.label ?? activeTool}
         layerName={activeLayer?.name ?? null}
+        selectionBounds={selectionBounds(selection)}
+        snapToGrid={snapToGrid}
       />}
 
       <ExportDialog

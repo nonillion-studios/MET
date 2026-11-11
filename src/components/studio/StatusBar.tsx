@@ -27,9 +27,11 @@ interface StatusBarProps {
   imageHeight: number | null;
   toolLabel: string;
   layerName: string | null;
+  selectionBounds?: { x: number; y: number; width: number; height: number } | null;
+  snapToGrid?: boolean;
 }
 
-export function StatusBar({ zoom, onZoomChange, cursorPos, imageWidth, imageHeight, toolLabel, layerName }: StatusBarProps) {
+export function StatusBar({ zoom, onZoomChange, cursorPos, imageWidth, imageHeight, toolLabel, layerName, selectionBounds, snapToGrid }: StatusBarProps) {
   const mem = useMemoryUsage();
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
@@ -78,6 +80,12 @@ export function StatusBar({ zoom, onZoomChange, cursorPos, imageWidth, imageHeig
         {imageWidth != null && imageHeight != null ? `${imageWidth} × ${imageHeight} px` : '— × — px'}
       </span>
       <span className="shrink-0">{toolLabel}</span>
+      {selectionBounds && selectionBounds.width > 0 && selectionBounds.height > 0 && (
+        <span className="tabular-nums shrink-0 text-accent">
+          Sel: {Math.round(selectionBounds.width)} x {Math.round(selectionBounds.height)}
+        </span>
+      )}
+      {snapToGrid && <span className="shrink-0 text-accent/70">SNAP</span>}
       <span className="truncate flex-1">{layerName ?? 'No Layer'}</span>
       {mem && <span className="tabular-nums shrink-0 text-ink-faint/60" title="JS heap usage">{mem}</span>}
     </div>

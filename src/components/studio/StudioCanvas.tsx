@@ -67,6 +67,10 @@ export interface ExportSnapshot {
 
 const GRID_SIZE = 100;
 const RULER_SIZE = 20;
+
+function snapToGridValue(v: number, gridSize: number): number {
+  return Math.round(v / gridSize) * gridSize;
+}
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop', 'slice']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
@@ -93,6 +97,7 @@ interface StudioCanvasProps {
   /** 0 disables; >0 blends the original page as a translucent overlay above the cleaned page. */
   overlayOpacity: number;
   showGrid?: boolean;
+  snapToGrid?: boolean;
   showRulers?: boolean;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
@@ -342,7 +347,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
@@ -2992,6 +2997,33 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
             </Layer>
           )}
 
+          {/* Pixel grid — visible at very high zoom (≥1600%) to show individual pixel boundaries. */}
+          {scale >= 16 && image && (() => {
+            const vp = stageRef.current;
+            if (!vp) return null;
+            const stageW = vp.width();
+            const stageH = vp.height();
+            const ox = vp.x();
+            const oy = vp.y();
+            const x0 = Math.max(0, Math.floor(-ox / scale));
+            const y0 = Math.max(0, Math.floor(-oy / scale));
+            const x1 = Math.min(image.width, Math.ceil((stageW - ox) / scale));
+            const y1 = Math.min(image.height, Math.ceil((stageH - oy) / scale));
+            const cols = x1 - x0 + 1;
+            const rows = y1 - y0 + 1;
+            if (cols > 200 || rows > 200) return null;
+            return (
+              <Layer listening={false}>
+                {Array.from({ length: cols }, (_, i) => x0 + i).map(x => (
+                  <Line key={`px${x}`} points={[x, y0, x, y1]} stroke="#888" strokeWidth={1 / scale} opacity={0.25} />
+                ))}
+                {Array.from({ length: rows }, (_, i) => y0 + i).map(y => (
+                  <Line key={`py${y}`} points={[x0, y, x1, y]} stroke="#888" strokeWidth={1 / scale} opacity={0.25} />
+                ))}
+              </Layer>
+            );
+          })()}
+
           <Layer>
             {/* listening={false} while Space is held: a Transformer's resize/rotate handles are
                 always internally draggable, independent of the selected node's own `draggable`
@@ -3056,6 +3088,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 stroke="#38bdf8"
                 strokeWidth={1 / scale}
                 dash={[6 / scale, 4 / scale]}
+                onDragMove={snapToGrid ? (e) => {
+                  const node = e.target;
+                  node.x(snapToGridValue(node.x(), GRID_SIZE));
+                  node.y(snapToGridValue(node.y(), GRID_SIZE));
+                } : undefined}
                 onDragEnd={(e) => setTransformBox(b => (b ? { ...b, x: e.target.x(), y: e.target.y() } : b))}
                 onTransformEnd={(e) => {
                   const node = e.target as Konva.Rect;
