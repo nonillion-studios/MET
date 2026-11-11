@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlignLeft, AlignCenter, AlignRight, AlignJustify, Bold, Italic, AlignCenterHorizontal, MoreHorizontal, Plus, ChevronRight } from 'lucide-react';
 import { IconButton, Textarea } from '../ui';
 import { cn } from '../ui/cn';
 import { StudioPanel } from './StudioPanel';
-import { swal, swalToast } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import { genId } from '../../lib/id';
 import {
   loadTextStyles, saveTextStyles, captureStyleFields, styleToPatch,
@@ -42,48 +42,59 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
     void saveTextStyles(next);
   };
 
-  async function handleNewStyle(kind: TextStyleKind) {
-    if (!text) return;
-    const r = await swal({
-      title: `New ${kind} style`,
-      input: 'text',
-      inputPlaceholder: kind === 'character' ? 'e.g. SFX Bold' : 'e.g. Centered Tight',
-      showCancelButton: true,
-      confirmButtonText: 'Create',
-    });
-    const name = (r.value || '').trim();
-    if (!r.isConfirmed || !name) return;
-    persistStyles([...styles, { id: genId('tstyle'), name, kind, fields: captureStyleFields(text, kind) }]);
-  }
+  const [newStyleKind, setNewStyleKind] = useState<TextStyleKind | null>(null);
+  const [newStyleName, setNewStyleName] = useState('');
+  const [styleMenuId, setStyleMenuId] = useState<string | null>(null);
+  const [renamingStyleId, setRenamingStyleId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const styleMenuRef = useRef<HTMLDivElement>(null);
 
-  async function handleStyleMenu(style: TextStyle) {
-    const result = await swal({
-      title: style.name,
-      input: 'select',
-      inputOptions: { update: 'Update from this layer', rename: 'Rename…', delete: 'Delete' },
-      inputPlaceholder: 'Choose an action',
-      showCancelButton: true,
-      confirmButtonText: 'Go',
-    });
-    const action = result.value as string | undefined;
-    if (!result.isConfirmed || !action) return;
+  useEffect(() => {
+    if (!styleMenuId) return;
+    function onDown(e: MouseEvent) {
+      if (styleMenuRef.current && !styleMenuRef.current.contains(e.target as Node)) setStyleMenuId(null);
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [styleMenuId]);
 
+  const handleNewStyle = useCallback((kind: TextStyleKind) => {
+    setNewStyleKind(kind);
+    setNewStyleName('');
+  }, []);
+
+  const commitNewStyle = useCallback(() => {
+    if (!text || !newStyleKind) return;
+    const name = newStyleName.trim();
+    if (!name) { setNewStyleKind(null); return; }
+    persistStyles([...styles, { id: genId('tstyle'), name, kind: newStyleKind, fields: captureStyleFields(text, newStyleKind) }]);
+    setNewStyleKind(null);
+    setNewStyleName('');
+  }, [text, newStyleKind, newStyleName, styles]);
+
+  const styleMenuAction = useCallback((action: string) => {
+    const style = styles.find(s => s.id === styleMenuId);
+    if (!style) return;
+    setStyleMenuId(null);
     if (action === 'update') {
       if (!text) return;
       persistStyles(styles.map(s => s.id === style.id ? { ...s, fields: captureStyleFields(text, s.kind) } : s));
-      swalToast({ icon: 'success', title: `“${style.name}” updated` });
-      return;
-    }
-    if (action === 'delete') {
+      swalToast({ icon: 'success', title: `"${style.name}" updated` });
+    } else if (action === 'delete') {
       persistStyles(styles.filter(s => s.id !== style.id));
-      return;
+    } else if (action === 'rename') {
+      setRenamingStyleId(style.id);
+      setRenameValue(style.name);
     }
-    if (action === 'rename') {
-      const r = await swal({ title: 'Rename style', input: 'text', inputValue: style.name, showCancelButton: true, confirmButtonText: 'Rename' });
-      const name = (r.value || '').trim();
-      if (r.isConfirmed && name) persistStyles(styles.map(s => s.id === style.id ? { ...s, name } : s));
+  }, [styles, styleMenuId, text]);
+
+  const commitRename = useCallback(() => {
+    const name = renameValue.trim();
+    if (name && renamingStyleId) {
+      persistStyles(styles.map(s => s.id === renamingStyleId ? { ...s, name } : s));
     }
-  }
+    setRenamingStyleId(null);
+  }, [renameValue, renamingStyleId, styles]);
 
   if (!text) return null;
 
@@ -98,14 +109,14 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
 
   /**
    * Applies a character property. With a range selected it writes run overrides for just that
-   * range; with no range it applies to the whole layer — which is what Photoshop's Character panel
+   * range; with no range it applies to the whole layer - which is what Photoshop's Character panel
    * does when the layer rather than a range is selected. Shared with the Text menu's actions
    * (Studio.tsx) via `applyCharPatch` so the two can't drift.
    */
   const setChar = (patch: RunStylePatch) => set(applyCharPatch(text, range, patch));
 
   // A selected line's controls show its own override where set, falling back to the layer default
-  // — not a resolved per-run style, since a line can span several differently-styled runs and there's
+  // - not a resolved per-run style, since a line can span several differently-styled runs and there's
   // no single "shared" value to show the way character range controls do (styleOverRange exists
   // exactly to solve that for runs; lines don't need it, since an override here always wins outright).
   const lineOverride: LineStyleOverride | undefined = selectedLineIndex != null ? text.lineOverrides?.[selectedLineIndex] : undefined;
@@ -262,7 +273,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
           </label>
         </div>
         {!text.autoWidth && text.fixedHeight != null && text.autoFitFontSize && (
-          <p className="text-[10px] text-ink-faint/70 -mt-1">Size is a maximum — auto-fit shrinks it to fit the box.</p>
+          <p className="text-[10px] text-ink-faint/70 -mt-1">Size is a maximum - auto-fit shrinks it to fit the box.</p>
         )}
 
         <label className="flex items-center gap-2 text-micro text-ink-faint">
@@ -351,7 +362,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
         </label>
         {!range && (
           <p className="text-[10px] text-ink-faint/70 leading-snug -mt-1">
-            Kerning inserts space before a character and baseline shift raises it — both are
+            Kerning inserts space before a character and baseline shift raises it - both are
             per-character, so they only really pay off on a selection.
           </p>
         )}
@@ -511,7 +522,7 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
                 </label>
               </div>
               <p className="text-[10px] text-ink-faint/70 leading-snug">
-                A gradient replaces the flat fill colour while it’s on.
+                A gradient replaces the flat fill colour while it's on.
               </p>
             </>
           )}
@@ -572,26 +583,60 @@ export function TextPanel({ layer, onUpdate, onCenter, fontFamilies = FONT_FAMIL
                     <Plus size={13} />
                   </IconButton>
                 </div>
+                {newStyleKind === kind && (
+                  <div className="flex items-center gap-1 pl-4 py-1">
+                    <input
+                      autoFocus
+                      type="text"
+                      placeholder={kind === 'character' ? 'e.g. SFX Bold' : 'e.g. Centered Tight'}
+                      value={newStyleName}
+                      onChange={e => setNewStyleName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') commitNewStyle(); if (e.key === 'Escape') setNewStyleKind(null); }}
+                      className="flex-1 min-w-0 text-micro bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+                    />
+                    <button type="button" onClick={commitNewStyle} className="text-micro text-accent hover:underline px-1">Create</button>
+                    <button type="button" onClick={() => setNewStyleKind(null)} className="text-micro text-ink-faint hover:text-ink px-1">Cancel</button>
+                  </div>
+                )}
                 {open && (
                   group.length === 0 ? (
                     <p className="text-[10px] text-ink-faint/70 leading-snug pl-4 pb-1">
-                      No {kind} styles yet — “+” saves this layer’s {kind === 'character' ? 'appearance' : 'layout'}.
+                      No {kind} styles yet - "+" saves this layer's {kind === 'character' ? 'appearance' : 'layout'}.
                     </p>
                   ) : (
                     <ul className="flex flex-col pl-4">
                       {group.map(style => (
-                        <li key={style.id} className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => onUpdate(layer.id, styleToPatch(style))}
-                            title={`Apply “${style.name}” to this layer`}
-                            className="studio-interactive flex-1 text-left text-micro text-ink py-1 px-1 rounded-control hover:bg-ink/5 truncate"
-                          >
-                            {style.name}
-                          </button>
-                          <IconButton size="sm" aria-label={`${style.name} actions`} onClick={() => handleStyleMenu(style)} className="!bg-transparent">
+                        <li key={style.id} className="flex items-center gap-1 relative">
+                          {renamingStyleId === style.id ? (
+                            <input
+                              autoFocus
+                              type="text"
+                              value={renameValue}
+                              onChange={e => setRenameValue(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setRenamingStyleId(null); }}
+                              onBlur={commitRename}
+                              className="flex-1 min-w-0 text-micro bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink focus:outline-none focus:ring-1 focus:ring-accent"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onUpdate(layer.id, styleToPatch(style))}
+                              title={`Apply "${style.name}" to this layer`}
+                              className="studio-interactive flex-1 text-left text-micro text-ink py-1 px-1 rounded-control hover:bg-ink/5 truncate"
+                            >
+                              {style.name}
+                            </button>
+                          )}
+                          <IconButton size="sm" aria-label={`${style.name} actions`} onClick={() => setStyleMenuId(styleMenuId === style.id ? null : style.id)} className="!bg-transparent">
                             <MoreHorizontal size={13} />
                           </IconButton>
+                          {styleMenuId === style.id && (
+                            <div ref={styleMenuRef} className="absolute right-0 top-full z-50 mt-0.5 bg-surface border border-hairline rounded-lg shadow-xl py-1 min-w-[140px]">
+                              <button type="button" onClick={() => styleMenuAction('update')} className="w-full text-left text-micro px-3 py-1.5 hover:bg-ink/5 text-ink">Update from layer</button>
+                              <button type="button" onClick={() => styleMenuAction('rename')} className="w-full text-left text-micro px-3 py-1.5 hover:bg-ink/5 text-ink">Rename</button>
+                              <button type="button" onClick={() => styleMenuAction('delete')} className="w-full text-left text-micro px-3 py-1.5 hover:bg-ink/5 text-danger">Delete</button>
+                            </div>
+                          )}
                         </li>
                       ))}
                     </ul>

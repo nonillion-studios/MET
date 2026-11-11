@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Target, RotateCcw, Plus, Trash2, Copy, Download, Upload, Layers as LayersIcon, Pencil, Check, FolderPlus, Wand2, Play, Maximize2, Eye, EyeOff, FolderDown, Minus } from 'lucide-react';
 import { Textarea, IconButton } from '../ui';
 import { cn } from '../ui/cn';
-import { swal, swalToast } from '../../lib/swalTheme';
+import { swalToast } from '../../lib/swalTheme';
 import { StudioPanel } from './StudioPanel';
 import {
   parseTyperScript, createTyperStyle, createTyperFolder, renameFolder, deleteTyperFolder,
@@ -34,7 +34,7 @@ export interface TyperPanelProps {
   onArmedChange: (armed: boolean) => void;
   /** Built-in fonts plus any custom fonts installed via the Fonts panel. */
   fontFamilies?: string[];
-  /** Multi-Bubble mode: draw a selection per bubble (any selection tool — rect/ellipse/lasso/wand),
+  /** Multi-Bubble mode: draw a selection per bubble (any selection tool - rect/ellipse/lasso/wand),
    *  queue it, then place every queued shape's line in one go instead of one click-to-place bubble
    *  at a time. A non-rect capture clips the placed text to its exact shape, not just its bounds. */
   multiBubbleMode: boolean;
@@ -44,14 +44,14 @@ export interface TyperPanelProps {
   onPlaceAllBubbles: () => void;
   /** Removes the most recently queued bubble capture (LIFO, one at a time). */
   onRemoveLastBubble: () => void;
-  /** Removes every queued bubble capture at once — wired to a 2s-hold gesture on the same button
+  /** Removes every queued bubble capture at once - wired to a 2s-hold gesture on the same button
    *  that does the one-at-a-time removal, not a separate control. */
   onClearAllBubbles: () => void;
-  /** Script-line indices already placed onto the canvas — drives the ✓ badge in the line list.
+  /** Script-line indices already placed onto the canvas - drives the ✓ badge in the line list.
    *  Cleared by the caller on script change / Reset progress, not owned by this panel. */
   placedIndices: ReadonlySet<number>;
   /** Pops this panel out into its own floating window (Studio.tsx's TyperFloatingWindow). Omitted
-   *  when this instance is already the floating one, or in any standalone/test usage — the button
+   *  when this instance is already the floating one, or in any standalone/test usage - the button
    *  simply doesn't render without it. */
   onPopOut?: () => void;
   /** Set when hosted inside the right-column panel stack, whose own header already shows the name. */
@@ -172,26 +172,20 @@ export function TyperPanel({
     URL.revokeObjectURL(url);
   }
 
-  /** Exports only one folder's own styles (not its sub-folders' — a flat export matching how
-   *  `styles.filter(s => s.folderId === folderId)` scopes everywhere else in this panel), reusing
-   *  the same swal `input:'select'` picker pattern already used throughout the Studio for a single
-   *  choice (`LayersPanel`/`BrushesPanel`'s context menus). */
-  async function exportFolderJson() {
-    if (folders.length === 0) {
-      swalToast({ icon: 'info', title: 'No folders to export' });
-      return;
+  const [exportPickerOpen, setExportPickerOpen] = useState(false);
+  const exportPickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!exportPickerOpen) return;
+    function onDown(e: MouseEvent) {
+      if (exportPickerRef.current && !exportPickerRef.current.contains(e.target as Node)) setExportPickerOpen(false);
     }
-    const inputOptions = Object.fromEntries(folderOptions.map(opt => [opt.id, opt.label]));
-    const result = await swal({
-      title: 'Export Folder',
-      input: 'select',
-      inputOptions,
-      inputPlaceholder: 'Choose a folder',
-      showCancelButton: true,
-      confirmButtonText: 'Export',
-    });
-    const folderId = result.value as string | undefined;
-    if (!result.isConfirmed || !folderId) return;
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [exportPickerOpen]);
+
+  function doExportFolder(folderId: string) {
+    setExportPickerOpen(false);
     const folder = folders.find(f => f.id === folderId);
     if (!folder) return;
     const folderStylesOnly = styles.filter(s => s.folderId === folderId);
@@ -219,7 +213,7 @@ export function TyperPanel({
       if (typeof parsed.script === 'string') onScriptChange(parsed.script);
       swalToast({ icon: 'success', title: 'TypeR styles imported' });
     } catch (err) {
-      swal({ icon: 'error', title: 'Import Failed', text: err instanceof Error ? err.message : 'Invalid TypeR JSON file.' });
+      swalToast({ icon: 'error', title: 'Import Failed', text: err instanceof Error ? err.message : 'Invalid TypeR JSON file.' });
     }
   }
 
@@ -233,7 +227,7 @@ export function TyperPanel({
             size="sm"
             active={!enabled}
             aria-label={enabled ? `Disable ${style.name}` : `Enable ${style.name}`}
-            title={enabled ? 'Disable style (won’t match a prefix while off)' : 'Enable style'}
+            title={enabled ? 'Disable style (won't match a prefix while off)' : 'Enable style'}
             onClick={() => updateStyle(style.id, { enabled: !enabled })}
             className="!bg-transparent !w-6 !h-6 shrink-0"
           >
@@ -247,7 +241,7 @@ export function TyperPanel({
             <span className="text-ui font-medium text-ink flex-1 truncate">{style.name}</span>
             {style.prefix && <span className="text-micro font-mono text-ink-faint shrink-0">{style.prefix}</span>}
           </button>
-          {/* Quick text-size editor — no need to expand the full style card just to bump a size. */}
+          {/* Quick text-size editor - no need to expand the full style card just to bump a size. */}
           <div className="flex items-center gap-0.5 shrink-0">
             <IconButton size="sm" aria-label="Decrease size" onClick={() => updateStyle(style.id, { fontSize: Math.max(6, style.fontSize - sizeStep) })} className="!bg-transparent !w-6 !h-6">
               <span className="text-ui">−</span>
@@ -411,9 +405,21 @@ export function TyperPanel({
           <IconButton size="sm" aria-label="Export TypeR JSON" title="Export all styles and folders as JSON" onClick={exportTyperJson} className="!bg-transparent">
             <Download size={13} />
           </IconButton>
-          <IconButton size="sm" aria-label="Export folder" title="Export only one folder's styles as JSON" onClick={() => void exportFolderJson()} className="!bg-transparent">
-            <FolderDown size={13} />
-          </IconButton>
+          <div className="relative">
+            <IconButton size="sm" aria-label="Export folder" title="Export only one folder's styles as JSON" onClick={() => { if (folders.length === 0) { swalToast({ icon: 'info', title: 'No folders to export' }); return; } setExportPickerOpen(v => !v); }} className="!bg-transparent">
+              <FolderDown size={13} />
+            </IconButton>
+            {exportPickerOpen && (
+              <div ref={exportPickerRef} className="absolute right-0 top-full z-50 mt-0.5 bg-surface border border-hairline rounded-lg shadow-xl py-1 min-w-[160px] max-h-48 overflow-y-auto">
+                <div className="text-[10px] text-ink-faint px-3 py-1">Choose folder</div>
+                {folderOptions.map(opt => (
+                  <button key={opt.id} type="button" onClick={() => doExportFolder(opt.id)} className="w-full text-left text-micro px-3 py-1.5 hover:bg-ink/5 text-ink truncate">
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <IconButton
             size="sm"
             aria-label="Reset progress"
@@ -447,13 +453,13 @@ export function TyperPanel({
           </div>
         </div>
 
-        {/* Every parsed line, numbered and individually clickable — clicking one jumps straight to
+        {/* Every parsed line, numbered and individually clickable - clicking one jumps straight to
             it (a direct trSetCur-style index set, not an advance) without visiting the lines in
             between. Ctrl+Enter-style sequential advance (placing a bubble on canvas) stays the
             existing +1 path in Studio.tsx's handleAddTextLayer/handlePlaceAllBubbles, untouched. */}
         <div className="flex flex-col gap-0.5 max-h-48 overflow-y-auto rounded-control border border-hairline bg-ink/5 p-1">
           {lines.length === 0 && (
-            <div className="text-micro text-ink-faint italic px-2 py-3 text-center">No lines yet — paste a script above.</div>
+            <div className="text-micro text-ink-faint italic px-2 py-3 text-center">No lines yet - paste a script above.</div>
           )}
           {lines.map((line, i) => {
             const placed = placedIndices.has(i);
@@ -491,7 +497,7 @@ export function TyperPanel({
           >
             <Target size={14} />
             {armed
-              ? multiBubbleMode ? 'Armed — draw a selection per bubble' : 'Armed — click the canvas to place'
+              ? multiBubbleMode ? 'Armed - draw a selection per bubble' : 'Armed - click the canvas to place'
               : 'Arm placement'}
           </button>
           <IconButton
@@ -528,7 +534,7 @@ export function TyperPanel({
             <button
               type="button"
               disabled={queuedBubbleCount === 0}
-              title="Remove last bubble — hold 2s to clear all"
+              title="Remove last bubble - hold 2s to clear all"
               onPointerDown={onRemovePointerDown}
               onPointerUp={onRemovePointerUp}
               onPointerLeave={onRemovePointerLeave}
