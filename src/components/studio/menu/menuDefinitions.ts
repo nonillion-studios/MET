@@ -132,6 +132,8 @@ export interface MenuActions {
   liquifyTool: () => void;
   /** AI > Content-Aware Fill — switches to the existing real `contentAware` paint tool; no dialog. */
   contentAwareFillTool: () => void;
+  openImageSize: () => void;
+  openCanvasSize: () => void;
   rotateCanvas: (dir: 'cw' | 'ccw' | '180' | 'flip-h' | 'flip-v') => void;
   toolRailVisible: boolean;
   toggleToolRail: () => void;
@@ -331,8 +333,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       id: 'image',
       label: 'Image',
       items: [
-        { id: 'image-size', label: 'Image Size…', disabled: true },
-        { id: 'canvas-size', label: 'Canvas Size…', disabled: true },
+        { id: 'image-size', label: 'Image Size…', action: a.openImageSize },
+        { id: 'canvas-size', label: 'Canvas Size…', action: a.openCanvasSize },
         { id: 'sep1', label: '', separator: true },
         { id: 'place-image', label: 'Place Image…', action: a.placeImage },
         { id: 'place-psd', label: 'Place PSD as Layers…', action: a.placePsd },

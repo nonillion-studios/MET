@@ -50,6 +50,7 @@ import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
+import { ImageSizeDialog } from './ImageSizeDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { AutomationModal } from './automation/AutomationModal';
 import { AiAutomationCursor } from './automation/AiAutomationCursor';
@@ -655,6 +656,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [saveLayoutOpen, setSaveLayoutOpen] = useState(false);
   const [saveLayoutName, setSaveLayoutName] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
+  const [imageSizeOpen, setImageSizeOpen] = useState(false);
+  const [canvasSizeOpen, setCanvasSizeOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
   const [minimapVisible, setMinimapVisible] = useState(true);
@@ -2916,6 +2919,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     applyFilter: handleOpenFilterDialog,
     liquifyTool: switchToLiquify,
     contentAwareFillTool: switchToContentAwareFill,
+    openImageSize: () => setImageSizeOpen(true),
+    openCanvasSize: () => setCanvasSizeOpen(true),
     rotateCanvas: (dir) => { void handleRotateCanvas(dir); },
     toolRailVisible,
     toggleToolRail,
@@ -3559,6 +3564,19 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         </div>
       )}
+      <ImageSizeDialog
+        open={imageSizeOpen}
+        onClose={() => setImageSizeOpen(false)}
+        width={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
+        height={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
+      />
+      <ImageSizeDialog
+        open={canvasSizeOpen}
+        onClose={() => setCanvasSizeOpen(false)}
+        width={activePage ? activePage.original.width : null}
+        height={activePage ? activePage.original.height : null}
+        title="Canvas Size"
+      />
       {selAmountPrompt && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
           <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[260px]" onClick={e => e.stopPropagation()}>
