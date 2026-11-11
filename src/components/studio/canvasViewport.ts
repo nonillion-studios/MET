@@ -170,7 +170,7 @@ export function useCanvasViewport(opts: CanvasViewportOptions): CanvasViewport {
   }, [clampScale]);
 
   return {
-    scale, pos, setScale, setPos, clampScale, spaceDown, isPanning, startPan,
-    zoomAtScreenPoint, handleWheel, zoomIn, zoomOut, zoomTo, zoomTo100, centerOn, fit,
+    scale, pos, setScale, setPos, clampScale, spaceDown,
+    isPanning, startPan, zoomAtScreenPoint, handleWheel, zoomIn, zoomOut, zoomTo, zoomTo100, centerOn, fit,
   };
 }
