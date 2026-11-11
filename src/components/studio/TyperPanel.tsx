@@ -298,7 +298,7 @@ export function TyperPanel({
                 onChange={(e) => updateStyle(style.id, { fontFamily: e.target.value })}
                 className="flex-1 bg-ink/5 border border-hairline rounded-control px-1.5 py-1 text-ink text-micro"
               >
-                {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
+                {fontFamilies.map(f => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
               </select>
             </label>
             <label className="flex items-center gap-2 text-micro text-ink-faint">

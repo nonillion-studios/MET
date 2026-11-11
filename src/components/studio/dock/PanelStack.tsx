@@ -3,6 +3,7 @@ import { cn } from '../../ui/cn';
 import { CollapsiblePanel, type PanelMenuItem } from './CollapsiblePanel';
 import { usePanelLayout } from './PanelLayoutContext';
 import { PANEL_BY_ID } from './panelRegistry';
+import { TabbedPanelGroup } from './TabbedPanelGroup';
 
 export interface PanelStackEntry {
   id: string;
@@ -98,34 +99,88 @@ export function PanelStack({ panels, className }: PanelStackProps) {
     );
   }
 
+  // Build a linear list of render units: standalone panels and tab-group clusters.
+  // A tab group appears at the position of its first visible member; subsequent members are skipped.
+  const renderedGroups = new Set<string>();
+  type RenderUnit = { kind: 'single'; id: string } | { kind: 'tabGroup'; groupKey: string; ids: string[] };
+  const units: RenderUnit[] = [];
+
+  for (const id of visibleOrder) {
+    const def = PANEL_BY_ID.get(id);
+    const group = def?.tabGroup;
+    if (group) {
+      if (renderedGroups.has(group)) continue;
+      renderedGroups.add(group);
+      const groupIds = visibleOrder.filter(vid => PANEL_BY_ID.get(vid)?.tabGroup === group);
+      if (groupIds.length === 1) {
+        units.push({ kind: 'single', id });
+      } else {
+        units.push({ kind: 'tabGroup', groupKey: group, ids: groupIds });
+      }
+    } else {
+      units.push({ kind: 'single', id });
+    }
+  }
+
   return (
     <div className={cn('h-full flex flex-col min-h-0 overflow-y-auto', className)}>
-      {visibleOrder.map((id, i) => {
-        const entry = byId.get(id)!;
+      {units.map((unit, i) => {
+        if (unit.kind === 'tabGroup') {
+          const entries = unit.ids.map(uid => byId.get(uid)!);
+          const firstDef = PANEL_BY_ID.get(unit.ids[0]);
+          return (
+            <Fragment key={`tg-${unit.groupKey}`}>
+              {i > 0 && <ResizeDivider aboveId={
+                (() => {
+                  const prev = units[i - 1];
+                  return prev.kind === 'single' ? prev.id : prev.ids[prev.ids.length - 1];
+                })()
+              } belowId={unit.ids[0]} />}
+              <TabbedPanelGroup
+                groupKey={unit.groupKey}
+                entries={entries}
+                grow={!!firstDef?.grow}
+                draggedOver={unit.ids.some(uid => dragOver?.id === uid) ? (dragOver!.before ? 'above' : 'below') : null}
+                onDragStart={(uid) => setDragId(uid)}
+                onDragEnd={() => { setDragId(null); setDragOver(null); }}
+                onDragOverHeader={(before) => { if (dragId) setDragOver({ id: unit.ids[0], before }); }}
+                onDropOnHeader={() => {
+                  if (dragId && dragOver) layout.reorder(dragId, unit.ids[0], dragOver.before);
+                  setDragId(null);
+                  setDragOver(null);
+                }}
+              />
+            </Fragment>
+          );
+        }
+
+        const entry = byId.get(unit.id)!;
         return (
-          // A Fragment, not a wrapper div: the grow (Layers) panel's own `flex-1` needs to be a
-          // direct child of this outer flex column to actually expand — an intermediate wrapper
-          // div here would itself need `flex-1` too, or Layers would have nothing to grow into.
-          <Fragment key={id}>
-            {i > 0 && <ResizeDivider aboveId={visibleOrder[i - 1]} belowId={id} />}
+          <Fragment key={unit.id}>
+            {i > 0 && <ResizeDivider aboveId={
+              (() => {
+                const prev = units[i - 1];
+                return prev.kind === 'single' ? prev.id : prev.ids[prev.ids.length - 1];
+              })()
+            } belowId={unit.id} />}
             <CollapsiblePanel
-              id={id}
+              id={unit.id}
               title={entry.label}
-              collapsed={layout.isCollapsed(id)}
-              onToggleCollapsed={() => layout.toggleCollapsed(id)}
+              collapsed={layout.isCollapsed(unit.id)}
+              onToggleCollapsed={() => layout.toggleCollapsed(unit.id)}
               maximized={false}
-              onToggleMaximized={() => layout.toggleMaximized(id)}
-              grow={PANEL_BY_ID.get(id)?.grow}
-              height={layout.heightOf(id)}
-              onClose={() => layout.setVisible(id, false)}
-              onResetHeight={() => layout.resetHeight(id)}
+              onToggleMaximized={() => layout.toggleMaximized(unit.id)}
+              grow={PANEL_BY_ID.get(unit.id)?.grow}
+              height={layout.heightOf(unit.id)}
+              onClose={() => layout.setVisible(unit.id, false)}
+              onResetHeight={() => layout.resetHeight(unit.id)}
               menuItems={entry.menuItems}
-              draggedOver={dragOver?.id === id ? (dragOver.before ? 'above' : 'below') : null}
-              onDragStart={() => setDragId(id)}
+              draggedOver={dragOver?.id === unit.id ? (dragOver.before ? 'above' : 'below') : null}
+              onDragStart={() => setDragId(unit.id)}
               onDragEnd={() => { setDragId(null); setDragOver(null); }}
-              onDragOverHeader={(before) => { if (dragId && dragId !== id) setDragOver({ id, before }); }}
+              onDragOverHeader={(before) => { if (dragId && dragId !== unit.id) setDragOver({ id: unit.id, before }); }}
               onDropOnHeader={() => {
-                if (dragId && dragId !== id && dragOver) layout.reorder(dragId, id, dragOver.before);
+                if (dragId && dragId !== unit.id && dragOver) layout.reorder(dragId, unit.id, dragOver.before);
                 setDragId(null);
                 setDragOver(null);
               }}

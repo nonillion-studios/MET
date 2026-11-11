@@ -44,7 +44,9 @@ export function HistoryPanel({ hideTitle }: HistoryPanelProps = {}) {
           onClick={() => jumpTo(i)}
           className={cn(
             'studio-interactive studio-focusable text-left px-2.5 py-1.5 rounded-control text-ui truncate',
-            i === cursor ? 'bg-accent-soft text-accent font-medium' : 'text-ink-faint hover:bg-ink/5'
+            i === cursor ? 'bg-accent-soft text-accent font-medium'
+              : i > cursor ? 'text-ink-faint/40 hover:bg-ink/5'
+              : 'text-ink-faint hover:bg-ink/5'
           )}
         >
           {entry.label}

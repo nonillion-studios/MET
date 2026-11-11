@@ -1,8 +1,7 @@
-import { useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, GripVertical, MoreHorizontal } from 'lucide-react';
 import { IconButton } from '../../ui';
 import { cn } from '../../ui/cn';
-import { swal } from '../../../lib/swalTheme';
 
 /** Extra, panel-specific actions folded into the same combined menu the universal Close/Reset
  *  Height items render in — e.g. Layers' New Layer/New Blank Layer/Flatten/Merge Visible. Plain
@@ -47,18 +46,57 @@ const DOUBLE_CLICK_WINDOW_MS = 220;
  *  registry's `defaultHeight` on first load), so this should never actually be read. */
 const FALLBACK_HEIGHT = 240;
 
+function PanelDropdownMenu({ items, onClose }: { items: { label: string; onSelect: () => void }[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [onClose]);
+
+  return (
+    <div ref={ref} className="absolute right-0 top-full z-50 mt-0.5 min-w-[160px] rounded-control border border-hairline bg-surface shadow-lg py-1">
+      {items.map((item, i) =>
+        item.label === '—' ? (
+          <div key={i} className="my-1 border-t border-hairline" />
+        ) : (
+          <button
+            key={i}
+            type="button"
+            onClick={() => { item.onSelect(); onClose(); }}
+            className="w-full px-3 py-1.5 text-left text-micro text-ink hover:bg-accent-soft hover:text-accent transition-colors"
+          >
+            {item.label}
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
 export function CollapsiblePanel({
   id, title, children, collapsed, onToggleCollapsed, maximized, onToggleMaximized, grow, height,
   onClose, onResetHeight, menuItems, draggedOver, onDragStart, onDragEnd, onDragOverHeader, onDropOnHeader,
 }: CollapsiblePanelProps) {
   const clickTimer = useRef<number | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const isGrowExpanded = !!grow && !collapsed;
 
   function handleChevronClick() {
     if (clickTimer.current) {
       window.clearTimeout(clickTimer.current);
       clickTimer.current = null;
-      return; // second click of a double-click — the dblclick handler owns this gesture instead.
+      return;
     }
     clickTimer.current = window.setTimeout(() => {
       onToggleCollapsed();
@@ -74,25 +112,13 @@ export function CollapsiblePanel({
     onToggleMaximized();
   }
 
-  function handleMenuClick() {
-    const inputOptions: Record<string, string> = {};
-    if (!grow) inputOptions.resetHeight = 'Reset to Default Height';
-    inputOptions.close = 'Close Panel';
-    menuItems?.forEach((item, i) => { inputOptions[`extra-${i}`] = item.label; });
-    swal({
-      title,
-      input: 'select',
-      inputOptions,
-      inputPlaceholder: 'Choose an action',
-      showCancelButton: true,
-      confirmButtonText: 'Go',
-    }).then((r) => {
-      if (!r.isConfirmed || typeof r.value !== 'string') return;
-      if (r.value === 'close') onClose();
-      else if (r.value === 'resetHeight') onResetHeight();
-      else if (r.value.startsWith('extra-')) menuItems?.[Number(r.value.slice('extra-'.length))]?.onSelect();
-    });
+  const dropdownItems: { label: string; onSelect: () => void }[] = [];
+  if (menuItems) {
+    for (const item of menuItems) dropdownItems.push(item);
   }
+  if (dropdownItems.length > 0 && (!grow || menuItems?.length)) dropdownItems.push({ label: '—', onSelect: () => {} });
+  if (!grow) dropdownItems.push({ label: 'Reset to Default Height', onSelect: onResetHeight });
+  dropdownItems.push({ label: 'Close Panel', onSelect: onClose });
 
   const header = (
     <div
@@ -126,14 +152,17 @@ export function CollapsiblePanel({
           {title}
         </span>
       </button>
-      <IconButton
-        size="sm"
-        aria-label={`${title} panel menu`}
-        onClick={(e) => { e.stopPropagation(); handleMenuClick(); }}
-        className="!bg-transparent max-lg:!w-11 max-lg:!h-11"
-      >
-        <MoreHorizontal size={13} />
-      </IconButton>
+      <div className="relative">
+        <IconButton
+          size="sm"
+          aria-label={`${title} panel menu`}
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
+          className="!bg-transparent max-lg:!w-11 max-lg:!h-11"
+        >
+          <MoreHorizontal size={13} />
+        </IconButton>
+        {menuOpen && <PanelDropdownMenu items={dropdownItems} onClose={() => setMenuOpen(false)} />}
+      </div>
     </div>
   );
 

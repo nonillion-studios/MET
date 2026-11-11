@@ -9,6 +9,7 @@ import { PagesManagePanel } from './PagesManagePanel';
 import { computeWhitedDiffMask } from './whitedDiff';
 import { ToolRail } from './ToolRail';
 import { PanelStack, type PanelStackEntry } from './dock/PanelStack';
+import { DockWidthDivider } from './dock/DockWidthDivider';
 import { PANEL_BY_ID } from './dock/panelRegistry';
 import { LayersPanel } from './LayersPanel';
 import { TextPanel } from './TextPanel';
@@ -18,6 +19,7 @@ import { ColorProvider, useColor } from './color/ColorContext';
 import { ColorPanel } from './color/ColorPanel';
 import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
+import { HistogramPanel } from './HistogramPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
 import {
@@ -42,7 +44,7 @@ import { StatusBar } from './StatusBar';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
-import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
+import { KeyboardShortcutsOverlay } from './KeyboardShortcutsOverlay';
 import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
@@ -498,21 +500,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
-  async function handleZoomPrompt() {
-    const result = await swal({
-      title: 'Set Zoom',
-      input: 'number',
-      inputLabel: 'Zoom (%)',
-      inputValue: Math.round(viewport.scale * 100),
-      showCancelButton: true,
-      confirmButtonText: 'Apply',
-    });
-    if (!result.isConfirmed || result.value === undefined || result.value === '') return;
-    const percent = Number(result.value);
-    if (!Number.isFinite(percent) || percent <= 0) return;
-    canvasRef.current?.zoomTo(percent / 100);
-  }
-
   async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
     const result = await swal({
       title,
@@ -674,6 +661,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const studioRootRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelsHidden, setPanelsHidden] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
@@ -2701,6 +2689,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   const colorPanel = <ColorPanel hideTitle />;
   const historyPanel = <HistoryPanel hideTitle />;
+  const histogramPanel = <HistogramPanel getSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null} hideTitle />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} hideTitle />;
 
   // Built once and reused for both the docked-tab render and the floating window — the one place a
@@ -2822,6 +2811,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'color', label: PANEL_BY_ID.get('color')!.title, content: colorPanel },
     { id: 'fonts', label: PANEL_BY_ID.get('fonts')!.title, content: fontsPanel },
     { id: 'history', label: PANEL_BY_ID.get('history')!.title, content: historyPanel },
+    { id: 'histogram', label: PANEL_BY_ID.get('histogram')!.title, content: histogramPanel },
     { id: 'layers', label: PANEL_BY_ID.get('layers')!.title, content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
@@ -2958,10 +2948,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       if (id === 'pages') return leftOpen;
       return rightOpen && panelLayout.isVisible(id);
     },
-    showShortcutsHelp: () => swal({
-      title: 'Keyboard Shortcuts',
-      html: `<div style="text-align:left;font-size:13px;line-height:1.8">${FIXED_SHORTCUTS_HELP.map(s => `<div><b>${s.keys}</b> — ${s.description}</div>`).join('')}</div>`,
-    }),
+    showShortcutsHelp: () => setShortcutsOpen(true),
     isFullscreen,
     toggleFullscreen,
     panelsHidden,
@@ -3107,7 +3094,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const toolsSidebar = (
     <div className="h-full flex">
       {toolRailVisible && <ToolRail activeTool={activeTool} onToolChange={setActiveTool} orientation="vertical" />}
-      <div className="w-64 sm:w-72 h-full min-h-0 border-l border-hairline">
+      <DockWidthDivider onResize={panelLayout.resizeDock} />
+      <div className="h-full min-h-0 border-l border-hairline" style={{ width: panelLayout.dockWidth }}>
         <PanelStack panels={panelStackEntries} />
       </div>
     </div>
@@ -3355,7 +3343,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           </div>
         )}
         {!panelsHidden && layoutMode === 'tablet' && rightOpen && (
-          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 w-64 sm:w-72 h-full liquid-glass-heavy border-l border-hairline shadow-2xl">
+          <div ref={rightSidebarRef} className="absolute inset-y-0 right-12 z-20 h-full liquid-glass-heavy border-l border-hairline shadow-2xl" style={{ width: panelLayout.dockWidth }}>
             <PanelStack panels={panelStackEntries} />
           </div>
         )}
@@ -3393,7 +3381,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
       {statusBarVisible && <StatusBar
         zoom={viewport.scale}
-        onZoomClick={handleZoomPrompt}
+        onZoomChange={(z) => canvasRef.current?.zoomTo(z)}
         cursorPos={cursorImagePos}
         imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
         imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
@@ -3532,6 +3520,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onLiveChange={handleBrushLiveChange}
         />
       )}
+      {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }
