@@ -44,7 +44,7 @@ import { StatusBar } from './StatusBar';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
-import { FIXED_SHORTCUTS_HELP } from './shortcuts/shortcutsMap';
+import { KeyboardShortcutsOverlay } from './KeyboardShortcutsOverlay';
 import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
@@ -676,6 +676,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const studioRootRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelsHidden, setPanelsHidden] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
@@ -2962,10 +2963,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       if (id === 'pages') return leftOpen;
       return rightOpen && panelLayout.isVisible(id);
     },
-    showShortcutsHelp: () => swal({
-      title: 'Keyboard Shortcuts',
-      html: `<div style="text-align:left;font-size:13px;line-height:1.8">${FIXED_SHORTCUTS_HELP.map(s => `<div><b>${s.keys}</b> — ${s.description}</div>`).join('')}</div>`,
-    }),
+    showShortcutsHelp: () => setShortcutsOpen(true),
     isFullscreen,
     toggleFullscreen,
     panelsHidden,
@@ -3537,6 +3535,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           onLiveChange={handleBrushLiveChange}
         />
       )}
+      {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }
