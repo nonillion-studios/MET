@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { AlignLeft, AlignCenter, AlignRight, AlignJustify, Check, X, Wand2 } from 'lucide-react';
 import { findTool } from '../toolGroups';
 import type { LiquifyMode, SymmetryMode, BackgroundEraserSampling, BackgroundEraserLimits } from '../paint/paintEngine';
@@ -152,6 +153,14 @@ const SAMPLE_MODES: { id: SampleMode; label: string }[] = [
 ];
 
 function Slider({ label, value, min, max, step, onChange, format, phone }: { label: string; value: number; min: number; max: number; step: number; onChange: (v: number) => void; format?: (v: number) => string; phone?: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState('');
+  function startEdit() { setEditVal(String(Math.round(value))); setEditing(true); }
+  function commitEdit() {
+    setEditing(false);
+    const n = Number(editVal);
+    if (Number.isFinite(n)) onChange(Math.min(max, Math.max(min, n)));
+  }
   return (
     <label className={`flex items-center gap-2 text-micro text-ink-faint shrink-0 ${phone ? 'min-h-11' : ''}`}>
       <span className="uppercase tracking-wide text-[10px] opacity-70">{label}</span>
@@ -164,7 +173,28 @@ function Slider({ label, value, min, max, step, onChange, format, phone }: { lab
         onChange={(e) => onChange(Number(e.target.value))}
         className={`studio-focusable accent-[var(--color-accent)] ${phone ? 'w-24 h-6' : 'w-20'}`}
       />
-      <span className="w-8 text-right tabular-nums text-ink font-mono text-[10px]">{format ? format(value) : Math.round(value)}</span>
+      {editing ? (
+        <input
+          type="text"
+          inputMode="numeric"
+          value={editVal}
+          onChange={(e) => setEditVal(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false); }}
+          className="w-10 bg-ink/10 border border-accent rounded px-0.5 text-ink text-[10px] font-mono tabular-nums text-right outline-none"
+          autoFocus
+        />
+      ) : (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={startEdit}
+          title="Click to type a value"
+          className="w-8 text-right tabular-nums text-ink font-mono text-[10px] cursor-text hover:bg-ink/10 rounded px-0.5"
+        >
+          {format ? format(value) : Math.round(value)}
+        </span>
+      )}
     </label>
   );
 }
