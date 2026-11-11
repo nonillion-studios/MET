@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 function useMemoryUsage(): string | null {
   const [mem, setMem] = useState<string | null>(null);
@@ -21,7 +21,7 @@ function useMemoryUsage(): string | null {
 interface StatusBarProps {
   /** 1 = 100%. */
   zoom: number;
-  onZoomClick: () => void;
+  onZoomChange: (zoom: number) => void;
   cursorPos: { x: number; y: number } | null;
   imageWidth: number | null;
   imageHeight: number | null;
@@ -29,19 +29,48 @@ interface StatusBarProps {
   layerName: string | null;
 }
 
-export function StatusBar({ zoom, onZoomClick, cursorPos, imageWidth, imageHeight, toolLabel, layerName }: StatusBarProps) {
+export function StatusBar({ zoom, onZoomChange, cursorPos, imageWidth, imageHeight, toolLabel, layerName }: StatusBarProps) {
   const mem = useMemoryUsage();
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function startEdit() {
+    setEditValue(String(Math.round(zoom * 100)));
+    setEditing(true);
+    requestAnimationFrame(() => inputRef.current?.select());
+  }
+
+  function commitEdit() {
+    setEditing(false);
+    const percent = Number(editValue);
+    if (Number.isFinite(percent) && percent > 0) onZoomChange(percent / 100);
+  }
 
   return (
     <div className="h-6 shrink-0 flex items-center gap-4 px-3 liquid-glass-bar border-t border-hairline text-micro text-ink-faint select-none">
-      <button
-        type="button"
-        onClick={onZoomClick}
-        className="studio-interactive studio-focusable tabular-nums hover:text-ink shrink-0"
-        title="Click to set zoom"
-      >
-        {Math.round(zoom * 100)}%
-      </button>
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="numeric"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false); }}
+          className="w-14 bg-ink/10 border border-accent rounded px-1 text-ink text-micro tabular-nums outline-none"
+          autoFocus
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={startEdit}
+          className="studio-interactive studio-focusable tabular-nums hover:text-ink shrink-0"
+          title="Click to set zoom"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+      )}
       <span className="tabular-nums shrink-0 w-28">
         {cursorPos ? `X: ${Math.round(cursorPos.x)}, Y: ${Math.round(cursorPos.y)}` : 'X: —, Y: —'}
       </span>

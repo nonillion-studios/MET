@@ -500,21 +500,6 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
 
-  async function handleZoomPrompt() {
-    const result = await swal({
-      title: 'Set Zoom',
-      input: 'number',
-      inputLabel: 'Zoom (%)',
-      inputValue: Math.round(viewport.scale * 100),
-      showCancelButton: true,
-      confirmButtonText: 'Apply',
-    });
-    if (!result.isConfirmed || result.value === undefined || result.value === '') return;
-    const percent = Number(result.value);
-    if (!Number.isFinite(percent) || percent <= 0) return;
-    canvasRef.current?.zoomTo(percent / 100);
-  }
-
   async function promptSelectionAmount(title: string, label: string): Promise<number | null> {
     const result = await swal({
       title,
@@ -3396,7 +3381,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
       {statusBarVisible && <StatusBar
         zoom={viewport.scale}
-        onZoomClick={handleZoomPrompt}
+        onZoomChange={(z) => canvasRef.current?.zoomTo(z)}
         cursorPos={cursorImagePos}
         imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
         imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
