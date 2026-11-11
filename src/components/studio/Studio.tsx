@@ -763,6 +763,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [showGrid, setShowGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
   const [canvasFlipped, setCanvasFlipped] = useState(false);
+  const [canvasRotation, setCanvasRotation] = useState(0);
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
@@ -2948,6 +2949,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleRulers: () => setShowRulers(v => !v),
     viewFlipped: canvasFlipped,
     toggleFlipView: () => setCanvasFlipped(v => !v),
+    canvasRotation,
+    rotateViewCW: () => setCanvasRotation(r => (r + 15) % 360),
+    rotateViewCCW: () => setCanvasRotation(r => (r - 15 + 360) % 360),
+    resetRotateView: () => setCanvasRotation(0),
     hasSelection: hasSelection(selection),
     deselect: () => setSelection(NO_SELECTION),
     featherSelection: handleFeatherSelection,
@@ -3014,6 +3019,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       showGrid={showGrid}
       showRulers={showRulers}
       flipped={canvasFlipped}
+      rotation={canvasRotation}
       activeTool={activeTool}
       fitSignal={fitSignal}
       layers={layers}
