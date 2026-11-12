@@ -11,7 +11,8 @@ import {
 } from './layerTree';
 import {
   LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL, createDefaultLayerEffects,
-  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects,
+  LAYER_COLOR_LABEL_HEX,
+  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects, type LayerColorLabel,
 } from './studioTypes';
 import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
 import { getClipboardLayerStyle, setClipboardLayerStyle } from '../../lib/layerStyleClipboard';
@@ -88,6 +89,7 @@ interface LayersPanelProps {
   /** Right-click a placed-image (Smart Object) layer > "Rasterize Layer" — bakes its current
    *  transform into pixels and converts it into a normal, no-longer-transformable clean-patch layer. */
   onRasterizePlacedImage?: (id: string) => void;
+  onSetColorLabel?: (id: string, color: LayerColorLabel) => void;
   /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
    *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
    *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
@@ -115,7 +117,7 @@ export function LayersPanel({
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
-  onConvertBackgroundToLayer, onRasterizePlacedImage, onOpenWarpText, onToggleLayerLockFlag,
+  onConvertBackgroundToLayer, onRasterizePlacedImage, onSetColorLabel, onOpenWarpText, onToggleLayerLockFlag,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -354,7 +356,7 @@ export function LayersPanel({
               onDragLeave={() => setDropTarget(null)}
               onDrop={(e) => { e.preventDefault(); handleDrop(layer, zoneFor(e, layer)); }}
               onContextMenu={(e) => openContextMenu(e, layer)}
-              style={{ marginLeft: depth * 12 }}
+              style={{ marginLeft: depth * 12, borderLeftColor: layer.colorLabel && layer.colorLabel !== 'none' ? LAYER_COLOR_LABEL_HEX[layer.colorLabel] : undefined, borderLeftWidth: layer.colorLabel && layer.colorLabel !== 'none' ? 3 : undefined }}
               className={cn(
                 'group rounded-control border transition-colors',
                 dragId === layer.id && 'opacity-40',
@@ -727,6 +729,29 @@ export function LayersPanel({
                 {label}
               </button>
             ))}
+            {onSetColorLabel && (
+              <div className="border-t border-hairline mt-1 pt-1.5 px-3 pb-1">
+                <div className="text-micro text-ink-faint mb-1">Color Label</div>
+                <div className="flex gap-1.5">
+                  {(Object.keys(LAYER_COLOR_LABEL_HEX) as LayerColorLabel[]).map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      title={c === 'none' ? 'No Color' : c.charAt(0).toUpperCase() + c.slice(1)}
+                      onClick={() => { onSetColorLabel(layer.id, c); closeCtx(); }}
+                      className={cn(
+                        'w-4 h-4 rounded-full border transition-transform hover:scale-125',
+                        layer.colorLabel === c || (!layer.colorLabel && c === 'none') ? 'ring-1 ring-accent ring-offset-1 ring-offset-surface' : '',
+                        c === 'none' ? 'border-ink/30 bg-transparent' : 'border-transparent',
+                      )}
+                      style={c !== 'none' ? { background: LAYER_COLOR_LABEL_HEX[c] } : undefined}
+                    >
+                      {c === 'none' && <span className="block w-full h-full rounded-full border border-dashed border-ink/20" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

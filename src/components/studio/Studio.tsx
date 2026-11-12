@@ -1833,6 +1833,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
   }
 
+  function handleSetColorLabel(id: string, color: import('./studioTypes').LayerColorLabel) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, colorLabel: color === 'none' ? undefined : color })), 'Set Color Label');
+  }
+
   function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
     updateLayers(current => updateLayer(current, id, l =>
       l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
@@ -2648,6 +2652,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
       onRasterizePlacedImage={handleRasterizePlacedImage}
+      onSetColorLabel={handleSetColorLabel}
       onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
@@ -3431,6 +3436,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       {statusBarVisible && <StatusBar
         zoom={viewport.scale}
         onZoomChange={(z) => canvasRef.current?.zoomTo(z)}
+        onFitToScreen={() => setFitSignal(s => s + 1)}
         cursorPos={cursorImagePos}
         imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
         imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
@@ -3438,6 +3444,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         layerName={activeLayer?.name ?? null}
         selectionBounds={selectionBounds(selection)}
         snapToGrid={snapToGrid}
+        snapToGuides={snapToGuides}
       />}
 
       <ExportDialog
