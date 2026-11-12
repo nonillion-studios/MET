@@ -152,6 +152,7 @@ export interface MenuActions {
   saveWorkspacePreset: () => void;
   loadWorkspacePreset: (name: string) => void;
   deleteWorkspacePreset: (name: string) => void;
+  openPreferences: () => void;
   aboutOpen: () => void;
   triggerImportFonts: () => void;
   triggerImportBrushes: () => void;
@@ -288,7 +289,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'sep2', label: '', separator: true },
         { id: 'find-replace', label: 'Find & Replace…', shortcut: 'Ctrl+F', action: a.openFindReplace },
         { id: 'sep3', label: '', separator: true },
-        { id: 'preferences', label: 'Preferences…', disabled: true },
+        { id: 'preferences', label: 'Preferences…', action: a.openPreferences },
       ],
     },
     {

@@ -51,6 +51,7 @@ import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
 import { ImageSizeDialog } from './ImageSizeDialog';
+import { PreferencesDialog, loadPreferences, savePreferences, type StudioPreferences } from './PreferencesDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { AutomationModal } from './automation/AutomationModal';
 import { AiAutomationCursor } from './automation/AiAutomationCursor';
@@ -658,6 +659,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [exportOpen, setExportOpen] = useState(false);
   const [imageSizeOpen, setImageSizeOpen] = useState(false);
   const [canvasSizeOpen, setCanvasSizeOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [preferences, setPreferences] = useState<StudioPreferences>(() => loadPreferences());
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
   const [minimapVisible, setMinimapVisible] = useState(true);
@@ -2947,6 +2950,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     saveWorkspacePreset: () => { setSaveLayoutOpen(true); setSaveLayoutName(''); },
     loadWorkspacePreset: panelLayout.loadWorkspacePreset,
     deleteWorkspacePreset: panelLayout.deleteWorkspacePreset,
+    openPreferences: () => setPreferencesOpen(true),
     aboutOpen: () => setAboutOpen(true),
     triggerImportFonts: handleTriggerImportFonts,
     triggerImportBrushes: handleTriggerImportBrushes,
@@ -3595,6 +3599,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
         width={activePage ? activePage.original.width : null}
         height={activePage ? activePage.original.height : null}
         title="Canvas Size"
+      />
+      <PreferencesDialog
+        open={preferencesOpen}
+        onClose={() => setPreferencesOpen(false)}
+        preferences={preferences}
+        onSave={(prefs) => { setPreferences(prefs); savePreferences(prefs); }}
       />
       {selAmountPrompt && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
