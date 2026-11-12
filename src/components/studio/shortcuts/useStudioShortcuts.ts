@@ -38,6 +38,8 @@ interface UseStudioShortcutsArgs {
   onLayerViaCopy: () => void;
   onLayerViaCut: () => void;
   onCommandPalette: () => void;
+  onSetActiveLayerOpacity: (opacity: number) => void;
+  onToggleGuides: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -60,6 +62,7 @@ export function useStudioShortcuts({
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
   onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
   onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
+  onSetActiveLayerOpacity, onToggleGuides,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -94,6 +97,7 @@ export function useStudioShortcuts({
       // block's unshifted 'j' case (Layer Via Copy) instead of Layer Via Cut.
       if (mod && e.shiftKey && key === 'j') { e.preventDefault(); onLayerViaCut(); return; }
       if (mod && e.shiftKey && key === ';') { e.preventDefault(); onToggleSnapToGrid(); return; }
+      if (mod && e.shiftKey && key === 'h') { e.preventDefault(); onToggleGuides(); return; }
 
       if (mod) {
         if (key === 'g') { e.preventDefault(); onGroupLayers(); return; }
@@ -126,6 +130,13 @@ export function useStudioShortcuts({
       if (key === 'o') { onToggleCleaned(); return; }
       if (key === 'q') { onToggleQuickMask(); return; }
 
+      // Layer opacity shortcut: 1-9 = 10%-90%, 0 = 100% (Photoshop convention)
+      if (key >= '0' && key <= '9' && !e.altKey && !e.shiftKey) {
+        const opacity = key === '0' ? 1 : Number(key) / 10;
+        onSetActiveLayerOpacity(opacity);
+        return;
+      }
+
       const toolId = toolMap[key];
       if (toolId) { e.preventDefault(); onToolChange(toolId); }
     }
@@ -136,6 +147,7 @@ export function useStudioShortcuts({
     onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
     onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
-    onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
+    onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette, onSetActiveLayerOpacity,
+    onToggleGuides,
   ]);
 }

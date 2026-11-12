@@ -40,4 +40,6 @@ export const FIXED_SHORTCUTS_HELP: { keys: string; description: string }[] = [
   { keys: 'Ctrl/Cmd+Shift+E', description: 'Merge visible layers' },
   { keys: 'Ctrl/Cmd+Shift+;', description: 'Toggle Snap to Grid' },
   { keys: 'Ctrl/Cmd+/ or K', description: 'Command palette (search actions & tools)' },
+  { keys: '1–9 / 0', description: 'Set active layer opacity (10%–90% / 100%)' },
+  { keys: 'Ctrl/Cmd+Shift+H', description: 'Toggle guides visibility' },
 ];

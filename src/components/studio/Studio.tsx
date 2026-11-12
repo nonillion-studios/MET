@@ -734,6 +734,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onLayerViaCopy: () => handleLayerViaCopy(),
     onLayerViaCut: () => handleLayerViaCut(),
     onCommandPalette: () => setCommandPaletteOpen(v => !v),
+    onSetActiveLayerOpacity: (opacity) => {
+      if (activeLayerId) handleOpacityChange(activeLayerId, opacity);
+    },
+    onToggleGuides: () => setShowGuides(v => !v),
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
