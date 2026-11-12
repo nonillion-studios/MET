@@ -129,6 +129,13 @@ export function LayersPanel({
   const [adjustmentPickerOpen, setAdjustmentPickerOpen] = useState(false);
   const [filterType, setFilterType] = useState<StudioLayer['type'] | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const activeRowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (activeLayerId && activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeLayerId]);
 
   function commitRename() {
     const id = renamingId;
@@ -268,7 +275,7 @@ export function LayersPanel({
 
   return (
     <StudioPanel
-      title="Layers"
+      title={`Layers (${layers.length})`}
       hideTitle={hideTitle}
       bare
       bodyClassName="py-1.5 px-1.5 flex flex-col gap-1"
@@ -381,6 +388,7 @@ export function LayersPanel({
           return (
             <div
               key={layer.id}
+              ref={active ? activeRowRef : undefined}
               draggable={!layer.isBackground && !!onReparent}
               onDragStart={() => setDragId(layer.id)}
               onDragEnd={() => { setDragId(null); setDropTarget(null); }}
