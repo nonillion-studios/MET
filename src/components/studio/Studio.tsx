@@ -721,6 +721,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onFindReplace: handleOpenFindReplace,
     onToggleTextBold: handleToggleTextBold,
     onToggleTextItalic: handleToggleTextItalic,
+    onToggleTextUnderline: handleToggleTextUnderline,
     onToggleRulers: () => setShowRulers(v => !v),
     onToggleGrid: () => setShowGrid(v => !v),
     onToggleSnapToGrid: () => setSnapToGrid(v => !v),
@@ -2306,6 +2307,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     handleUpdateTextLayer(activeLayer.id, applyCharPatch(activeLayer.text, range, { italic: !isItalic }));
   }
 
+  function handleToggleTextUnderline() {
+    if (!activeLayer?.text) return;
+    const range = activeTextRange();
+    const isUnderline = resolveCharValue(activeLayer.text, range, 'underline');
+    handleUpdateTextLayer(activeLayer.id, applyCharPatch(activeLayer.text, range, { underline: !isUnderline }));
+  }
+
   function handleSetTextFontSize(size: number) {
     if (!activeLayer?.text) return;
     handleUpdateTextLayer(activeLayer.id, applyCharPatch(activeLayer.text, activeTextRange(), { fontSize: size }));
@@ -2911,6 +2919,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     hasActiveTextLayer: activeLayer?.type === 'text',
     textSetBold: handleToggleTextBold,
     textSetItalic: handleToggleTextItalic,
+    textSetUnderline: handleToggleTextUnderline,
     textSetFontSize: handleSetTextFontSize,
     textSetAlign: handleSetTextAlign,
     textSetRtl: handleSetTextRtl,

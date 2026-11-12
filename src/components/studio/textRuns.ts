@@ -5,7 +5,7 @@ import type { TextLayerData, TextRun, LineStyleOverride } from './studioTypes';
 export type RunStylePatch = Omit<TextRun, 'length'>;
 
 const RUN_STYLE_KEYS = [
-  'fontFamily', 'fontSize', 'fontWeight', 'color', 'bold', 'italic',
+  'fontFamily', 'fontSize', 'fontWeight', 'color', 'bold', 'italic', 'underline',
   'letterSpacing', 'kerning', 'baselineShift',
 ] as const satisfies readonly (keyof RunStylePatch)[];
 
@@ -16,6 +16,7 @@ export interface ResolvedRunStyle {
   fontWeight: number;
   color: string;
   italic: boolean;
+  underline: boolean;
   letterSpacing: number;
   kerning: number;
   baselineShift: number;
@@ -35,6 +36,7 @@ export function resolveRunStyle(text: TextLayerData, run?: TextRun): ResolvedRun
     fontWeight: run?.fontWeight ?? (bold ? 700 : 400),
     color: run?.color ?? text.color,
     italic: run?.italic ?? text.italic,
+    underline: run?.underline ?? text.underline,
     letterSpacing: run?.letterSpacing ?? text.letterSpacing,
     kerning: run?.kerning ?? 0,
     baselineShift: run?.baselineShift ?? 0,
@@ -164,7 +166,7 @@ export function runAt(content: string, runs: TextRun[], index: number): TextRun 
 
 /** Character properties that also exist as a layer default. The rest (kerning, baseline shift,
  *  explicit weight) only exist per-run, so with no selection they're written across every run. */
-export const LAYER_BACKED_CHAR_KEYS = new Set<string>(['fontFamily', 'fontSize', 'color', 'bold', 'italic', 'letterSpacing']);
+export const LAYER_BACKED_CHAR_KEYS = new Set<string>(['fontFamily', 'fontSize', 'color', 'bold', 'italic', 'underline', 'letterSpacing']);
 
 /**
  * Applies a character-style patch to a selected range (as run overrides) or, with no range, to the

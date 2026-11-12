@@ -28,6 +28,7 @@ interface UseStudioShortcutsArgs {
    *  itself has focus (see isStudioTextEditor below), unlike every other shortcut in this hook. */
   onToggleTextBold: () => void;
   onToggleTextItalic: () => void;
+  onToggleTextUnderline: () => void;
   onToggleRulers: () => void;
   onToggleGrid: () => void;
   onToggleSnapToGrid: () => void;
@@ -57,7 +58,7 @@ export function useStudioShortcuts({
   onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
   onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
-  onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
+  onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
   onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
@@ -74,6 +75,7 @@ export function useStudioShortcuts({
       if (mod && !e.shiftKey && !e.altKey && isStudioTextEditor()) {
         if (key === 'b') { e.preventDefault(); onToggleTextBold(); return; }
         if (key === 'i') { e.preventDefault(); onToggleTextItalic(); return; }
+        if (key === 'u') { e.preventDefault(); onToggleTextUnderline(); return; }
       }
 
       if (isTextInputFocused()) return;
@@ -133,7 +135,7 @@ export function useStudioShortcuts({
     toolMap, onToolChange, onBrushSizeStep, onSwapColors, onResetColors, onZoomIn, onZoomOut, onFit,
     onToggleCleaned, onToggleFullscreen, onTogglePanelsHidden, onExport, onGroupLayers, onUngroupLayers,
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
-    onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
+    onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
     onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
   ]);
 }

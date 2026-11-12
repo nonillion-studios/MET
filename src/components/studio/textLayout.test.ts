@@ -21,6 +21,7 @@ function makeText(overrides: Partial<TextLayerData> = {}): TextLayerData {
     align: 'left',
     bold: false,
     italic: false,
+    underline: false,
     lineHeight: 1.15,
     strokeColor: '#ffffff',
     strokeWidth: 0,
@@ -127,7 +128,7 @@ describe('layoutText width', () => {
   it('point text (autoWidth true) width equals the full measured line width', () => {
     const text = makeText({ content: 'Hello how are you today my friend', autoWidth: true });
     const layout = layoutText(text);
-    const style = { fontFamily: text.fontFamily, fontSize: text.fontSize, fontWeight: 400, color: text.color, italic: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
+    const style = { fontFamily: text.fontFamily, fontSize: text.fontSize, fontWeight: 400, color: text.color, italic: false, underline: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
     expect(layout.width).toBeCloseTo(measureRunText(text.content, style), 5);
   });
 

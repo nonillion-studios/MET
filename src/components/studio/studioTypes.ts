@@ -161,6 +161,7 @@ export interface TextRun {
   color?: string;
   bold?: boolean;
   italic?: boolean;
+  underline?: boolean;
   /** Tracking within this run (extra px between characters). */
   letterSpacing?: number;
   /**
@@ -213,6 +214,7 @@ export interface TextLayerData {
   align: TextAlign;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
   lineHeight: number;
   strokeColor: string;
   strokeWidth: number;
@@ -1095,6 +1097,7 @@ export function createTextLayer(x: number, y: number, boxWidth?: number, boxHeig
       align: 'center',
       bold: false,
       italic: false,
+      underline: false,
       lineHeight: 1.15,
       strokeColor: '#ffffff',
       strokeWidth: 0,

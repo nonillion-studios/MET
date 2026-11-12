@@ -144,7 +144,7 @@ export function autoTypesetBubble(bubble: TranslatedBubble, pageWidth: number, p
   if (arabic) {
     const wrappedLines = linesFromLayout(layout);
     if (wrappedLines.length > 1) {
-      const runStyle: ResolvedRunStyle = { fontFamily, fontSize, fontWeight: 400, color: style.color, italic: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
+      const runStyle: ResolvedRunStyle = { fontFamily, fontSize, fontWeight: 400, color: style.color, italic: false, underline: false, letterSpacing: 0, kerning: 0, baselineShift: 0 };
       const justified = wrappedLines.map((ln, i) => (i < wrappedLines.length - 1 ? justifyArabicLine(ln, boxWidth, runStyle) : ln));
       const candidate: TextLayerData = { ...(layer.text as TextLayerData), content: justified.join('\n') };
       const check = layoutText(candidate);

@@ -117,6 +117,7 @@ export interface MenuActions {
    *  never per-run). No-ops (and the items disable) without an active text layer. */
   textSetBold: () => void;
   textSetItalic: () => void;
+  textSetUnderline: () => void;
   textSetFontSize: (size: number) => void;
   textSetAlign: (align: TextAlign) => void;
   textSetRtl: () => void;
@@ -424,7 +425,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'sep2', label: '', separator: true },
         { id: 'bold', label: 'Bold', shortcut: 'Ctrl+B', action: a.textSetBold, disabled: !a.hasActiveTextLayer },
         { id: 'italic', label: 'Italic', shortcut: 'Ctrl+I', action: a.textSetItalic, disabled: !a.hasActiveTextLayer },
-        { id: 'underline', label: 'Underline', shortcut: 'Ctrl+U', disabled: true },
+        { id: 'underline', label: 'Underline', shortcut: 'Ctrl+U', action: a.textSetUnderline, disabled: !a.hasActiveTextLayer },
         { id: 'sep3', label: '', separator: true },
         { id: 'align-left', label: 'Align Left', action: () => a.textSetAlign('left'), disabled: !a.hasActiveTextLayer },
         { id: 'align-center', label: 'Align Center', action: () => a.textSetAlign('center'), disabled: !a.hasActiveTextLayer },
