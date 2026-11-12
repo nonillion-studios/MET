@@ -438,8 +438,20 @@ export function LayersPanel({
                       <span className="shrink-0 w-4" />
                     )}
 
-                    <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
-                      {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
+                    <span
+                      className={cn(
+                        'shrink-0 w-7 h-7 rounded border flex items-center justify-center',
+                        active ? 'border-accent/50 text-accent' : 'border-hairline text-ink-faint',
+                      )}
+                      style={{
+                        background: layer.type === 'text'
+                          ? `linear-gradient(135deg, ${layer.text?.color ?? '#888'} 0%, ${layer.text?.color ?? '#888'}44 100%)`
+                          : layer.type === 'background' || layer.type === 'clean-patch' || layer.type === 'placed-image'
+                            ? 'repeating-conic-gradient(rgba(128,128,128,0.15) 0% 25%, transparent 0% 50%) 0 0 / 8px 8px'
+                            : undefined,
+                      }}
+                    >
+                      {isGroup && !layer.collapsed ? <FolderOpen size={13} /> : <Icon size={13} />}
                     </span>
 
                     {/* Mask chip — always visible (not gated behind the row's own disclosure) so it's

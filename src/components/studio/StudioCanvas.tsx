@@ -2753,8 +2753,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   height={image.height + 8}
                   fill="#000000"
                   shadowColor="black"
-                  shadowBlur={20}
-                  shadowOpacity={0.6}
+                  shadowBlur={24}
+                  shadowOpacity={0.7}
+                  shadowOffsetX={2}
+                  shadowOffsetY={4}
+                />
+                <Rect
+                  x={-0.5}
+                  y={-0.5}
+                  width={image.width + 1}
+                  height={image.height + 1}
+                  stroke="rgba(255,255,255,0.08)"
+                  strokeWidth={1 / scale}
+                  listening={false}
                 />
                 {/* The whole stack, background included — the background is root index 0, so it has
                     to be inside the tree for an adjustment above it to enclose (and grade) it. */}
