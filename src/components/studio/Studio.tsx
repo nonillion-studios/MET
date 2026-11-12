@@ -3374,6 +3374,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
             void handlePlaceImageFiles(files);
           }}
         >
+          {activePage && (
+            <div className="h-6 shrink-0 flex items-center gap-3 px-3 bg-black/40 border-b border-white/5 text-[11px] text-white/50 font-mono select-none z-10">
+              <span className="text-white/70 font-medium truncate">{activePage.original.filename}</span>
+              <span className="text-white/40">
+                {(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width}
+                {' × '}
+                {(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height}
+              </span>
+              {showCleaned && activePage.cleaned && <span className="text-emerald-400/60">Cleaned</span>}
+              <span className="text-white/30">@ {Math.round(viewport.scale * 100)}%</span>
+            </div>
+          )}
           {canvasNode}
           <CanvasHud message={hudMessage} />
           <input
