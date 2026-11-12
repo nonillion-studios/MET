@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, SlidersHorizontal, ChevronUp, ChevronDown,
   FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2, Grid2x2, Paintbrush, Move,
+  Search, Type, ImageIcon, PenTool, Folder,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -125,6 +126,8 @@ export function LayersPanel({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [adjustmentPickerOpen, setAdjustmentPickerOpen] = useState(false);
+  const [filterType, setFilterType] = useState<StudioLayer['type'] | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   function commitRename() {
     const id = renamingId;
@@ -198,7 +201,9 @@ export function LayersPanel({
   // walk puts a group directly above its own children, which is the order the panel wants to indent.
   const ordered = [...flattenWithPaths(layers)]
     .reverse()
-    .filter(({ path }) => !isInsideCollapsedGroup(layers, path));
+    .filter(({ path }) => !isInsideCollapsedGroup(layers, path))
+    .filter(({ layer }) => !filterType || layer.type === filterType)
+    .filter(({ layer }) => !searchQuery || layer.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
   /** True when any ancestor of `path` is a collapsed group — those rows stay hidden. */
   function isInsideCollapsedGroup(list: StudioLayer[], path: LayerPath): boolean {
@@ -300,6 +305,38 @@ export function LayersPanel({
         </>
       }
     >
+        <div className="flex items-center gap-1 px-1 pb-1 mb-1 border-b border-hairline/60">
+          {([
+            ['text', Type, 'Text layers'] as const,
+            ['clean-patch', ImageIcon, 'Raster layers'] as const,
+            ['adjustment', SlidersHorizontal, 'Adjustment layers'] as const,
+            ['path', PenTool, 'Path layers'] as const,
+            ['group', Folder, 'Groups'] as const,
+          ] as const).map(([type, Icon, title]) => (
+            <button
+              key={type}
+              type="button"
+              title={title}
+              onClick={() => setFilterType(f => f === type ? null : type)}
+              className={cn(
+                'w-5 h-5 flex items-center justify-center rounded-control border transition-colors',
+                filterType === type ? 'bg-accent-soft text-accent border-accent/40' : 'border-transparent text-ink-faint hover:text-ink hover:bg-ink/5'
+              )}
+            >
+              <Icon size={11} />
+            </button>
+          ))}
+          <div className="flex-1 min-w-0 ml-1 relative">
+            <Search size={10} className="absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Filter…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-ink/5 border border-hairline rounded-control pl-5 pr-1.5 py-0.5 text-[10px] text-ink outline-none placeholder:text-ink-faint/50 focus:border-accent/40"
+            />
+          </div>
+        </div>
         {onToggleLayerLockFlag && activeLayerId && !findLayer(layers, activeLayerId)?.isBackground && (() => {
           const active = findLayer(layers, activeLayerId);
           if (!active) return null;
