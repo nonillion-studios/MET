@@ -185,6 +185,8 @@ export interface MenuActions {
   rotateViewCCW: () => void;
   resetRotateView: () => void;
   hasSelection: boolean;
+  selectAll: () => void;
+  selectInverse: () => void;
   deselect: () => void;
   featherSelection: () => void;
   expandSelection: () => void;
@@ -300,7 +302,9 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       id: 'select',
       label: 'Select',
       items: [
+        { id: 'select-all', label: 'All', shortcut: 'Ctrl+A', action: a.selectAll },
         { id: 'deselect', label: 'Deselect', shortcut: 'Ctrl+D', action: a.deselect, disabled: !a.hasSelection },
+        { id: 'select-inverse', label: 'Inverse', shortcut: 'Ctrl+Shift+I', action: a.selectInverse, disabled: !a.hasSelection },
         { id: 'sep1', label: '', separator: true },
         { id: 'feather', label: 'Feather…', action: a.featherSelection, disabled: !a.hasSelection },
         { id: 'expand', label: 'Expand…', action: a.expandSelection, disabled: !a.hasSelection },

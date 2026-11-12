@@ -40,6 +40,8 @@ interface UseStudioShortcutsArgs {
   onCommandPalette: () => void;
   onSetActiveLayerOpacity: (opacity: number) => void;
   onToggleGuides: () => void;
+  onSelectAll: () => void;
+  onSelectInverse: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -62,7 +64,7 @@ export function useStudioShortcuts({
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
   onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
   onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
-  onSetActiveLayerOpacity, onToggleGuides,
+  onSetActiveLayerOpacity, onToggleGuides, onSelectAll, onSelectInverse,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -98,6 +100,7 @@ export function useStudioShortcuts({
       if (mod && e.shiftKey && key === 'j') { e.preventDefault(); onLayerViaCut(); return; }
       if (mod && e.shiftKey && key === ';') { e.preventDefault(); onToggleSnapToGrid(); return; }
       if (mod && e.shiftKey && key === 'h') { e.preventDefault(); onToggleGuides(); return; }
+      if (mod && e.shiftKey && key === 'i') { e.preventDefault(); onSelectInverse(); return; }
 
       if (mod) {
         if (key === 'g') { e.preventDefault(); onGroupLayers(); return; }
@@ -115,6 +118,7 @@ export function useStudioShortcuts({
         // "." / "," rather than "]" / "[" — those are already the brush-size-step keys.
         if (key === '.') { e.preventDefault(); onTextSizeStep(1); return; }
         if (key === ',') { e.preventDefault(); onTextSizeStep(-1); return; }
+        if (key === 'a') { e.preventDefault(); onSelectAll(); return; }
         if (key === 'd') { e.preventDefault(); onDeselect(); return; }
         if (key === 'j') { e.preventDefault(); onLayerViaCopy(); return; }
         if (key === '/' || key === 'k') { e.preventDefault(); onCommandPalette(); return; }
@@ -148,6 +152,6 @@ export function useStudioShortcuts({
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
     onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
     onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette, onSetActiveLayerOpacity,
-    onToggleGuides,
+    onToggleGuides, onSelectAll, onSelectInverse,
   ]);
 }

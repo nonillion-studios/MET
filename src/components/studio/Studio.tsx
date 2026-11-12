@@ -528,6 +528,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   /** Marquee selection's own right-click context menu > Select Inverse — same effect as the Select
    *  menu's item, just reachable from the selection itself. */
+  function handleSelectAll() {
+    if (!activePage) return;
+    const img = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
+    setSelection({ kind: 'rect', x: 0, y: 0, width: img.width, height: img.height });
+  }
+
   function handleSelectInverse() {
     if (!activePage) return;
     setSelection(sel => invertSelection(sel, activePage.original.width, activePage.original.height));
@@ -739,6 +745,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       if (activeLayerId) { handleOpacityChange(activeLayerId, opacity); showHud(`Opacity: ${Math.round(opacity * 100)}%`); }
     },
     onToggleGuides: () => setShowGuides(v => !v),
+    onSelectAll: handleSelectAll,
+    onSelectInverse: handleSelectInverse,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -3044,6 +3052,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     rotateViewCCW: () => setCanvasRotation(r => (r - 15 + 360) % 360),
     resetRotateView: () => setCanvasRotation(0),
     hasSelection: hasSelection(selection),
+    selectAll: handleSelectAll,
+    selectInverse: handleSelectInverse,
     deselect: () => setSelection(NO_SELECTION),
     featherSelection: handleFeatherSelection,
     expandSelection: handleExpandSelection,
