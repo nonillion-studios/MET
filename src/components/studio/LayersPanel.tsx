@@ -36,6 +36,7 @@ interface LayersPanelProps {
   selectedLayerIds?: string[];
   onSelect: (id: string, mode?: LayerSelectMode) => void;
   onToggleVisible: (id: string) => void;
+  onIsolateLayer?: (id: string) => void;
   onToggleLocked: (id: string) => void;
   onOpacityChange: (id: string, opacity: number) => void;
   onBlendChange: (id: string, blendMode: StudioLayer['blendMode']) => void;
@@ -113,7 +114,7 @@ interface LayersPanelProps {
 }
 
 export function LayersPanel({
-  layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
+  layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onIsolateLayer, onToggleLocked,
   onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
@@ -415,7 +416,7 @@ export function LayersPanel({
                       role="button"
                       tabIndex={0}
                       aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                      onClick={(e) => { e.stopPropagation(); onToggleVisible(layer.id); }}
+                      onClick={(e) => { e.stopPropagation(); if (e.altKey && onIsolateLayer) onIsolateLayer(layer.id); else onToggleVisible(layer.id); }}
                       className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
                     >
                       {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
@@ -586,7 +587,22 @@ export function LayersPanel({
                   {!layer.isBackground && (
                     <>
                       <label className="flex items-center gap-2 text-micro text-ink-faint">
-                        <span className="w-14 shrink-0">Opacity</span>
+                        <span
+                          className="w-14 shrink-0 cursor-ew-resize select-none"
+                          title="Drag to scrub opacity"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            const startX = e.clientX;
+                            const startOpacity = layer.opacity;
+                            const onMove = (ev: MouseEvent) => {
+                              const delta = (ev.clientX - startX) / 150;
+                              onOpacityChange(layer.id, Math.min(1, Math.max(0, startOpacity + delta)));
+                            };
+                            const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                            window.addEventListener('mousemove', onMove);
+                            window.addEventListener('mouseup', onUp);
+                          }}
+                        >Opacity</span>
                         <input
                           type="range"
                           min={0}

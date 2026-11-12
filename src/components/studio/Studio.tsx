@@ -2052,6 +2052,39 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, visible: !l.visible })), 'Toggle Visibility');
   }
 
+  const isolatedLayerRef = useRef<{ id: string; savedVisibility: Map<string, boolean> } | null>(null);
+
+  function handleIsolateLayer(id: string) {
+    if (isolatedLayerRef.current?.id === id) {
+      const saved = isolatedLayerRef.current.savedVisibility;
+      isolatedLayerRef.current = null;
+      updateLayers(current => {
+        function restore(list: StudioLayer[]): StudioLayer[] {
+          return list.map(l => {
+            const vis = saved.get(l.id);
+            const updated = vis !== undefined ? { ...l, visible: vis } : l;
+            return updated.children ? { ...updated, children: restore(updated.children) } : updated;
+          });
+        }
+        return restore(current);
+      }, 'Restore Visibility');
+    } else {
+      const saved = new Map<string, boolean>();
+      function collect(list: StudioLayer[]) { for (const l of list) { saved.set(l.id, l.visible); if (l.children) collect(l.children); } }
+      collect(layers);
+      isolatedLayerRef.current = { id, savedVisibility: saved };
+      updateLayers(current => {
+        function hide(list: StudioLayer[]): StudioLayer[] {
+          return list.map(l => {
+            const updated = { ...l, visible: l.id === id };
+            return updated.children ? { ...updated, children: hide(updated.children) } : updated;
+          });
+        }
+        return hide(current);
+      }, 'Isolate Layer');
+    }
+  }
+
   function handleToggleLocked(id: string) {
     updateLayers(current => updateLayer(current, id, l => ({ ...l, locked: !l.locked })), 'Toggle Lock');
   }
@@ -2616,6 +2649,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       selectedLayerIds={selectedLayerIds}
       onSelect={selectLayer}
       onToggleVisible={handleToggleVisible}
+      onIsolateLayer={handleIsolateLayer}
       onToggleLocked={handleToggleLocked}
       onToggleLayerLockFlag={handleToggleLayerLockFlag}
       onOpacityChange={handleOpacityChange}
