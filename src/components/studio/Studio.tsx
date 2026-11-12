@@ -41,6 +41,7 @@ import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar, type PendingTextDefaults } from './toolOptions/ToolOptionsBar';
 import { StatusBar } from './StatusBar';
+import { CanvasHud } from './CanvasHud';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
@@ -702,7 +703,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   useStudioShortcuts({
     onToolChange: (id) => setActiveTool(id),
-    onBrushSizeStep: (delta) => setBrushSize(v => Math.max(1, Math.min(200, v + delta))),
+    onBrushSizeStep: (delta) => setBrushSize(v => { const next = Math.max(1, Math.min(200, v + delta)); showHud(`Size: ${next}px`); return next; }),
     onSwapColors: swapColors,
     onResetColors: resetColors,
     onZoomIn: () => canvasRef.current?.zoomIn(),
@@ -735,7 +736,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onLayerViaCut: () => handleLayerViaCut(),
     onCommandPalette: () => setCommandPaletteOpen(v => !v),
     onSetActiveLayerOpacity: (opacity) => {
-      if (activeLayerId) handleOpacityChange(activeLayerId, opacity);
+      if (activeLayerId) { handleOpacityChange(activeLayerId, opacity); showHud(`Opacity: ${Math.round(opacity * 100)}%`); }
     },
     onToggleGuides: () => setShowGuides(v => !v),
   });
@@ -786,6 +787,9 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [guides, setGuides] = useState<{ h: number[]; v: number[] }>({ h: [], v: [] });
   const [canvasFlipped, setCanvasFlipped] = useState(false);
   const [canvasRotation, setCanvasRotation] = useState(0);
+  const [hudMessage, setHudMessage] = useState<string | null>(null);
+  const hudCounter = useRef(0);
+  function showHud(msg: string) { hudCounter.current += 1; setHudMessage(msg + '\x00' + hudCounter.current); }
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
@@ -3371,6 +3375,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
           }}
         >
           {canvasNode}
+          <CanvasHud message={hudMessage} />
           <input
             ref={placeImageInputRef}
             type="file"
