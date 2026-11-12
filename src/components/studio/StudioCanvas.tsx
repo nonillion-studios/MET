@@ -71,6 +71,22 @@ const RULER_SIZE = 20;
 function snapToGridValue(v: number, gridSize: number): number {
   return Math.round(v / gridSize) * gridSize;
 }
+
+const GUIDE_SNAP_THRESHOLD = 8;
+
+function snapToNearestGuide(v: number, guidePositions: number[], scale: number): number {
+  let best = v;
+  let bestDist = Infinity;
+  const threshold = GUIDE_SNAP_THRESHOLD / scale;
+  for (const g of guidePositions) {
+    const d = Math.abs(v - g);
+    if (d < threshold && d < bestDist) {
+      bestDist = d;
+      best = g;
+    }
+  }
+  return best;
+}
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop', 'slice']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
@@ -103,6 +119,7 @@ interface StudioCanvasProps {
   showGuides?: boolean;
   onAddGuide?: (axis: 'h' | 'v', position: number) => void;
   onRemoveGuide?: (axis: 'h' | 'v', index: number) => void;
+  snapToGuides?: boolean;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
@@ -351,7 +368,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, snapToGuides = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
@@ -3104,10 +3121,20 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 stroke="#38bdf8"
                 strokeWidth={1 / scale}
                 dash={[6 / scale, 4 / scale]}
-                onDragMove={snapToGrid ? (e) => {
+                onDragMove={(snapToGrid || (snapToGuides && guides)) ? (e) => {
                   const node = e.target;
-                  node.x(snapToGridValue(node.x(), GRID_SIZE));
-                  node.y(snapToGridValue(node.y(), GRID_SIZE));
+                  let nx = node.x();
+                  let ny = node.y();
+                  if (snapToGrid) {
+                    nx = snapToGridValue(nx, GRID_SIZE);
+                    ny = snapToGridValue(ny, GRID_SIZE);
+                  }
+                  if (snapToGuides && guides) {
+                    nx = snapToNearestGuide(nx, guides.v, scale);
+                    ny = snapToNearestGuide(ny, guides.h, scale);
+                  }
+                  node.x(nx);
+                  node.y(ny);
                 } : undefined}
                 onDragEnd={(e) => setTransformBox(b => (b ? { ...b, x: e.target.x(), y: e.target.y() } : b))}
                 onTransformEnd={(e) => {
