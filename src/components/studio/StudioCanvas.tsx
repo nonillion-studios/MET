@@ -245,6 +245,8 @@ interface StudioCanvasProps {
   flipped?: boolean;
   /** Non-destructive view rotation in degrees (CSS transform). */
   rotation?: number;
+  /** User preferences for grid size, ruler step, guide/grid colors. */
+  preferences?: { gridSize: number; rulerStep: number; guideColor: string; gridColor: string };
 }
 
 /** The subset of a resolved TypeR line's style the drag preview needs to render — see
@@ -378,10 +380,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
   onSelectInverse, onOpenFillSelectionDialog, onOpenStrokeSelectionDialog, onLayerViaCopy, onLayerViaCut, onAddLayerFromContextMenu,
   typerArmed = false, typerPreviewLine = null, flipped = false, rotation = 0,
+  preferences,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
   const [guideDrag, setGuideDrag] = useState<{ axis: 'h' | 'v'; pos: number } | null>(null);
+  const rulerHIndicatorRef = useRef<HTMLDivElement>(null);
+  const rulerVIndicatorRef = useRef<HTMLDivElement>(null);
+  const effectiveGridSize = preferences?.gridSize ?? GRID_SIZE;
+  const effectiveRulerStep = preferences?.rulerStep ?? RULER_STEP;
+  const effectiveGridColor = preferences?.gridColor ?? '#00aaff';
+  const effectiveGuideColor = preferences?.guideColor ?? '#00ffff';
   /** Coalesces onLiveCursorMove/onCursorImagePosChange to at most once per animation frame. Both
    *  callbacks land on plain useState setters upstream (Studio.tsx), so calling them on every native
    *  pointermove — which can fire far more often than the display refresh rate — forces a full,
@@ -2663,6 +2672,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         pendingCursorPosRef.current = screenToImage(cx, cy, { scale, pos });
+        if (rulerHIndicatorRef.current) {
+          rulerHIndicatorRef.current.style.left = `${cx + RULER_SIZE}px`;
+          rulerHIndicatorRef.current.style.display = '';
+        }
+        if (rulerVIndicatorRef.current) {
+          rulerVIndicatorRef.current.style.top = `${cy + RULER_SIZE}px`;
+          rulerVIndicatorRef.current.style.display = '';
+        }
         if (cursorRafRef.current === null) {
           cursorRafRef.current = requestAnimationFrame(() => {
             cursorRafRef.current = null;
@@ -2676,6 +2693,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       onPointerLeave={() => {
         setBrushCursorPos(null);
         setEyedropperColor(null);
+        if (rulerHIndicatorRef.current) rulerHIndicatorRef.current.style.display = 'none';
+        if (rulerVIndicatorRef.current) rulerVIndicatorRef.current.style.display = 'none';
         if (cursorRafRef.current !== null) {
           cancelAnimationFrame(cursorRafRef.current);
           cursorRafRef.current = null;
@@ -3011,11 +3030,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 
           {showGrid && image && (
             <Layer listening={false}>
-              {Array.from({ length: Math.floor(image.width / GRID_SIZE) + 1 }, (_, i) => i * GRID_SIZE).map(x => (
-                <Line key={`gx${x}`} points={[x, 0, x, image.height]} stroke="#00aaff" strokeWidth={1 / scale} opacity={0.35} />
+              {Array.from({ length: Math.floor(image.width / effectiveGridSize) + 1 }, (_, i) => i * effectiveGridSize).map(x => (
+                <Line key={`gx${x}`} points={[x, 0, x, image.height]} stroke={effectiveGridColor} strokeWidth={1 / scale} opacity={0.35} />
               ))}
-              {Array.from({ length: Math.floor(image.height / GRID_SIZE) + 1 }, (_, i) => i * GRID_SIZE).map(y => (
-                <Line key={`gy${y}`} points={[0, y, image.width, y]} stroke="#00aaff" strokeWidth={1 / scale} opacity={0.35} />
+              {Array.from({ length: Math.floor(image.height / effectiveGridSize) + 1 }, (_, i) => i * effectiveGridSize).map(y => (
+                <Line key={`gy${y}`} points={[0, y, image.width, y]} stroke={effectiveGridColor} strokeWidth={1 / scale} opacity={0.35} />
               ))}
             </Layer>
           )}
@@ -3063,10 +3082,10 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
           {showGuides && guides && image && (guides.v.length > 0 || guides.h.length > 0) && (
             <Layer listening={false}>
               {guides.v.map((x, i) => (
-                <Line key={`gv${i}`} points={[x, 0, x, image.height]} stroke="#00ffff" strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
+                <Line key={`gv${i}`} points={[x, 0, x, image.height]} stroke={effectiveGuideColor} strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
               ))}
               {guides.h.map((y, i) => (
-                <Line key={`gh${i}`} points={[0, y, image.width, y]} stroke="#00ffff" strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
+                <Line key={`gh${i}`} points={[0, y, image.width, y]} stroke={effectiveGuideColor} strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
               ))}
             </Layer>
           )}
@@ -3140,8 +3159,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   let nx = node.x();
                   let ny = node.y();
                   if (snapToGrid) {
-                    nx = snapToGridValue(nx, GRID_SIZE);
-                    ny = snapToGridValue(ny, GRID_SIZE);
+                    nx = snapToGridValue(nx, effectiveGridSize);
+                    ny = snapToGridValue(ny, effectiveGridSize);
                   }
                   if (snapToGuides && guides) {
                     nx = snapToNearestGuide(nx, guides.v, scale);
@@ -3373,10 +3392,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               window.addEventListener('mouseup', onUp);
             }}
           >
-            {Array.from({ length: Math.floor(image.width / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(x => (
+            {Array.from({ length: Math.floor(image.width / effectiveRulerStep) + 1 }, (_, i) => i * effectiveRulerStep).map(x => (
               <span key={x} className="absolute top-0 h-full flex items-center text-[9px] text-white/50 font-mono border-l border-white/20 pl-0.5 pointer-events-none"
                 style={{ left: pos.x + x * scale }}>{x}</span>
             ))}
+            <div ref={rulerHIndicatorRef} className="absolute bottom-0 pointer-events-none" style={{ display: 'none', width: 0, height: 0, borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderBottom: '4px solid #ff6b6b', marginLeft: -4 }} />
           </div>
           <div
             className="absolute top-0 left-0 bottom-0 w-5 bg-black/60 border-r border-white/10 overflow-hidden z-10 cursor-e-resize"
@@ -3402,10 +3422,11 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
               window.addEventListener('mouseup', onUp);
             }}
           >
-            {Array.from({ length: Math.floor(image.height / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(y => (
+            {Array.from({ length: Math.floor(image.height / effectiveRulerStep) + 1 }, (_, i) => i * effectiveRulerStep).map(y => (
               <span key={y} className="absolute left-0 w-full text-[9px] text-white/50 font-mono border-t border-white/20 pt-0.5 text-center pointer-events-none"
                 style={{ top: pos.y + y * scale }}>{y}</span>
             ))}
+            <div ref={rulerVIndicatorRef} className="absolute right-0 pointer-events-none" style={{ display: 'none', width: 0, height: 0, borderTop: '4px solid transparent', borderBottom: '4px solid transparent', borderRight: '4px solid #ff6b6b', marginTop: -4 }} />
           </div>
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
@@ -3414,8 +3435,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         <div
           className="absolute z-30 pointer-events-none"
           style={guideDrag.axis === 'h'
-            ? { left: 0, right: 0, top: pos.y + guideDrag.pos * scale - 0.5, height: 1, background: '#00ffff' }
-            : { top: 0, bottom: 0, left: pos.x + guideDrag.pos * scale - 0.5, width: 1, background: '#00ffff' }
+            ? { left: 0, right: 0, top: pos.y + guideDrag.pos * scale - 0.5, height: 1, background: effectiveGuideColor }
+            : { top: 0, bottom: 0, left: pos.x + guideDrag.pos * scale - 0.5, width: 1, background: effectiveGuideColor }
           }
         />
       )}

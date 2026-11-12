@@ -3068,6 +3068,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onRemoveGuide={(axis, index) => setGuides(g => ({ ...g, [axis]: g[axis].filter((_, i) => i !== index) }))}
       snapToGuides={snapToGuides}
       showSafeArea={showSafeArea}
+      preferences={preferences}
       flipped={canvasFlipped}
       rotation={canvasRotation}
       activeTool={activeTool}
