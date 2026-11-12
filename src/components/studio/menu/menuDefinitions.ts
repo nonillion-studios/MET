@@ -176,6 +176,8 @@ export interface MenuActions {
   hasGuides: boolean;
   snapToGuides: boolean;
   toggleSnapToGuides: () => void;
+  showSafeArea: boolean;
+  toggleSafeArea: () => void;
   viewFlipped: boolean;
   toggleFlipView: () => void;
   canvasRotation: number;
@@ -324,7 +326,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'grid', label: 'Grid', shortcut: "Ctrl+'", action: a.toggleGrid, checked: a.showGrid },
         { id: 'guides', label: 'Guides', action: a.toggleGuides, checked: a.showGuides },
         { id: 'clear-guides', label: 'Clear Guides', action: a.clearGuides, disabled: !a.hasGuides },
-        { id: 'safe-area', label: 'Safe Area', disabled: true, checked: false },
+        { id: 'safe-area', label: 'Safe Area', action: a.toggleSafeArea, checked: a.showSafeArea },
         { id: 'sep3', label: '', separator: true },
         { id: 'snap-grid', label: 'Snap to Grid', shortcut: 'Ctrl+Shift+;', action: a.toggleSnapToGrid, checked: a.snapToGrid },
         { id: 'snap-guides', label: 'Snap to Guides', action: a.toggleSnapToGuides, checked: a.snapToGuides },

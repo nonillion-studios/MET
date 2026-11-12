@@ -120,6 +120,7 @@ interface StudioCanvasProps {
   onAddGuide?: (axis: 'h' | 'v', position: number) => void;
   onRemoveGuide?: (axis: 'h' | 'v', index: number) => void;
   snapToGuides?: boolean;
+  showSafeArea?: boolean;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
@@ -368,7 +369,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, snapToGuides = false, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, snapToGuides = false, showSafeArea = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
@@ -3042,6 +3043,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 {Array.from({ length: rows }, (_, i) => y0 + i).map(y => (
                   <Line key={`py${y}`} points={[x0, y, x1, y]} stroke="#888" strokeWidth={1 / scale} opacity={0.25} />
                 ))}
+              </Layer>
+            );
+          })()}
+
+          {showSafeArea && image && (() => {
+            const margin = Math.round(Math.min(image.width, image.height) * 0.05);
+            return (
+              <Layer listening={false}>
+                <Rect x={0} y={0} width={image.width} height={margin} fill="rgba(255,0,0,0.12)" />
+                <Rect x={0} y={image.height - margin} width={image.width} height={margin} fill="rgba(255,0,0,0.12)" />
+                <Rect x={0} y={margin} width={margin} height={image.height - margin * 2} fill="rgba(255,0,0,0.12)" />
+                <Rect x={image.width - margin} y={margin} width={margin} height={image.height - margin * 2} fill="rgba(255,0,0,0.12)" />
+                <Rect x={margin} y={margin} width={image.width - margin * 2} height={image.height - margin * 2} stroke="#ff0000" strokeWidth={1 / scale} opacity={0.5} dash={[4 / scale, 4 / scale]} />
               </Layer>
             );
           })()}
