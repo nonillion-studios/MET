@@ -20,6 +20,8 @@ import { ColorPanel } from './color/ColorPanel';
 import { HistoryProvider, useHistory } from './history/HistoryContext';
 import { HistoryPanel } from './history/HistoryPanel';
 import { HistogramPanel } from './HistogramPanel';
+import { SwatchesPanel } from './SwatchesPanel';
+import { InfoPanel, type CursorInfo } from './InfoPanel';
 import { useKeyboardUndo } from './history/useKeyboardUndo';
 import { PanelLayoutProvider, usePanelLayout } from './dock/PanelLayoutContext';
 import {
@@ -747,6 +749,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onToggleGuides: () => setShowGuides(v => !v),
     onSelectAll: handleSelectAll,
     onSelectInverse: handleSelectInverse,
+    onFillSelection: handleOpenFillSelectionDialog,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -1584,6 +1587,33 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     canvasRef.current?.redrawLayer(id);
   }
 
+  function handleRasterizeLayer() {
+    if (!activeLayer) return;
+    if (activeLayer.type === 'placed-image') handleRasterizePlacedImage(activeLayerId!);
+  }
+
+  function flipLayerPixels(layerId: string, axis: 'h' | 'v') {
+    const canvas = canvasRef.current?.getPaintCanvas(layerId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const before = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const copy = document.createElement('canvas');
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    copy.getContext('2d')!.drawImage(canvas, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    if (axis === 'h') { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
+    else { ctx.translate(0, canvas.height); ctx.scale(1, -1); }
+    ctx.drawImage(copy, 0, 0);
+    ctx.restore();
+    handlePaintStrokeEnd(layerId, before);
+  }
+
+  function handleFlipLayerH() { if (activeLayerId) flipLayerPixels(activeLayerId, 'h'); }
+  function handleFlipLayerV() { if (activeLayerId) flipLayerPixels(activeLayerId, 'v'); }
+
   /** Layers panel > double-click Background (with confirmation) or right-click > "Layer from
    *  Background": promotes the special locked background row into a regular, fully editable
    *  `clean-patch` layer. Flipping `isBackground`/`locked` alone isn't enough — `StudioCanvas`'s
@@ -2406,6 +2436,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   }
 
   const activeLayer = findLayer(layers, activeLayerId) ?? null;
+  const canRasterize = activeLayer?.type === 'placed-image';
+  const canTransformLayer = !!activeLayer && activeLayer.type === 'clean-patch' && !activeLayer.locked;
 
   /** Stroke/Fill Path's bake target — same "topmost existing raster layer" convention the
    *  paint-tool raster-auto-create effect below already uses, so both features pick the same
@@ -2760,6 +2792,16 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const colorPanel = <ColorPanel hideTitle />;
   const historyPanel = <HistoryPanel hideTitle />;
   const histogramPanel = <HistogramPanel getSource={() => canvasRef.current?.getHistogramSourceCanvas() ?? null} hideTitle />;
+
+  const cursorInfo: CursorInfo | null = cursorImagePos ? {
+    x: cursorImagePos.x,
+    y: cursorImagePos.y,
+    color: canvasRef.current?.samplePixelAt(cursorImagePos.x, cursorImagePos.y) ?? null,
+  } : null;
+  const pageW = activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : 0;
+  const pageH = activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : 0;
+  const swatchesPanel = <SwatchesPanel hideTitle />;
+  const infoPanel = <InfoPanel cursor={cursorInfo} selection={selection} pageWidth={pageW} pageHeight={pageH} zoom={viewport.scale} hideTitle />;
   const fontsPanel = <FontsPanel onFamiliesChange={setCustomFontFamilies} hideTitle />;
 
   // Built once and reused for both the docked-tab render and the floating window — the one place a
@@ -2882,6 +2924,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     { id: 'fonts', label: PANEL_BY_ID.get('fonts')!.title, content: fontsPanel },
     { id: 'history', label: PANEL_BY_ID.get('history')!.title, content: historyPanel },
     { id: 'histogram', label: PANEL_BY_ID.get('histogram')!.title, content: histogramPanel },
+    { id: 'swatches', label: PANEL_BY_ID.get('swatches')!.title, content: swatchesPanel },
+    { id: 'info', label: PANEL_BY_ID.get('info')!.title, content: infoPanel },
     { id: 'layers', label: PANEL_BY_ID.get('layers')!.title, content: layersPanel },
     { id: 'pages', label: 'Pages', content: null },
   ];
@@ -3007,6 +3051,14 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     saveWorkspacePreset: () => { setSaveLayoutOpen(true); setSaveLayoutName(''); },
     loadWorkspacePreset: panelLayout.loadWorkspacePreset,
     deleteWorkspacePreset: panelLayout.deleteWorkspacePreset,
+    fillSelection: handleOpenFillSelectionDialog,
+    strokeSelection: handleOpenStrokeSelectionDialog,
+    canFillStrokeSelection: canOperateOnSelection(),
+    rasterizeLayer: handleRasterizeLayer,
+    canRasterize,
+    flipLayerH: handleFlipLayerH,
+    flipLayerV: handleFlipLayerV,
+    canTransformLayer,
     openPreferences: () => setPreferencesOpen(true),
     aboutOpen: () => setAboutOpen(true),
     triggerImportFonts: handleTriggerImportFonts,

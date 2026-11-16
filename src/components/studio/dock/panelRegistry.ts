@@ -39,6 +39,8 @@ export const PANEL_REGISTRY: PanelDefinition[] = [
   { id: 'text', title: 'Text', defaultHeight: 220, minHeight: 100, defaultCollapsed: false, defaultVisible: false, tabGroup: 'text' },
   { id: 'history', title: 'History', defaultHeight: 220, minHeight: 100, defaultCollapsed: false, defaultVisible: false, tabGroup: 'layers' },
   { id: 'histogram', title: 'Histogram', defaultHeight: 140, minHeight: 80, defaultCollapsed: true, defaultVisible: false },
+  { id: 'swatches', title: 'Swatches', defaultHeight: 240, minHeight: 100, defaultCollapsed: true, defaultVisible: false },
+  { id: 'info', title: 'Info', defaultHeight: 180, minHeight: 100, defaultCollapsed: true, defaultVisible: false },
 ];
 
 export const PANEL_IDS: string[] = PANEL_REGISTRY.map(p => p.id);

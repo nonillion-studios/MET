@@ -297,6 +297,7 @@ export interface StudioCanvasHandle {
    *  histogram + Auto button and Black & White's Auto button, which both need "what the image
    *  actually looks like right now" rather than the flat background alone. */
   getHistogramSourceCanvas: () => HTMLCanvasElement | null;
+  samplePixelAt: (x: number, y: number) => { r: number; g: number; b: number; a: number } | null;
   getZoom: () => number;
   zoomTo: (scale: number) => void;
   zoomIn: () => void;
@@ -914,6 +915,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
     },
     getHistogramSourceCanvas() {
       return getSampleComposite('all');
+    },
+    samplePixelAt(x: number, y: number) {
+      const canvas = getSampleComposite('all');
+      if (!canvas) return null;
+      const ix = Math.round(x);
+      const iy = Math.round(y);
+      if (ix < 0 || iy < 0 || ix >= canvas.width || iy >= canvas.height) return null;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      const pixel = ctx.getImageData(ix, iy, 1, 1).data;
+      return { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] };
     },
     getExportSnapshot() {
       const img = imageRef.current;

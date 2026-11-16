@@ -42,6 +42,7 @@ interface UseStudioShortcutsArgs {
   onToggleGuides: () => void;
   onSelectAll: () => void;
   onSelectInverse: () => void;
+  onFillSelection: () => void;
 }
 
 function isTextInputFocused(): boolean {
@@ -64,7 +65,7 @@ export function useStudioShortcuts({
   onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
   onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
   onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette,
-  onSetActiveLayerOpacity, onToggleGuides, onSelectAll, onSelectInverse,
+  onSetActiveLayerOpacity, onToggleGuides, onSelectAll, onSelectInverse, onFillSelection,
 }: UseStudioShortcutsArgs) {
   const toolMap = useMemo(() => buildToolShortcutMap(), []);
 
@@ -84,6 +85,9 @@ export function useStudioShortcuts({
       }
 
       if (isTextInputFocused()) return;
+
+      // Shift+F5 — Edit > Fill (Photoshop convention)
+      if (e.shiftKey && !mod && !e.altKey && e.key === 'F5') { e.preventDefault(); onFillSelection(); return; }
 
       // Not a literal "F11" binding — browsers intercept F11 at the chrome level before
       // JS reliably sees it, so Ctrl/Cmd+Shift+F is the in-app fullscreen shortcut instead.
@@ -152,6 +156,6 @@ export function useStudioShortcuts({
     onToggleQuickMask, onTextSizeStep, onDeselect, onActualSize, onCutLayer, onCopyLayer, onPasteLayer,
     onFindReplace, onToggleTextBold, onToggleTextItalic, onToggleTextUnderline, onToggleRulers, onToggleGrid, onToggleSnapToGrid, onNewLayer,
     onMergeVisible, onToggleMultiBubble, onLayerViaCopy, onLayerViaCut, onCommandPalette, onSetActiveLayerOpacity,
-    onToggleGuides, onSelectAll, onSelectInverse,
+    onToggleGuides, onSelectAll, onSelectInverse, onFillSelection,
   ]);
 }

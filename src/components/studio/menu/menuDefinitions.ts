@@ -152,6 +152,14 @@ export interface MenuActions {
   saveWorkspacePreset: () => void;
   loadWorkspacePreset: (name: string) => void;
   deleteWorkspacePreset: (name: string) => void;
+  fillSelection: () => void;
+  strokeSelection: () => void;
+  canFillStrokeSelection: boolean;
+  rasterizeLayer: () => void;
+  canRasterize: boolean;
+  flipLayerH: () => void;
+  flipLayerV: () => void;
+  canTransformLayer: boolean;
   openPreferences: () => void;
   aboutOpen: () => void;
   triggerImportFonts: () => void;
@@ -293,6 +301,16 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'copy', label: 'Copy', shortcut: 'Ctrl+C', action: a.copyLayer, disabled: !a.canCopy },
         { id: 'paste', label: 'Paste', shortcut: 'Ctrl+V', action: a.pasteLayer, disabled: !a.canPaste },
         { id: 'sep2', label: '', separator: true },
+        { id: 'fill', label: 'Fill…', shortcut: 'Shift+F5', action: a.fillSelection, disabled: !a.canFillStrokeSelection },
+        { id: 'stroke', label: 'Stroke…', action: a.strokeSelection, disabled: !a.canFillStrokeSelection },
+        { id: 'sep2b', label: '', separator: true },
+        {
+          id: 'transform', label: 'Transform', submenu: [
+            { id: 'flip-h', label: 'Flip Horizontal', action: a.flipLayerH, disabled: !a.canTransformLayer },
+            { id: 'flip-v', label: 'Flip Vertical', action: a.flipLayerV, disabled: !a.canTransformLayer },
+          ],
+        },
+        { id: 'sep2c', label: '', separator: true },
         { id: 'find-replace', label: 'Find & Replace…', shortcut: 'Ctrl+F', action: a.openFindReplace },
         { id: 'sep3', label: '', separator: true },
         { id: 'preferences', label: 'Preferences…', action: a.openPreferences },
@@ -406,6 +424,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'merge-visible', label: 'Merge Visible', shortcut: 'Ctrl+Shift+E', action: a.mergeVisible },
         { id: 'flatten-image', label: 'Flatten Image', action: a.flattenImage },
         { id: 'sep3', label: '', separator: true },
+        { id: 'rasterize', label: 'Rasterize Layer', action: a.rasterizeLayer, disabled: !a.canRasterize },
+        { id: 'sep3b', label: '', separator: true },
         { id: 'layer-properties', label: 'Layer Properties…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'blending-options', label: 'Blending Options…', action: a.layerProperties, disabled: !a.hasActiveLayer },
         { id: 'sep4', label: '', separator: true },

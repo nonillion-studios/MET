@@ -44,4 +44,5 @@ export const FIXED_SHORTCUTS_HELP: { keys: string; description: string }[] = [
   { keys: 'Ctrl/Cmd+Shift+H', description: 'Toggle guides visibility' },
   { keys: 'Ctrl/Cmd+A', description: 'Select All' },
   { keys: 'Ctrl/Cmd+Shift+I', description: 'Select Inverse' },
+  { keys: 'Shift+F5', description: 'Fill selection' },
 ];
