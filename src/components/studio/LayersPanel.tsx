@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Lock, Unlock, Plus, Copy, Trash2, SlidersHorizontal, ChevronUp, ChevronDown,
   FolderPlus, ChevronRight, FolderOpen, CornerDownRight, Contrast, Settings2, Grid2x2, Paintbrush, Move,
+  Search, Type, ImageIcon, PenTool, Folder,
 } from 'lucide-react';
 import { IconButton } from '../ui';
 import { cn } from '../ui/cn';
@@ -11,7 +12,8 @@ import {
 } from './layerTree';
 import {
   LAYER_TYPE_ICON, BLEND_MODES, hasAnyEnabledStyle, LAYER_STYLE_KEYS, LAYER_STYLE_LABEL, createDefaultLayerEffects,
-  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects,
+  LAYER_COLOR_LABEL_HEX,
+  type StudioLayer, type LayerSelectMode, type AdjustmentKind, type LayerEffects, type LayerColorLabel,
 } from './studioTypes';
 import { AdjustmentPickerPopover } from './AdjustmentPickerPopover';
 import { getClipboardLayerStyle, setClipboardLayerStyle } from '../../lib/layerStyleClipboard';
@@ -34,6 +36,7 @@ interface LayersPanelProps {
   selectedLayerIds?: string[];
   onSelect: (id: string, mode?: LayerSelectMode) => void;
   onToggleVisible: (id: string) => void;
+  onIsolateLayer?: (id: string) => void;
   onToggleLocked: (id: string) => void;
   onOpacityChange: (id: string, opacity: number) => void;
   onBlendChange: (id: string, blendMode: StudioLayer['blendMode']) => void;
@@ -88,6 +91,7 @@ interface LayersPanelProps {
   /** Right-click a placed-image (Smart Object) layer > "Rasterize Layer" — bakes its current
    *  transform into pixels and converts it into a normal, no-longer-transformable clean-patch layer. */
   onRasterizePlacedImage?: (id: string) => void;
+  onSetColorLabel?: (id: string, color: LayerColorLabel) => void;
   /** The header's 4 granular lock icon buttons (Transparent Pixels/Image Pixels/Position/All) —
    *  each toggles that one flag on the *active* layer. Distinct from the per-row lock icon and the
    *  context menu's "Lock Layer"/"Unlock Layer", which both only ever address `locked` (Lock All). */
@@ -110,12 +114,12 @@ interface LayersPanelProps {
 }
 
 export function LayersPanel({
-  layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onToggleLocked,
+  layers, activeLayerId, selectedLayerIds, onSelect, onToggleVisible, onIsolateLayer, onToggleLocked,
   onOpacityChange, onBlendChange, onAdd, onAddBlank, onAddAdjustmentOfKind, onDuplicate, onDelete, onDeleteMany, onRename, onMove,
   onGroup, onUngroup, onToggleCollapsed, onToggleClipped, onToggleMask, onToggleMaskEnabled, onSelectMask,
   activeMaskLayerId, onReparent, onOpenSettings, expandedLayerId, onToggleExpanded,
   hideTitle, onConvertTextMode, onOpenBlendingOptions, onToggleLayerStyle, onSetLayerEffects,
-  onConvertBackgroundToLayer, onRasterizePlacedImage, onOpenWarpText, onToggleLayerLockFlag,
+  onConvertBackgroundToLayer, onRasterizePlacedImage, onSetColorLabel, onOpenWarpText, onToggleLayerLockFlag,
 }: LayersPanelProps) {
   const selected = selectedLayerIds ?? (activeLayerId ? [activeLayerId] : []);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -123,6 +127,15 @@ export function LayersPanel({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [adjustmentPickerOpen, setAdjustmentPickerOpen] = useState(false);
+  const [filterType, setFilterType] = useState<StudioLayer['type'] | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const activeRowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (activeLayerId && activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [activeLayerId]);
 
   function commitRename() {
     const id = renamingId;
@@ -196,7 +209,9 @@ export function LayersPanel({
   // walk puts a group directly above its own children, which is the order the panel wants to indent.
   const ordered = [...flattenWithPaths(layers)]
     .reverse()
-    .filter(({ path }) => !isInsideCollapsedGroup(layers, path));
+    .filter(({ path }) => !isInsideCollapsedGroup(layers, path))
+    .filter(({ layer }) => !filterType || layer.type === filterType)
+    .filter(({ layer }) => !searchQuery || layer.name.toLowerCase().includes(searchQuery.toLowerCase()));
 
   /** True when any ancestor of `path` is a collapsed group — those rows stay hidden. */
   function isInsideCollapsedGroup(list: StudioLayer[], path: LayerPath): boolean {
@@ -260,7 +275,7 @@ export function LayersPanel({
 
   return (
     <StudioPanel
-      title="Layers"
+      title={`Layers (${layers.length})`}
       hideTitle={hideTitle}
       bare
       bodyClassName="py-1.5 px-1.5 flex flex-col gap-1"
@@ -298,6 +313,38 @@ export function LayersPanel({
         </>
       }
     >
+        <div className="flex items-center gap-1 px-1 pb-1 mb-1 border-b border-hairline/60">
+          {([
+            ['text', Type, 'Text layers'] as const,
+            ['clean-patch', ImageIcon, 'Raster layers'] as const,
+            ['adjustment', SlidersHorizontal, 'Adjustment layers'] as const,
+            ['path', PenTool, 'Path layers'] as const,
+            ['group', Folder, 'Groups'] as const,
+          ] as const).map(([type, Icon, title]) => (
+            <button
+              key={type}
+              type="button"
+              title={title}
+              onClick={() => setFilterType(f => f === type ? null : type)}
+              className={cn(
+                'w-5 h-5 flex items-center justify-center rounded-control border transition-colors',
+                filterType === type ? 'bg-accent-soft text-accent border-accent/40' : 'border-transparent text-ink-faint hover:text-ink hover:bg-ink/5'
+              )}
+            >
+              <Icon size={11} />
+            </button>
+          ))}
+          <div className="flex-1 min-w-0 ml-1 relative">
+            <Search size={10} className="absolute left-1.5 top-1/2 -translate-y-1/2 text-ink-faint pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Filter…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-ink/5 border border-hairline rounded-control pl-5 pr-1.5 py-0.5 text-[10px] text-ink outline-none placeholder:text-ink-faint/50 focus:border-accent/40"
+            />
+          </div>
+        </div>
         {onToggleLayerLockFlag && activeLayerId && !findLayer(layers, activeLayerId)?.isBackground && (() => {
           const active = findLayer(layers, activeLayerId);
           if (!active) return null;
@@ -341,6 +388,7 @@ export function LayersPanel({
           return (
             <div
               key={layer.id}
+              ref={active ? activeRowRef : undefined}
               draggable={!layer.isBackground && !!onReparent}
               onDragStart={() => setDragId(layer.id)}
               onDragEnd={() => { setDragId(null); setDropTarget(null); }}
@@ -354,7 +402,7 @@ export function LayersPanel({
               onDragLeave={() => setDropTarget(null)}
               onDrop={(e) => { e.preventDefault(); handleDrop(layer, zoneFor(e, layer)); }}
               onContextMenu={(e) => openContextMenu(e, layer)}
-              style={{ marginLeft: depth * 12 }}
+              style={{ marginLeft: depth * 12, borderLeftColor: layer.colorLabel && layer.colorLabel !== 'none' ? LAYER_COLOR_LABEL_HEX[layer.colorLabel] : undefined, borderLeftWidth: layer.colorLabel && layer.colorLabel !== 'none' ? 3 : undefined }}
               className={cn(
                 'group rounded-control border transition-colors',
                 dragId === layer.id && 'opacity-40',
@@ -376,7 +424,7 @@ export function LayersPanel({
                       role="button"
                       tabIndex={0}
                       aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-                      onClick={(e) => { e.stopPropagation(); onToggleVisible(layer.id); }}
+                      onClick={(e) => { e.stopPropagation(); if (e.altKey && onIsolateLayer) onIsolateLayer(layer.id); else onToggleVisible(layer.id); }}
                       className="shrink-0 w-6 h-6 flex items-center justify-center text-ink-faint hover:text-ink"
                     >
                       {layer.visible ? <Eye size={14} /> : <EyeOff size={14} className="opacity-40" />}
@@ -398,8 +446,20 @@ export function LayersPanel({
                       <span className="shrink-0 w-4" />
                     )}
 
-                    <span className={cn('shrink-0 w-6 h-6 rounded-control flex items-center justify-center', active ? 'text-accent' : 'text-ink-faint')}>
-                      {isGroup && !layer.collapsed ? <FolderOpen size={14} /> : <Icon size={14} />}
+                    <span
+                      className={cn(
+                        'shrink-0 w-7 h-7 rounded border flex items-center justify-center',
+                        active ? 'border-accent/50 text-accent' : 'border-hairline text-ink-faint',
+                      )}
+                      style={{
+                        background: layer.type === 'text'
+                          ? `linear-gradient(135deg, ${layer.text?.color ?? '#888'} 0%, ${layer.text?.color ?? '#888'}44 100%)`
+                          : layer.type === 'background' || layer.type === 'clean-patch' || layer.type === 'placed-image'
+                            ? 'repeating-conic-gradient(rgba(128,128,128,0.15) 0% 25%, transparent 0% 50%) 0 0 / 8px 8px'
+                            : undefined,
+                      }}
+                    >
+                      {isGroup && !layer.collapsed ? <FolderOpen size={13} /> : <Icon size={13} />}
                     </span>
 
                     {/* Mask chip — always visible (not gated behind the row's own disclosure) so it's
@@ -547,7 +607,22 @@ export function LayersPanel({
                   {!layer.isBackground && (
                     <>
                       <label className="flex items-center gap-2 text-micro text-ink-faint">
-                        <span className="w-14 shrink-0">Opacity</span>
+                        <span
+                          className="w-14 shrink-0 cursor-ew-resize select-none"
+                          title="Drag to scrub opacity"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            const startX = e.clientX;
+                            const startOpacity = layer.opacity;
+                            const onMove = (ev: MouseEvent) => {
+                              const delta = (ev.clientX - startX) / 150;
+                              onOpacityChange(layer.id, Math.min(1, Math.max(0, startOpacity + delta)));
+                            };
+                            const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                            window.addEventListener('mousemove', onMove);
+                            window.addEventListener('mouseup', onUp);
+                          }}
+                        >Opacity</span>
                         <input
                           type="range"
                           min={0}
@@ -727,6 +802,29 @@ export function LayersPanel({
                 {label}
               </button>
             ))}
+            {onSetColorLabel && (
+              <div className="border-t border-hairline mt-1 pt-1.5 px-3 pb-1">
+                <div className="text-micro text-ink-faint mb-1">Color Label</div>
+                <div className="flex gap-1.5">
+                  {(Object.keys(LAYER_COLOR_LABEL_HEX) as LayerColorLabel[]).map(c => (
+                    <button
+                      key={c}
+                      type="button"
+                      title={c === 'none' ? 'No Color' : c.charAt(0).toUpperCase() + c.slice(1)}
+                      onClick={() => { onSetColorLabel(layer.id, c); closeCtx(); }}
+                      className={cn(
+                        'w-4 h-4 rounded-full border transition-transform hover:scale-125',
+                        layer.colorLabel === c || (!layer.colorLabel && c === 'none') ? 'ring-1 ring-accent ring-offset-1 ring-offset-surface' : '',
+                        c === 'none' ? 'border-ink/30 bg-transparent' : 'border-transparent',
+                      )}
+                      style={c !== 'none' ? { background: LAYER_COLOR_LABEL_HEX[c] } : undefined}
+                    >
+                      {c === 'none' && <span className="block w-full h-full rounded-full border border-dashed border-ink/20" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })()}

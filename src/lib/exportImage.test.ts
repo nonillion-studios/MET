@@ -21,6 +21,7 @@ function makeText(overrides: Partial<TextLayerData> = {}): TextLayerData {
     align: 'left',
     bold: false,
     italic: false,
+    underline: false,
     lineHeight: 1.15,
     strokeColor: '#ffffff',
     strokeWidth: 0,

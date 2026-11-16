@@ -161,6 +161,7 @@ export interface TextRun {
   color?: string;
   bold?: boolean;
   italic?: boolean;
+  underline?: boolean;
   /** Tracking within this run (extra px between characters). */
   letterSpacing?: number;
   /**
@@ -213,6 +214,7 @@ export interface TextLayerData {
   align: TextAlign;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
   lineHeight: number;
   strokeColor: string;
   strokeWidth: number;
@@ -954,7 +956,22 @@ export interface StudioLayer {
   path?: PathLayerData;
   /** Only present when type === 'placed-image'. */
   placedImage?: PlacedImageLayerData;
+  /** Organizational color label, matching Photoshop's layer color tags. */
+  colorLabel?: LayerColorLabel;
 }
+
+export type LayerColorLabel = 'none' | 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'violet' | 'gray';
+
+export const LAYER_COLOR_LABEL_HEX: Record<LayerColorLabel, string> = {
+  none: 'transparent',
+  red: '#ff4444',
+  orange: '#ff8c00',
+  yellow: '#ffd700',
+  green: '#22c55e',
+  blue: '#3b82f6',
+  violet: '#a855f7',
+  gray: '#6b7280',
+};
 
 export function createBackgroundLayer(): StudioLayer {
   return {
@@ -1095,6 +1112,7 @@ export function createTextLayer(x: number, y: number, boxWidth?: number, boxHeig
       align: 'center',
       bold: false,
       italic: false,
+      underline: false,
       lineHeight: 1.15,
       strokeColor: '#ffffff',
       strokeWidth: 0,

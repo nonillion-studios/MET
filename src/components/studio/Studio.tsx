@@ -41,6 +41,7 @@ import type { BrushShape } from './paint/brushTip';
 import { PAINT_TOOLS } from './paint/usePaintLayer';
 import { ToolOptionsBar, type PendingTextDefaults } from './toolOptions/ToolOptionsBar';
 import { StatusBar } from './StatusBar';
+import { CanvasHud } from './CanvasHud';
 import { Minimap } from './Minimap';
 import { findTool } from './toolGroups';
 import { useStudioShortcuts } from './shortcuts/useStudioShortcuts';
@@ -50,6 +51,8 @@ import { MenuBar } from './menu/MenuBar';
 import { buildMenus } from './menu/menuDefinitions';
 import { swal, swalToast } from '../../lib/swalTheme';
 import { ExportDialog } from './ExportDialog';
+import { ImageSizeDialog } from './ImageSizeDialog';
+import { PreferencesDialog, loadPreferences, savePreferences, type StudioPreferences } from './PreferencesDialog';
 import { TranslationPreviewPanel } from './TranslationPreviewPanel';
 import { AutomationModal } from './automation/AutomationModal';
 import { AiAutomationCursor } from './automation/AiAutomationCursor';
@@ -525,6 +528,12 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   /** Marquee selection's own right-click context menu > Select Inverse — same effect as the Select
    *  menu's item, just reachable from the selection itself. */
+  function handleSelectAll() {
+    if (!activePage) return;
+    const img = showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original;
+    setSelection({ kind: 'rect', x: 0, y: 0, width: img.width, height: img.height });
+  }
+
   function handleSelectInverse() {
     if (!activePage) return;
     setSelection(sel => invertSelection(sel, activePage.original.width, activePage.original.height));
@@ -652,7 +661,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [panelsHidden, setPanelsHidden] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [saveLayoutOpen, setSaveLayoutOpen] = useState(false);
+  const [saveLayoutName, setSaveLayoutName] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
+  const [imageSizeOpen, setImageSizeOpen] = useState(false);
+  const [canvasSizeOpen, setCanvasSizeOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [preferences, setPreferences] = useState<StudioPreferences>(() => loadPreferences());
   const [aboutOpen, setAboutOpen] = useState(false);
   const [toolRailVisible, setToolRailVisible] = useState(true);
   const [minimapVisible, setMinimapVisible] = useState(true);
@@ -694,7 +709,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   useStudioShortcuts({
     onToolChange: (id) => setActiveTool(id),
-    onBrushSizeStep: (delta) => setBrushSize(v => Math.max(1, Math.min(200, v + delta))),
+    onBrushSizeStep: (delta) => setBrushSize(v => { const next = Math.max(1, Math.min(200, v + delta)); showHud(`Size: ${next}px`); return next; }),
     onSwapColors: swapColors,
     onResetColors: resetColors,
     onZoomIn: () => canvasRef.current?.zoomIn(),
@@ -716,14 +731,22 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     onFindReplace: handleOpenFindReplace,
     onToggleTextBold: handleToggleTextBold,
     onToggleTextItalic: handleToggleTextItalic,
+    onToggleTextUnderline: handleToggleTextUnderline,
     onToggleRulers: () => setShowRulers(v => !v),
     onToggleGrid: () => setShowGrid(v => !v),
+    onToggleSnapToGrid: () => setSnapToGrid(v => !v),
     onNewLayer: () => handleAddLayer(),
     onMergeVisible: () => handleMergeVisible(),
     onToggleMultiBubble: () => setMultiBubbleMode(!multiBubbleMode),
     onLayerViaCopy: () => handleLayerViaCopy(),
     onLayerViaCut: () => handleLayerViaCut(),
     onCommandPalette: () => setCommandPaletteOpen(v => !v),
+    onSetActiveLayerOpacity: (opacity) => {
+      if (activeLayerId) { handleOpacityChange(activeLayerId, opacity); showHud(`Opacity: ${Math.round(opacity * 100)}%`); }
+    },
+    onToggleGuides: () => setShowGuides(v => !v),
+    onSelectAll: handleSelectAll,
+    onSelectInverse: handleSelectInverse,
   });
   const [activePageId, setActivePageId] = useState<string | null>(pages[0]?.id ?? null);
   useEffect(() => { onActivePageChange?.(activePageId); }, [activePageId, onActivePageChange]);
@@ -764,9 +787,17 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
   const [showCleaned, setShowCleaned] = useState(false);
   const [overlayOpacity, setOverlayOpacity] = useState(0);
   const [showGrid, setShowGrid] = useState(false);
+  const [snapToGrid, setSnapToGrid] = useState(false);
   const [showRulers, setShowRulers] = useState(false);
+  const [showGuides, setShowGuides] = useState(true);
+  const [snapToGuides, setSnapToGuides] = useState(false);
+  const [showSafeArea, setShowSafeArea] = useState(false);
+  const [guides, setGuides] = useState<{ h: number[]; v: number[] }>({ h: [], v: [] });
   const [canvasFlipped, setCanvasFlipped] = useState(false);
   const [canvasRotation, setCanvasRotation] = useState(0);
+  const [hudMessage, setHudMessage] = useState<string | null>(null);
+  const hudCounter = useRef(0);
+  function showHud(msg: string) { hudCounter.current += 1; setHudMessage(msg + '\x00' + hudCounter.current); }
   const [customFontFamilies, setCustomFontFamilies] = useState<string[]>([]);
   const allFontFamilies = [...FONT_FAMILIES, ...customFontFamilies];
   const [fitSignal, setFitSignal] = useState(0);
@@ -1818,6 +1849,10 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     updateLayers(current => updateLayer(current, id, l => ({ ...l, name })), 'Rename Layer');
   }
 
+  function handleSetColorLabel(id: string, color: import('./studioTypes').LayerColorLabel) {
+    updateLayers(current => updateLayer(current, id, l => ({ ...l, colorLabel: color === 'none' ? undefined : color })), 'Set Color Label');
+  }
+
   function handleUpdateAdjustmentLayer(id: string, patch: Partial<AdjustmentLayerData>) {
     updateLayers(current => updateLayer(current, id, l =>
       l.type === 'adjustment' && l.adjustment ? { ...l, adjustment: { ...l.adjustment, ...patch } } : l
@@ -2031,6 +2066,39 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
 
   function handleToggleVisible(id: string) {
     updateLayers(current => updateLayer(current, id, l => ({ ...l, visible: !l.visible })), 'Toggle Visibility');
+  }
+
+  const isolatedLayerRef = useRef<{ id: string; savedVisibility: Map<string, boolean> } | null>(null);
+
+  function handleIsolateLayer(id: string) {
+    if (isolatedLayerRef.current?.id === id) {
+      const saved = isolatedLayerRef.current.savedVisibility;
+      isolatedLayerRef.current = null;
+      updateLayers(current => {
+        function restore(list: StudioLayer[]): StudioLayer[] {
+          return list.map(l => {
+            const vis = saved.get(l.id);
+            const updated = vis !== undefined ? { ...l, visible: vis } : l;
+            return updated.children ? { ...updated, children: restore(updated.children) } : updated;
+          });
+        }
+        return restore(current);
+      }, 'Restore Visibility');
+    } else {
+      const saved = new Map<string, boolean>();
+      function collect(list: StudioLayer[]) { for (const l of list) { saved.set(l.id, l.visible); if (l.children) collect(l.children); } }
+      collect(layers);
+      isolatedLayerRef.current = { id, savedVisibility: saved };
+      updateLayers(current => {
+        function hide(list: StudioLayer[]): StudioLayer[] {
+          return list.map(l => {
+            const updated = { ...l, visible: l.id === id };
+            return updated.children ? { ...updated, children: hide(updated.children) } : updated;
+          });
+        }
+        return hide(current);
+      }, 'Isolate Layer');
+    }
   }
 
   function handleToggleLocked(id: string) {
@@ -2295,6 +2363,13 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     const range = activeTextRange();
     const isItalic = resolveCharValue(activeLayer.text, range, 'italic');
     handleUpdateTextLayer(activeLayer.id, applyCharPatch(activeLayer.text, range, { italic: !isItalic }));
+  }
+
+  function handleToggleTextUnderline() {
+    if (!activeLayer?.text) return;
+    const range = activeTextRange();
+    const isUnderline = resolveCharValue(activeLayer.text, range, 'underline');
+    handleUpdateTextLayer(activeLayer.id, applyCharPatch(activeLayer.text, range, { underline: !isUnderline }));
   }
 
   function handleSetTextFontSize(size: number) {
@@ -2590,6 +2665,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       selectedLayerIds={selectedLayerIds}
       onSelect={selectLayer}
       onToggleVisible={handleToggleVisible}
+      onIsolateLayer={handleIsolateLayer}
       onToggleLocked={handleToggleLocked}
       onToggleLayerLockFlag={handleToggleLayerLockFlag}
       onOpacityChange={handleOpacityChange}
@@ -2626,6 +2702,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       onSetLayerEffects={(id, effects) => handleUpdateLayerStyle(id, { effects }, true)}
       onConvertBackgroundToLayer={handleConvertBackgroundToLayer}
       onRasterizePlacedImage={handleRasterizePlacedImage}
+      onSetColorLabel={handleSetColorLabel}
       onOpenWarpText={(id) => setWarpDialogLayerId(id)}
       hideTitle
     />
@@ -2902,6 +2979,7 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     hasActiveTextLayer: activeLayer?.type === 'text',
     textSetBold: handleToggleTextBold,
     textSetItalic: handleToggleTextItalic,
+    textSetUnderline: handleToggleTextUnderline,
     textSetFontSize: handleSetTextFontSize,
     textSetAlign: handleSetTextAlign,
     textSetRtl: handleSetTextRtl,
@@ -2912,6 +2990,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     applyFilter: handleOpenFilterDialog,
     liquifyTool: switchToLiquify,
     contentAwareFillTool: switchToContentAwareFill,
+    openImageSize: () => setImageSizeOpen(true),
+    openCanvasSize: () => setCanvasSizeOpen(true),
     rotateCanvas: (dir) => { void handleRotateCanvas(dir); },
     toolRailVisible,
     toggleToolRail,
@@ -2923,6 +3003,11 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     toggleStatusBar,
     resetLayoutEnabled: true,
     resetPanelLayout: panelLayout.resetLayout,
+    workspacePresetNames: panelLayout.workspacePresets.map(p => p.name),
+    saveWorkspacePreset: () => { setSaveLayoutOpen(true); setSaveLayoutName(''); },
+    loadWorkspacePreset: panelLayout.loadWorkspacePreset,
+    deleteWorkspacePreset: panelLayout.deleteWorkspacePreset,
+    openPreferences: () => setPreferencesOpen(true),
     aboutOpen: () => setAboutOpen(true),
     triggerImportFonts: handleTriggerImportFonts,
     triggerImportBrushes: handleTriggerImportBrushes,
@@ -2948,8 +3033,18 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     togglePanelsHidden: () => setPanelsHidden(v => !v),
     showGrid,
     toggleGrid: () => setShowGrid(v => !v),
+    snapToGrid,
+    toggleSnapToGrid: () => setSnapToGrid(v => !v),
     showRulers,
     toggleRulers: () => setShowRulers(v => !v),
+    showGuides,
+    toggleGuides: () => setShowGuides(v => !v),
+    clearGuides: () => setGuides({ h: [], v: [] }),
+    hasGuides: guides.h.length > 0 || guides.v.length > 0,
+    snapToGuides,
+    toggleSnapToGuides: () => setSnapToGuides(v => !v),
+    showSafeArea,
+    toggleSafeArea: () => setShowSafeArea(v => !v),
     viewFlipped: canvasFlipped,
     toggleFlipView: () => setCanvasFlipped(v => !v),
     canvasRotation,
@@ -2957,6 +3052,8 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
     rotateViewCCW: () => setCanvasRotation(r => (r - 15 + 360) % 360),
     resetRotateView: () => setCanvasRotation(0),
     hasSelection: hasSelection(selection),
+    selectAll: handleSelectAll,
+    selectInverse: handleSelectInverse,
     deselect: () => setSelection(NO_SELECTION),
     featherSelection: handleFeatherSelection,
     expandSelection: handleExpandSelection,
@@ -3020,7 +3117,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       showCleaned={showCleaned}
       overlayOpacity={overlayOpacity}
       showGrid={showGrid}
+      snapToGrid={snapToGrid}
       showRulers={showRulers}
+      guides={guides}
+      showGuides={showGuides}
+      onAddGuide={(axis, position) => setGuides(g => ({ ...g, [axis]: [...g[axis], position] }))}
+      onRemoveGuide={(axis, index) => setGuides(g => ({ ...g, [axis]: g[axis].filter((_, i) => i !== index) }))}
+      snapToGuides={snapToGuides}
+      showSafeArea={showSafeArea}
+      preferences={preferences}
       flipped={canvasFlipped}
       rotation={canvasRotation}
       activeTool={activeTool}
@@ -3279,7 +3384,20 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
             void handlePlaceImageFiles(files);
           }}
         >
+          {activePage && (
+            <div className="h-6 shrink-0 flex items-center gap-3 px-3 bg-black/40 border-b border-white/5 text-[11px] text-white/50 font-mono select-none z-10">
+              <span className="text-white/70 font-medium truncate">{activePage.original.filename}</span>
+              <span className="text-white/40">
+                {(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width}
+                {' × '}
+                {(showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height}
+              </span>
+              {showCleaned && activePage.cleaned && <span className="text-emerald-400/60">Cleaned</span>}
+              <span className="text-white/30">@ {Math.round(viewport.scale * 100)}%</span>
+            </div>
+          )}
           {canvasNode}
+          <CanvasHud message={hudMessage} />
           <input
             ref={placeImageInputRef}
             type="file"
@@ -3383,11 +3501,15 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       {statusBarVisible && <StatusBar
         zoom={viewport.scale}
         onZoomChange={(z) => canvasRef.current?.zoomTo(z)}
+        onFitToScreen={() => setFitSignal(s => s + 1)}
         cursorPos={cursorImagePos}
         imageWidth={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
         imageHeight={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
         toolLabel={findTool(activeTool)?.label ?? activeTool}
         layerName={activeLayer?.name ?? null}
+        selectionBounds={selectionBounds(selection)}
+        snapToGrid={snapToGrid}
+        snapToGuides={snapToGuides}
       />}
 
       <ExportDialog
@@ -3523,6 +3645,48 @@ function StudioInner({ chapterId, chapterName, pages, onBack, pendingTyperScript
       )}
       {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {commandPaletteOpen && <CommandPalette menus={menus} onSelectTool={setActiveTool} onClose={() => setCommandPaletteOpen(false)} />}
+      {saveLayoutOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSaveLayoutOpen(false)}>
+          <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[280px]" onClick={e => e.stopPropagation()}>
+            <div className="text-small font-semibold text-ink mb-2">Save Workspace Layout</div>
+            <input
+              autoFocus
+              type="text"
+              placeholder="Layout name"
+              value={saveLayoutName}
+              onChange={e => setSaveLayoutName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && saveLayoutName.trim()) { panelLayout.saveWorkspacePreset(saveLayoutName.trim()); setSaveLayoutOpen(false); }
+                if (e.key === 'Escape') setSaveLayoutOpen(false);
+              }}
+              className="w-full text-small bg-ink/5 border border-hairline rounded-control px-2.5 py-1.5 text-ink focus:outline-none focus:ring-1 focus:ring-accent mb-3"
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setSaveLayoutOpen(false)} className="px-3 py-1.5 text-small text-ink-faint hover:text-ink rounded-control">Cancel</button>
+              <button type="button" onClick={() => { if (saveLayoutName.trim()) { panelLayout.saveWorkspacePreset(saveLayoutName.trim()); setSaveLayoutOpen(false); } }} className="px-3 py-1.5 text-small bg-accent text-white rounded-control hover:brightness-110" disabled={!saveLayoutName.trim()}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <ImageSizeDialog
+        open={imageSizeOpen}
+        onClose={() => setImageSizeOpen(false)}
+        width={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).width : null}
+        height={activePage ? (showCleaned && activePage.cleaned ? activePage.cleaned : activePage.original).height : null}
+      />
+      <ImageSizeDialog
+        open={canvasSizeOpen}
+        onClose={() => setCanvasSizeOpen(false)}
+        width={activePage ? activePage.original.width : null}
+        height={activePage ? activePage.original.height : null}
+        title="Canvas Size"
+      />
+      <PreferencesDialog
+        open={preferencesOpen}
+        onClose={() => setPreferencesOpen(false)}
+        preferences={preferences}
+        onSave={(prefs) => { setPreferences(prefs); savePreferences(prefs); }}
+      />
       {selAmountPrompt && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/30" onClick={() => setSelAmountPrompt(null)}>
           <div className="bg-surface border border-hairline rounded-xl p-4 shadow-xl min-w-[260px]" onClick={e => e.stopPropagation()}>

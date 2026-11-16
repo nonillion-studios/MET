@@ -116,6 +116,16 @@ export function drawTextLayer(ctx: CanvasRenderingContext2D, text: TextLayerData
     }
     ctx.fillStyle = gradientFill ?? run.style.color;
     ctx.fillText(drawText, x, y);
+    if (run.style.underline) {
+      const metrics = ctx.measureText(drawText);
+      const lineY = y + run.style.fontSize * 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, lineY);
+      ctx.lineTo(x + metrics.width, lineY);
+      ctx.strokeStyle = gradientFill ? run.style.color : ctx.fillStyle;
+      ctx.lineWidth = Math.max(1, run.style.fontSize / 14);
+      ctx.stroke();
+    }
   }
   ctx.restore();
 }

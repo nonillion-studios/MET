@@ -67,6 +67,26 @@ export interface ExportSnapshot {
 
 const GRID_SIZE = 100;
 const RULER_SIZE = 20;
+
+function snapToGridValue(v: number, gridSize: number): number {
+  return Math.round(v / gridSize) * gridSize;
+}
+
+const GUIDE_SNAP_THRESHOLD = 8;
+
+function snapToNearestGuide(v: number, guidePositions: number[], scale: number): number {
+  let best = v;
+  let bestDist = Infinity;
+  const threshold = GUIDE_SNAP_THRESHOLD / scale;
+  for (const g of guidePositions) {
+    const d = Math.abs(v - g);
+    if (d < threshold && d < bestDist) {
+      bestDist = d;
+      best = g;
+    }
+  }
+  return best;
+}
 const RULER_STEP = 100;
 const MARQUEE_TOOLS = new Set(['marquee-rect', 'marquee-ellipse', 'marquee-row', 'marquee-col', 'crop', 'slice']);
 const LASSO_TOOLS = new Set(['lasso-freehand']);
@@ -93,7 +113,14 @@ interface StudioCanvasProps {
   /** 0 disables; >0 blends the original page as a translucent overlay above the cleaned page. */
   overlayOpacity: number;
   showGrid?: boolean;
+  snapToGrid?: boolean;
   showRulers?: boolean;
+  guides?: { h: number[]; v: number[] };
+  showGuides?: boolean;
+  onAddGuide?: (axis: 'h' | 'v', position: number) => void;
+  onRemoveGuide?: (axis: 'h' | 'v', index: number) => void;
+  snapToGuides?: boolean;
+  showSafeArea?: boolean;
   activeTool: string;
   /** Bumped by the parent (e.g. toolbar "Fit" button) to force a re-fit. */
   fitSignal: number;
@@ -218,6 +245,8 @@ interface StudioCanvasProps {
   flipped?: boolean;
   /** Non-destructive view rotation in degrees (CSS transform). */
   rotation?: number;
+  /** User preferences for grid size, ruler step, guide/grid colors. */
+  preferences?: { gridSize: number; rulerStep: number; guideColor: string; gridColor: string };
 }
 
 /** The subset of a resolved TypeR line's style the drag preview needs to render — see
@@ -342,7 +371,7 @@ export interface StudioCanvasHandle {
 }
 
 export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(function StudioCanvas({
-  page, showCleaned, overlayOpacity, showGrid = false, showRulers = false, activeTool, fitSignal, layers,
+  page, showCleaned, overlayOpacity, showGrid = false, snapToGrid = false, showRulers = false, guides, showGuides = true, onAddGuide, onRemoveGuide, snapToGuides = false, showSafeArea = false, activeTool, fitSignal, layers,
   activeLayerId, selectedLayerIds, onSelectLayer, onSelectLayers, onAddTextLayer, onUpdateTextLayer, onAutoFitTextHeight, onUpdatePathLayer, onAddPathLayer, onUpdatePlacedImage, onTextSelectionChange, onOpenBrushPicker,
   onTextLineSelectionChange, fontFamilies = [],
   paintSettings, selection, onSelectionChange, typeRegionArmed = false, onCreateTypeRegion, onPaintStrokeEnd, onEyedropperPick, onCommitCrop,
@@ -351,9 +380,17 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
   onMakeSelectionFromPath, onStrokeActivePath, onFillActivePath, canBakePath = false, onDeleteActivePath,
   onSelectInverse, onOpenFillSelectionDialog, onOpenStrokeSelectionDialog, onLayerViaCopy, onLayerViaCut, onAddLayerFromContextMenu,
   typerArmed = false, typerPreviewLine = null, flipped = false, rotation = 0,
+  preferences,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
+  const [guideDrag, setGuideDrag] = useState<{ axis: 'h' | 'v'; pos: number } | null>(null);
+  const rulerHIndicatorRef = useRef<HTMLDivElement>(null);
+  const rulerVIndicatorRef = useRef<HTMLDivElement>(null);
+  const effectiveGridSize = preferences?.gridSize ?? GRID_SIZE;
+  const effectiveRulerStep = preferences?.rulerStep ?? RULER_STEP;
+  const effectiveGridColor = preferences?.gridColor ?? '#00aaff';
+  const effectiveGuideColor = preferences?.guideColor ?? '#00ffff';
   /** Coalesces onLiveCursorMove/onCursorImagePosChange to at most once per animation frame. Both
    *  callbacks land on plain useState setters upstream (Studio.tsx), so calling them on every native
    *  pointermove — which can fire far more often than the display refresh rate — forces a full,
@@ -2635,6 +2672,14 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
         const cx = e.clientX - rect.left;
         const cy = e.clientY - rect.top;
         pendingCursorPosRef.current = screenToImage(cx, cy, { scale, pos });
+        if (rulerHIndicatorRef.current) {
+          rulerHIndicatorRef.current.style.left = `${cx + RULER_SIZE}px`;
+          rulerHIndicatorRef.current.style.display = '';
+        }
+        if (rulerVIndicatorRef.current) {
+          rulerVIndicatorRef.current.style.top = `${cy + RULER_SIZE}px`;
+          rulerVIndicatorRef.current.style.display = '';
+        }
         if (cursorRafRef.current === null) {
           cursorRafRef.current = requestAnimationFrame(() => {
             cursorRafRef.current = null;
@@ -2648,6 +2693,8 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       onPointerLeave={() => {
         setBrushCursorPos(null);
         setEyedropperColor(null);
+        if (rulerHIndicatorRef.current) rulerHIndicatorRef.current.style.display = 'none';
+        if (rulerVIndicatorRef.current) rulerVIndicatorRef.current.style.display = 'none';
         if (cursorRafRef.current !== null) {
           cancelAnimationFrame(cursorRafRef.current);
           cursorRafRef.current = null;
@@ -2706,8 +2753,19 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                   height={image.height + 8}
                   fill="#000000"
                   shadowColor="black"
-                  shadowBlur={20}
-                  shadowOpacity={0.6}
+                  shadowBlur={24}
+                  shadowOpacity={0.7}
+                  shadowOffsetX={2}
+                  shadowOffsetY={4}
+                />
+                <Rect
+                  x={-0.5}
+                  y={-0.5}
+                  width={image.width + 1}
+                  height={image.height + 1}
+                  stroke="rgba(255,255,255,0.08)"
+                  strokeWidth={1 / scale}
+                  listening={false}
                 />
                 {/* The whole stack, background included — the background is root index 0, so it has
                     to be inside the tree for an adjustment above it to enclose (and grade) it. */}
@@ -2983,11 +3041,62 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
 
           {showGrid && image && (
             <Layer listening={false}>
-              {Array.from({ length: Math.floor(image.width / GRID_SIZE) + 1 }, (_, i) => i * GRID_SIZE).map(x => (
-                <Line key={`gx${x}`} points={[x, 0, x, image.height]} stroke="#00aaff" strokeWidth={1 / scale} opacity={0.35} />
+              {Array.from({ length: Math.floor(image.width / effectiveGridSize) + 1 }, (_, i) => i * effectiveGridSize).map(x => (
+                <Line key={`gx${x}`} points={[x, 0, x, image.height]} stroke={effectiveGridColor} strokeWidth={1 / scale} opacity={0.35} />
               ))}
-              {Array.from({ length: Math.floor(image.height / GRID_SIZE) + 1 }, (_, i) => i * GRID_SIZE).map(y => (
-                <Line key={`gy${y}`} points={[0, y, image.width, y]} stroke="#00aaff" strokeWidth={1 / scale} opacity={0.35} />
+              {Array.from({ length: Math.floor(image.height / effectiveGridSize) + 1 }, (_, i) => i * effectiveGridSize).map(y => (
+                <Line key={`gy${y}`} points={[0, y, image.width, y]} stroke={effectiveGridColor} strokeWidth={1 / scale} opacity={0.35} />
+              ))}
+            </Layer>
+          )}
+
+          {/* Pixel grid — visible at very high zoom (≥1600%) to show individual pixel boundaries. */}
+          {scale >= 16 && image && (() => {
+            const vp = stageRef.current;
+            if (!vp) return null;
+            const stageW = vp.width();
+            const stageH = vp.height();
+            const ox = vp.x();
+            const oy = vp.y();
+            const x0 = Math.max(0, Math.floor(-ox / scale));
+            const y0 = Math.max(0, Math.floor(-oy / scale));
+            const x1 = Math.min(image.width, Math.ceil((stageW - ox) / scale));
+            const y1 = Math.min(image.height, Math.ceil((stageH - oy) / scale));
+            const cols = x1 - x0 + 1;
+            const rows = y1 - y0 + 1;
+            if (cols > 200 || rows > 200) return null;
+            return (
+              <Layer listening={false}>
+                {Array.from({ length: cols }, (_, i) => x0 + i).map(x => (
+                  <Line key={`px${x}`} points={[x, y0, x, y1]} stroke="#888" strokeWidth={1 / scale} opacity={0.25} />
+                ))}
+                {Array.from({ length: rows }, (_, i) => y0 + i).map(y => (
+                  <Line key={`py${y}`} points={[x0, y, x1, y]} stroke="#888" strokeWidth={1 / scale} opacity={0.25} />
+                ))}
+              </Layer>
+            );
+          })()}
+
+          {showSafeArea && image && (() => {
+            const margin = Math.round(Math.min(image.width, image.height) * 0.05);
+            return (
+              <Layer listening={false}>
+                <Rect x={0} y={0} width={image.width} height={margin} fill="rgba(255,0,0,0.12)" />
+                <Rect x={0} y={image.height - margin} width={image.width} height={margin} fill="rgba(255,0,0,0.12)" />
+                <Rect x={0} y={margin} width={margin} height={image.height - margin * 2} fill="rgba(255,0,0,0.12)" />
+                <Rect x={image.width - margin} y={margin} width={margin} height={image.height - margin * 2} fill="rgba(255,0,0,0.12)" />
+                <Rect x={margin} y={margin} width={image.width - margin * 2} height={image.height - margin * 2} stroke="#ff0000" strokeWidth={1 / scale} opacity={0.5} dash={[4 / scale, 4 / scale]} />
+              </Layer>
+            );
+          })()}
+
+          {showGuides && guides && image && (guides.v.length > 0 || guides.h.length > 0) && (
+            <Layer listening={false}>
+              {guides.v.map((x, i) => (
+                <Line key={`gv${i}`} points={[x, 0, x, image.height]} stroke={effectiveGuideColor} strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
+              ))}
+              {guides.h.map((y, i) => (
+                <Line key={`gh${i}`} points={[0, y, image.width, y]} stroke={effectiveGuideColor} strokeWidth={1 / scale} opacity={0.7} dash={[6 / scale, 3 / scale]} />
               ))}
             </Layer>
           )}
@@ -3056,6 +3165,21 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
                 stroke="#38bdf8"
                 strokeWidth={1 / scale}
                 dash={[6 / scale, 4 / scale]}
+                onDragMove={(snapToGrid || (snapToGuides && guides)) ? (e) => {
+                  const node = e.target;
+                  let nx = node.x();
+                  let ny = node.y();
+                  if (snapToGrid) {
+                    nx = snapToGridValue(nx, effectiveGridSize);
+                    ny = snapToGridValue(ny, effectiveGridSize);
+                  }
+                  if (snapToGuides && guides) {
+                    nx = snapToNearestGuide(nx, guides.v, scale);
+                    ny = snapToNearestGuide(ny, guides.h, scale);
+                  }
+                  node.x(nx);
+                  node.y(ny);
+                } : undefined}
                 onDragEnd={(e) => setTransformBox(b => (b ? { ...b, x: e.target.x(), y: e.target.y() } : b))}
                 onTransformEnd={(e) => {
                   const node = e.target as Konva.Rect;
@@ -3255,20 +3379,77 @@ export const StudioCanvas = forwardRef<StudioCanvasHandle, StudioCanvasProps>(fu
       )}
       {showRulers && image && (
         <>
-          <div className="absolute top-0 left-0 right-0 h-5 bg-black/60 border-b border-white/10 overflow-hidden pointer-events-none z-10" style={{ marginLeft: RULER_SIZE }}>
-            {Array.from({ length: Math.floor(image.width / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(x => (
-              <span key={x} className="absolute top-0 h-full flex items-center text-[9px] text-white/50 font-mono border-l border-white/20 pl-0.5"
+          <div
+            className="absolute top-0 left-0 right-0 h-5 bg-black/60 border-b border-white/10 overflow-hidden z-10 cursor-s-resize"
+            style={{ marginLeft: RULER_SIZE }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const imageY = (e.clientY - rect.top - pos.y) / scale;
+              setGuideDrag({ axis: 'h', pos: imageY });
+              const onMove = (ev: MouseEvent) => {
+                const iy = (ev.clientY - rect.top - pos.y) / scale;
+                setGuideDrag({ axis: 'h', pos: iy });
+              };
+              const onUp = (ev: MouseEvent) => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                const iy = (ev.clientY - rect.top - pos.y) / scale;
+                setGuideDrag(null);
+                if (iy > 0 && iy < image!.height) onAddGuide?.('h', Math.round(iy));
+              };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+          >
+            {Array.from({ length: Math.floor(image.width / effectiveRulerStep) + 1 }, (_, i) => i * effectiveRulerStep).map(x => (
+              <span key={x} className="absolute top-0 h-full flex items-center text-[9px] text-white/50 font-mono border-l border-white/20 pl-0.5 pointer-events-none"
                 style={{ left: pos.x + x * scale }}>{x}</span>
             ))}
+            <div ref={rulerHIndicatorRef} className="absolute bottom-0 pointer-events-none" style={{ display: 'none', width: 0, height: 0, borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderBottom: '4px solid #ff6b6b', marginLeft: -4 }} />
           </div>
-          <div className="absolute top-0 left-0 bottom-0 w-5 bg-black/60 border-r border-white/10 overflow-hidden pointer-events-none z-10" style={{ marginTop: RULER_SIZE }}>
-            {Array.from({ length: Math.floor(image.height / RULER_STEP) + 1 }, (_, i) => i * RULER_STEP).map(y => (
-              <span key={y} className="absolute left-0 w-full text-[9px] text-white/50 font-mono border-t border-white/20 pt-0.5 text-center"
+          <div
+            className="absolute top-0 left-0 bottom-0 w-5 bg-black/60 border-r border-white/10 overflow-hidden z-10 cursor-e-resize"
+            style={{ marginTop: RULER_SIZE }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const rect = containerRef.current?.getBoundingClientRect();
+              if (!rect) return;
+              const imageX = (e.clientX - rect.left - pos.x) / scale;
+              setGuideDrag({ axis: 'v', pos: imageX });
+              const onMove = (ev: MouseEvent) => {
+                const ix = (ev.clientX - rect.left - pos.x) / scale;
+                setGuideDrag({ axis: 'v', pos: ix });
+              };
+              const onUp = (ev: MouseEvent) => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                const ix = (ev.clientX - rect.left - pos.x) / scale;
+                setGuideDrag(null);
+                if (ix > 0 && ix < image!.width) onAddGuide?.('v', Math.round(ix));
+              };
+              window.addEventListener('mousemove', onMove);
+              window.addEventListener('mouseup', onUp);
+            }}
+          >
+            {Array.from({ length: Math.floor(image.height / effectiveRulerStep) + 1 }, (_, i) => i * effectiveRulerStep).map(y => (
+              <span key={y} className="absolute left-0 w-full text-[9px] text-white/50 font-mono border-t border-white/20 pt-0.5 text-center pointer-events-none"
                 style={{ top: pos.y + y * scale }}>{y}</span>
             ))}
+            <div ref={rulerVIndicatorRef} className="absolute right-0 pointer-events-none" style={{ display: 'none', width: 0, height: 0, borderTop: '4px solid transparent', borderBottom: '4px solid transparent', borderRight: '4px solid #ff6b6b', marginTop: -4 }} />
           </div>
           <div className="absolute top-0 left-0 w-5 h-5 bg-black/70 z-20" />
         </>
+      )}
+      {guideDrag && (
+        <div
+          className="absolute z-30 pointer-events-none"
+          style={guideDrag.axis === 'h'
+            ? { left: 0, right: 0, top: pos.y + guideDrag.pos * scale - 0.5, height: 1, background: effectiveGuideColor }
+            : { top: 0, bottom: 0, left: pos.x + guideDrag.pos * scale - 0.5, width: 1, background: effectiveGuideColor }
+          }
+        />
       )}
       <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-control liquid-glass text-micro font-mono text-white/80" style={(flipped || rotation) ? { transform: `${rotation ? `rotate(${-rotation}deg)` : ''}${flipped ? ' scaleX(-1)' : ''}`.trim() } : undefined}>
         {Math.round(scale * 100)}%

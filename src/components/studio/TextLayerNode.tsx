@@ -260,6 +260,7 @@ export function TextLayerNode({
               fontFamily={run.style.fontFamily}
               fontSize={run.style.fontSize}
               fontStyle={`${run.style.italic ? 'italic ' : ''}${run.style.fontWeight}`}
+              textDecoration={run.style.underline ? 'underline' : undefined}
               letterSpacing={run.style.letterSpacing}
               // Already laid out: one line, no wrapping, no alignment box.
               wrap="none"

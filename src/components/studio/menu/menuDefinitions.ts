@@ -117,6 +117,7 @@ export interface MenuActions {
    *  never per-run). No-ops (and the items disable) without an active text layer. */
   textSetBold: () => void;
   textSetItalic: () => void;
+  textSetUnderline: () => void;
   textSetFontSize: (size: number) => void;
   textSetAlign: (align: TextAlign) => void;
   textSetRtl: () => void;
@@ -132,6 +133,8 @@ export interface MenuActions {
   liquifyTool: () => void;
   /** AI > Content-Aware Fill — switches to the existing real `contentAware` paint tool; no dialog. */
   contentAwareFillTool: () => void;
+  openImageSize: () => void;
+  openCanvasSize: () => void;
   rotateCanvas: (dir: 'cw' | 'ccw' | '180' | 'flip-h' | 'flip-v') => void;
   toolRailVisible: boolean;
   toggleToolRail: () => void;
@@ -145,6 +148,11 @@ export interface MenuActions {
    *  there is to reset. */
   resetLayoutEnabled: boolean;
   resetPanelLayout: () => void;
+  workspacePresetNames: string[];
+  saveWorkspacePreset: () => void;
+  loadWorkspacePreset: (name: string) => void;
+  deleteWorkspacePreset: (name: string) => void;
+  openPreferences: () => void;
   aboutOpen: () => void;
   triggerImportFonts: () => void;
   triggerImportBrushes: () => void;
@@ -158,8 +166,18 @@ export interface MenuActions {
   togglePanelsHidden: () => void;
   showGrid: boolean;
   toggleGrid: () => void;
+  snapToGrid: boolean;
+  toggleSnapToGrid: () => void;
   showRulers: boolean;
   toggleRulers: () => void;
+  showGuides: boolean;
+  toggleGuides: () => void;
+  clearGuides: () => void;
+  hasGuides: boolean;
+  snapToGuides: boolean;
+  toggleSnapToGuides: () => void;
+  showSafeArea: boolean;
+  toggleSafeArea: () => void;
   viewFlipped: boolean;
   toggleFlipView: () => void;
   canvasRotation: number;
@@ -167,6 +185,8 @@ export interface MenuActions {
   rotateViewCCW: () => void;
   resetRotateView: () => void;
   hasSelection: boolean;
+  selectAll: () => void;
+  selectInverse: () => void;
   deselect: () => void;
   featherSelection: () => void;
   expandSelection: () => void;
@@ -275,14 +295,16 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'sep2', label: '', separator: true },
         { id: 'find-replace', label: 'Find & Replace…', shortcut: 'Ctrl+F', action: a.openFindReplace },
         { id: 'sep3', label: '', separator: true },
-        { id: 'preferences', label: 'Preferences…', disabled: true },
+        { id: 'preferences', label: 'Preferences…', action: a.openPreferences },
       ],
     },
     {
       id: 'select',
       label: 'Select',
       items: [
+        { id: 'select-all', label: 'All', shortcut: 'Ctrl+A', action: a.selectAll },
         { id: 'deselect', label: 'Deselect', shortcut: 'Ctrl+D', action: a.deselect, disabled: !a.hasSelection },
+        { id: 'select-inverse', label: 'Inverse', shortcut: 'Ctrl+Shift+I', action: a.selectInverse, disabled: !a.hasSelection },
         { id: 'sep1', label: '', separator: true },
         { id: 'feather', label: 'Feather…', action: a.featherSelection, disabled: !a.hasSelection },
         { id: 'expand', label: 'Expand…', action: a.expandSelection, disabled: !a.hasSelection },
@@ -306,11 +328,12 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'sep2', label: '', separator: true },
         { id: 'rulers', label: 'Rulers', shortcut: 'Ctrl+R', action: a.toggleRulers, checked: a.showRulers },
         { id: 'grid', label: 'Grid', shortcut: "Ctrl+'", action: a.toggleGrid, checked: a.showGrid },
-        { id: 'guides', label: 'Guides', disabled: true, checked: false },
-        { id: 'safe-area', label: 'Safe Area', disabled: true, checked: false },
+        { id: 'guides', label: 'Guides', action: a.toggleGuides, checked: a.showGuides },
+        { id: 'clear-guides', label: 'Clear Guides', action: a.clearGuides, disabled: !a.hasGuides },
+        { id: 'safe-area', label: 'Safe Area', action: a.toggleSafeArea, checked: a.showSafeArea },
         { id: 'sep3', label: '', separator: true },
-        { id: 'snap-grid', label: 'Snap to Grid', disabled: true, checked: false },
-        { id: 'snap-guides', label: 'Snap to Guides', disabled: true, checked: false },
+        { id: 'snap-grid', label: 'Snap to Grid', shortcut: 'Ctrl+Shift+;', action: a.toggleSnapToGrid, checked: a.snapToGrid },
+        { id: 'snap-guides', label: 'Snap to Guides', action: a.toggleSnapToGuides, checked: a.snapToGuides },
         { id: 'sep4', label: '', separator: true },
         { id: 'flip-view', label: 'Flip Canvas View', action: a.toggleFlipView, checked: a.viewFlipped },
         { id: 'rotate-cw', label: 'Rotate View CW', shortcut: 'Shift+.', action: a.rotateViewCW },
@@ -325,8 +348,8 @@ export function buildMenus(a: MenuActions): MenuDef[] {
       id: 'image',
       label: 'Image',
       items: [
-        { id: 'image-size', label: 'Image Size…', disabled: true },
-        { id: 'canvas-size', label: 'Canvas Size…', disabled: true },
+        { id: 'image-size', label: 'Image Size…', action: a.openImageSize },
+        { id: 'canvas-size', label: 'Canvas Size…', action: a.openCanvasSize },
         { id: 'sep1', label: '', separator: true },
         { id: 'place-image', label: 'Place Image…', action: a.placeImage },
         { id: 'place-psd', label: 'Place PSD as Layers…', action: a.placePsd },
@@ -411,7 +434,7 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         { id: 'sep2', label: '', separator: true },
         { id: 'bold', label: 'Bold', shortcut: 'Ctrl+B', action: a.textSetBold, disabled: !a.hasActiveTextLayer },
         { id: 'italic', label: 'Italic', shortcut: 'Ctrl+I', action: a.textSetItalic, disabled: !a.hasActiveTextLayer },
-        { id: 'underline', label: 'Underline', shortcut: 'Ctrl+U', disabled: true },
+        { id: 'underline', label: 'Underline', shortcut: 'Ctrl+U', action: a.textSetUnderline, disabled: !a.hasActiveTextLayer },
         { id: 'sep3', label: '', separator: true },
         { id: 'align-left', label: 'Align Left', action: () => a.textSetAlign('left'), disabled: !a.hasActiveTextLayer },
         { id: 'align-center', label: 'Align Center', action: () => a.textSetAlign('center'), disabled: !a.hasActiveTextLayer },
@@ -454,8 +477,17 @@ export function buildMenus(a: MenuActions): MenuDef[] {
         {
           id: 'arrange', label: 'Arrange', submenu: [
             { id: 'reset-layout', label: 'Reset Layout', action: a.resetPanelLayout, disabled: !a.resetLayoutEnabled },
-            { id: 'save-layout', label: 'Save Layout…', disabled: true },
-            { id: 'load-layout', label: 'Load Layout…', disabled: true },
+            { id: 'save-layout', label: 'Save Layout…', action: a.saveWorkspacePreset },
+            ...(a.workspacePresetNames.length > 0 ? [{
+              id: 'load-layout', label: 'Load Layout', submenu: a.workspacePresetNames.map(name => ({
+                id: `load-${name}`, label: name, action: () => a.loadWorkspacePreset(name),
+              })),
+            }] : [{ id: 'load-layout', label: 'Load Layout…', disabled: true }] as MenuItemDef[]),
+            ...(a.workspacePresetNames.length > 0 ? [{
+              id: 'delete-layout', label: 'Delete Layout', submenu: a.workspacePresetNames.map(name => ({
+                id: `delete-${name}`, label: name, action: () => a.deleteWorkspacePreset(name),
+              })),
+            }] : [] as MenuItemDef[]),
           ],
         },
         { id: 'sep2', label: '', separator: true },
